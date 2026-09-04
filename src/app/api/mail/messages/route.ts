@@ -74,9 +74,20 @@ export const GET = withAuth(apiAuthGuard, async (request, auth) => {
     const message =
       error instanceof Error ? error.message : "Erreur Gmail inattendue";
     console.error("[mail/messages]", message);
+    const code =
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: string }).code === "RATE_LIMITED"
+        ? "RATE_LIMITED"
+        : /quota|rate.?limit|units per minute/i.test(message)
+          ? "RATE_LIMITED"
+          : "PROVIDER_ERROR";
     return apiErrorResponse(
-      "PROVIDER_ERROR",
-      `Impossible de charger les mails : ${message}`
+      code,
+      code === "RATE_LIMITED"
+        ? "Gmail est saturé (trop de requêtes). Attends ~30 s puis réessaie."
+        : `Impossible de charger les mails : ${message}`
     );
   }
 });

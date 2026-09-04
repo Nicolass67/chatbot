@@ -62,7 +62,7 @@ describe("GmailProvider", () => {
     expect(provider.accountEmail).toBe("me@gmail.com");
   });
 
-  it("listMessages récupère les messages complets", async () => {
+  it("listMessages récupère les résumés (metadata)", async () => {
     mockMessagesList.mockResolvedValue({
       data: { messages: [{ id: "msg-1" }] },
     });
@@ -71,14 +71,12 @@ describe("GmailProvider", () => {
         id: "msg-1",
         threadId: "thread-1",
         snippet: "Hello",
+        labelIds: ["INBOX", "UNREAD"],
         payload: {
           headers: [
             { name: "From", value: "a@example.com" },
             { name: "Subject", value: "Hi" },
           ],
-          body: {
-            data: Buffer.from("Hello", "utf8").toString("base64url"),
-          },
         },
       },
     });
@@ -92,9 +90,17 @@ describe("GmailProvider", () => {
       labelIds: undefined,
       pageToken: undefined,
     });
+    expect(mockMessagesGet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "me",
+        id: "msg-1",
+        format: "metadata",
+      })
+    );
     expect(messages).toHaveLength(1);
     expect(messages[0]?.id).toBe("msg-1");
     expect(messages[0]?.subject).toBe("Hi");
+    expect(messages[0]?.isUnread).toBe(true);
   });
 
   it("search délègue à listMessages avec query", async () => {

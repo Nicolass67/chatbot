@@ -49,9 +49,9 @@ struct MailInboxView: View {
     @State private var localPageIndex = 0
     @State private var windowExhausted = false
 
-    private let pageSize = 50
-    /// Fenêtre max pour tris non-Gmail (oldest / from).
-    private let sortWindowMax = 150
+    private let pageSize = 25
+    /// Fenêtre max pour tris locaux — petite pour protéger le quota Gmail.
+    private let sortWindowMax = 50
 
     private let categories: [(id: String, label: String)] = [
         ("inbox", "Boîte"),
@@ -604,8 +604,8 @@ struct MailInboxView: View {
             return
         } catch {
             guard gen == loadGeneration, !Task.isCancelled else { return }
-            // Garde la dernière liste si erreur transitoire (évite « OK → vide 500 »).
-            if messages.isEmpty || !isTransientMailError(error) {
+            // Ne jamais vider la boîte sur quota / 5xx — garde ce qui était affiché.
+            if messages.isEmpty && !isTransientMailError(error) {
                 messages = []
             }
             self.error = friendlyMailError(error)
@@ -621,7 +621,7 @@ struct MailInboxView: View {
         pageToken: String?
     ) async throws -> MailMessagesPage {
         var lastError: Error?
-        for attempt in 0..<2 {
+        for attempt in 0..<3 {
             do {
                 return try await client.listMailMessages(
                     maxResults: pageSize,
@@ -631,8 +631,12 @@ struct MailInboxView: View {
                 )
             } catch {
                 lastError = error
-                if attempt == 0, isTransientMailError(error) {
-                    try? await Task.sleep(nanoseconds: 450_000_000)
+                if attempt < 2, isTransientMailError(error) {
+                    // Quota Gmail : attendre plus longtemps avant retry.
+                    let delayNs: UInt64 = isQuotaMailError(error)
+                        ? 2_500_000_000
+                        : 450_000_000
+                    try? await Task.sleep(nanoseconds: delayNs)
                     continue
                 }
                 throw error
@@ -641,7 +645,18 @@ struct MailInboxView: View {
         throw lastError ?? APIClientError.decode
     }
 
+    private func isQuotaMailError(_ error: Error) -> Bool {
+        if case APIClientError.http(let code, let body) = error {
+            if code == 429 { return true }
+            let lower = body.lowercased()
+            return lower.contains("quota") || lower.contains("rate") || lower.contains("satur")
+        }
+        let msg = error.localizedDescription.lowercased()
+        return msg.contains("quota") || msg.contains("rate") || msg.contains("satur")
+    }
+
     private func isTransientMailError(_ error: Error) -> Bool {
+        if isQuotaMailError(error) { return true }
         if case APIClientError.http(let code, _) = error {
             return code == 429 || code >= 500
         }
@@ -653,6 +668,9 @@ struct MailInboxView: View {
     }
 
     private func friendlyMailError(_ error: Error) -> String {
+        if isQuotaMailError(error) {
+            return "Gmail est saturé (trop de chargements). Attends ~30 s puis réessaie."
+        }
         if case APIClientError.http(let code, _) = error, code >= 500 {
             return "Le serveur mail est temporairement indisponible (HTTP \(code)). Réessaie."
         }

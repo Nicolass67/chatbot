@@ -51,34 +51,103 @@ export class GmailProvider implements EmailProvider {
 
     if (ids.length === 0) return [];
 
-    const messages = await Promise.all(ids.map((id) => this.getMessage(id)));
-    return messages;
+    // Concurrence limitée + metadata (pas full) : évite le quota Gmail
+    // « Total Query Cost / Units per minute per user ».
+    const CONCURRENCY = 4;
+    const out: NormalizedEmailMessage[] = [];
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const chunk = ids.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        chunk.map((id) => this.getMessageSummary(id))
+      );
+      for (const result of settled) {
+        if (result.status === "fulfilled") {
+          out.push(result.value);
+          continue;
+        }
+        const reason = result.reason;
+        if (isGmailQuotaError(reason)) {
+          throw new EmailProviderError(
+            "RATE_LIMITED",
+            "Quota Gmail temporairement dépassé. Réessaie dans une minute."
+          );
+        }
+        // Message isolé en erreur : on saute, on n’échoue pas toute la page.
+        console.warn(
+          "[gmail] skip message summary:",
+          reason instanceof Error ? reason.message : reason
+        );
+      }
+    }
+    return out;
+  }
+
+  /** Résumé inbox — format metadata (beaucoup moins coûteux que full). */
+  async getMessageSummary(messageId: string): Promise<NormalizedEmailMessage> {
+    try {
+      const response = await this.client.users.messages.get({
+        userId: "me",
+        id: messageId,
+        format: "metadata",
+        metadataHeaders: ["From", "To", "Cc", "Bcc", "Subject", "Date"],
+      });
+      if (!response.data.id) {
+        throw new EmailProviderError("NOT_FOUND", "Message introuvable.");
+      }
+      return normalizeGmailMessage(response.data);
+    } catch (error) {
+      if (error instanceof EmailProviderError) throw error;
+      if (isGmailQuotaError(error)) {
+        throw new EmailProviderError(
+          "RATE_LIMITED",
+          "Quota Gmail temporairement dépassé. Réessaie dans une minute."
+        );
+      }
+      throw new EmailProviderError(
+        "PROVIDER_ERROR",
+        error instanceof Error ? error.message : "Erreur Gmail getMessageSummary."
+      );
+    }
   }
 
   async listMessagesPage(
     params: ListMessagesParams
   ): Promise<import("../types").MailMessagesPage> {
-    const q = buildGmailListQuery({
-      query: params.query,
-      after: params.after,
-    });
+    try {
+      const q = buildGmailListQuery({
+        query: params.query,
+        after: params.after,
+      });
 
-    const response = await this.client.users.messages.list({
-      userId: "me",
-      q,
-      maxResults: params.maxResults ?? 20,
-      labelIds: params.labelIds,
-      pageToken: params.pageToken,
-    });
+      const response = await this.client.users.messages.list({
+        userId: "me",
+        q,
+        maxResults: params.maxResults ?? 20,
+        labelIds: params.labelIds,
+        pageToken: params.pageToken,
+      });
 
-    return {
-      messages: await this.fetchMessageSummaries(response.data),
-      nextPageToken: response.data.nextPageToken ?? null,
-      resultSizeEstimate:
-        typeof response.data.resultSizeEstimate === "number"
-          ? response.data.resultSizeEstimate
-          : null,
-    };
+      return {
+        messages: await this.fetchMessageSummaries(response.data),
+        nextPageToken: response.data.nextPageToken ?? null,
+        resultSizeEstimate:
+          typeof response.data.resultSizeEstimate === "number"
+            ? response.data.resultSizeEstimate
+            : null,
+      };
+    } catch (error) {
+      if (error instanceof EmailProviderError) throw error;
+      if (isGmailQuotaError(error)) {
+        throw new EmailProviderError(
+          "RATE_LIMITED",
+          "Quota Gmail temporairement dépassé. Réessaie dans une minute."
+        );
+      }
+      throw new EmailProviderError(
+        "PROVIDER_ERROR",
+        error instanceof Error ? error.message : "Erreur Gmail listMessages."
+      );
+    }
   }
 
   async listMessages(
@@ -287,4 +356,12 @@ export class GmailProvider implements EmailProvider {
       );
     }
   }
+}
+
+function isGmailQuotaError(error: unknown): boolean {
+  const msg =
+    error instanceof Error
+      ? `${error.message} ${(error as { code?: string }).code ?? ""}`
+      : String(error);
+  return /quota|rate.?limit|user.?rate|queries per|units per minute/i.test(msg);
 }
