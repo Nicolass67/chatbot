@@ -159,9 +159,12 @@ struct FilesBrowserView: View {
             }
             .onChange(of: nav.filesDeepLink) { _, link in
                 guard let link else { return }
-                if rootsById.isEmpty {
+                if rootsById.isEmpty && roots.isEmpty {
                     pendingDeepLink = link
                 } else {
+                    if rootsById.isEmpty {
+                        rootsById = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
+                    }
                     applyFilesDeepLink(link)
                 }
                 nav.filesDeepLink = nil
@@ -202,15 +205,20 @@ struct FilesBrowserView: View {
             .task {
                 if roots.isEmpty, let cached = TabMemoryCache.fileRoots, !cached.isEmpty {
                     roots = cached
+                    rootsById = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
                 }
                 if roots.isEmpty {
                     await loadRoots()
                 }
+                // Deep-link posé avant l’apparition de l’onglet (ex. « Ouvrir le dossier » depuis Mail).
+                consumePendingFilesDeepLink()
             }
             .onChange(of: roots) { _, newRoots in
+                rootsById = Dictionary(uniqueKeysWithValues: newRoots.map { ($0.id, $0) })
                 if !newRoots.isEmpty {
                     TabMemoryCache.fileRoots = newRoots
                 }
+                consumePendingFilesDeepLink()
             }
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
@@ -285,6 +293,19 @@ struct FilesBrowserView: View {
         } else {
             AppHaptics.warning()
             selectionError = "Échec pour : \(failed.joined(separator: ", "))"
+        }
+    }
+
+    /// Applique un deep-link en attente (state local ou `nav.filesDeepLink`).
+    private func consumePendingFilesDeepLink() {
+        if let pending = pendingDeepLink {
+            pendingDeepLink = nil
+            applyFilesDeepLink(pending)
+            return
+        }
+        if let link = nav.filesDeepLink {
+            nav.filesDeepLink = nil
+            applyFilesDeepLink(link)
         }
     }
 
@@ -612,10 +633,7 @@ struct FilesBrowserView: View {
             roots = try await client.listFileRoots()
             rootsById = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
             error = nil
-            if let pending = pendingDeepLink {
-                pendingDeepLink = nil
-                applyFilesDeepLink(pending)
-            }
+            consumePendingFilesDeepLink()
         } catch {
             self.error = error.localizedDescription
         }
@@ -1146,7 +1164,24 @@ struct FileFolderView: View {
             )
             if confirm {
                 AppHaptics.success()
-                await load(reset: true)
+                let dest = pending.destRelativePath
+                    .replacingOccurrences(of: "\\", with: "/")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if !dest.isEmpty {
+                    let name = dest.split(separator: "/").last.map(String.init) ?? dest
+                    onOpenFolder(
+                        FileEntryDTO(
+                            fileId: nil,
+                            name: name,
+                            relativePath: dest,
+                            isDirectory: true,
+                            sizeBytes: nil,
+                            indexed: nil
+                        )
+                    )
+                } else {
+                    await load(reset: true)
+                }
             }
         } catch {
             openError = error.localizedDescription
@@ -1341,42 +1376,81 @@ struct FilePreviewView: View {
     }
 }
 
-/// Sheet de confirmation mkdir — isolée pour alléger le type-check de FileFolderView.
-private struct MkdirConfirmSheet: View {
+/// Sheet de confirmation mkdir — partagée Files browser + picker PJ.
+struct MkdirConfirmSheet: View {
     let detail: String
     let confirming: Bool
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
+    private var folderName: String {
+        let normalized = detail
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return normalized.split(separator: "/").last.map(String.init) ?? (normalized.isEmpty ? "Nouveau dossier" : normalized)
+    }
+
+    private var parentPath: String? {
+        let normalized = detail
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let slash = normalized.lastIndex(of: "/") else { return nil }
+        let parent = String(normalized[..<slash])
+        return parent.isEmpty ? nil : parent.replacingOccurrences(of: "/", with: " / ")
+    }
+
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Confirmer la création")
+        VStack(spacing: 20) {
+            Capsule()
+                .fill(AppTheme.muted.opacity(0.35))
+                .frame(width: 36, height: 5)
+                .padding(.top, 10)
+
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 36, weight: .medium))
+                .foregroundStyle(AppTheme.filesAccent)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 6) {
+                Text("Créer ce dossier ?")
+                    .font(CNFont.headline)
+                    .foregroundStyle(AppTheme.foreground)
+                Text(folderName)
                     .font(CNFont.title)
-                Text(detail)
-                    .font(CNFont.body)
-                    .foregroundStyle(AppTheme.muted)
-                Spacer(minLength: 0)
+                    .foregroundStyle(AppTheme.foreground)
+                    .multilineTextAlignment(.center)
+                if let parentPath {
+                    Text("dans \(parentPath)")
+                        .font(CNFont.callout)
+                        .foregroundStyle(AppTheme.muted)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Text("à la racine de l’emplacement")
+                        .font(CNFont.callout)
+                        .foregroundStyle(AppTheme.muted)
+                }
+            }
+            .padding(.horizontal, 8)
+
+            VStack(spacing: 10) {
                 Button(action: onConfirm) {
-                    Text(confirming ? "Création…" : "Confirmer")
+                    Text(confirming ? "Création…" : "Créer et ouvrir")
+                        .font(CNFont.callout.weight(.semibold))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(confirming)
+
                 Button("Annuler", role: .cancel, action: onCancel)
                     .disabled(confirming)
             }
-            .padding(20)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Fermer", action: onCancel)
-                }
-            }
+            .padding(.horizontal, 4)
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 24)
+        .presentationDetents([.height(320)])
+        .presentationDragIndicator(.hidden)
     }
 }
 

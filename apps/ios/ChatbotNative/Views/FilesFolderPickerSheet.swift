@@ -67,6 +67,7 @@ struct FilesFolderPickerSheet: View {
     @State private var confirmingMkdir = false
     @State private var currentFolder: FolderPickerNav?
     @State private var folderRefresh = 0
+    @State private var pendingMkdirDest: String?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -102,44 +103,21 @@ struct FilesFolderPickerSheet: View {
         }
         .alert("Nouveau dossier", isPresented: $showMkdir) {
             TextField("Nom", text: $mkdirName)
-            Button("Annuler", role: .cancel) { mkdirName = "" }
+            Button("Annuler", role: .cancel) {
+                mkdirName = ""
+                pendingMkdirDest = nil
+            }
             Button("Créer") { Task { await proposeMkdir() } }
         } message: {
             Text("Créé dans le dossier courant, après confirmation.")
         }
         .sheet(item: $mkdirConfirm) { proposal in
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Confirmer la création")
-                        .font(CNFont.title)
-                    Text(proposal.detail)
-                        .font(CNFont.body)
-                        .foregroundStyle(AppTheme.muted)
-                    Spacer(minLength: 0)
-                    Button {
-                        Task { await resolveMkdir(proposal, confirm: true) }
-                    } label: {
-                        Text(confirmingMkdir ? "Création…" : "Confirmer")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(confirmingMkdir)
-                    Button("Annuler", role: .cancel) {
-                        Task { await resolveMkdir(proposal, confirm: false) }
-                    }
-                    .disabled(confirmingMkdir)
-                }
-                .padding(20)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Fermer") {
-                            Task { await resolveMkdir(proposal, confirm: false) }
-                        }
-                    }
-                }
-            }
-            .presentationDetents([.medium])
+            MkdirConfirmSheet(
+                detail: proposal.detail,
+                confirming: confirmingMkdir,
+                onConfirm: { Task { await resolveMkdir(proposal, confirm: true) } },
+                onCancel: { Task { await resolveMkdir(proposal, confirm: false) } }
+            )
         }
         .alert("Enregistrement", isPresented: Binding(
             get: { saveError != nil },
@@ -393,6 +371,7 @@ struct FilesFolderPickerSheet: View {
         guard !name.isEmpty, let folder = currentFolder else { return }
         mkdirName = ""
         let dest = folder.path.isEmpty ? name : "\(folder.path)/\(name)"
+        pendingMkdirDest = dest
         do {
             let proposal = try await client.proposeCreateDirectory(
                 rootId: folder.root.id,
@@ -402,6 +381,7 @@ struct FilesFolderPickerSheet: View {
             try? await Task.sleep(nanoseconds: 450_000_000)
             mkdirConfirm = proposal
         } catch {
+            pendingMkdirDest = nil
             saveError = error.localizedDescription
         }
     }
@@ -418,11 +398,26 @@ struct FilesFolderPickerSheet: View {
                 confirmationToken: pending.confirmationToken,
                 confirm: confirm
             )
-            if confirm {
+            if confirm, let folder = currentFolder {
                 AppHaptics.success()
+                let dest = (pendingMkdirDest ?? pending.destRelativePath)
+                    .replacingOccurrences(of: "\\", with: "/")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                pendingMkdirDest = nil
+                guard !dest.isEmpty else {
+                    folderRefresh += 1
+                    return
+                }
+                let name = dest.split(separator: "/").last.map(String.init) ?? dest
+                let next = FolderPickerNav(root: folder.root, path: dest, title: name)
+                currentFolder = next
+                path.append(next)
                 folderRefresh += 1
+            } else {
+                pendingMkdirDest = nil
             }
         } catch {
+            pendingMkdirDest = nil
             saveError = error.localizedDescription
         }
     }
@@ -462,21 +457,10 @@ private struct FolderPickerBrowser: View {
                 } else {
                     List {
                         Section {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(breadcrumb)
-                                    .font(CNFont.caption2)
-                                    .foregroundStyle(AppTheme.muted)
-                                    .lineLimit(2)
-                                Button(action: onSaveHere) {
-                                    Label("Enregistrer « \(filename) » ici", systemImage: "square.and.arrow.down.fill")
-                                        .font(CNFont.callout.weight(.semibold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(saving)
-                            }
-                            .listRowBackground(AppTheme.surface.opacity(0.55))
+                            Text(breadcrumb)
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.muted)
+                                .listRowBackground(AppTheme.surface.opacity(0.35))
                         }
 
                         if folders.isEmpty {
@@ -520,13 +504,29 @@ private struct FolderPickerBrowser: View {
                 .accessibilityLabel("Nouveau dossier")
                 .disabled(saving)
             }
-            ToolbarItem(placement: .bottomBar) {
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider().overlay(AppTheme.borderSubtle)
                 Button(action: onSaveHere) {
-                    Text("Enregistrer ici")
-                        .fontWeight(.semibold)
+                    Label("Enregistrer ici", systemImage: "square.and.arrow.down.fill")
+                        .font(CNFont.callout.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
                 }
+                .buttonStyle(.borderedProminent)
                 .disabled(saving)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+                Text(filename)
+                    .font(CNFont.caption2)
+                    .foregroundStyle(AppTheme.muted)
+                    .lineLimit(1)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
             }
+            .background(.ultraThinMaterial)
         }
         .task(id: "\(root.id)|\(path)") { await load() }
     }

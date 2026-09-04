@@ -955,14 +955,18 @@ final class APIClient: @unchecked Sendable {
         else { throw APIClientError.decode }
         let op = (obj["op"] as? String) ?? (body["op"] as? String) ?? "mutation"
         let payload = obj["payload"] as? [String: Any]
-        let detail = (payload?["destRelativePath"] as? String)
-            ?? (payload?["sourceRelativePath"] as? String)
-            ?? op
+        let destRelativePath = (payload?["destRelativePath"] as? String)
+            ?? (body["destRelativePath"] as? String)
+            ?? ""
+        let detail = destRelativePath.isEmpty
+            ? ((payload?["sourceRelativePath"] as? String) ?? op)
+            : destRelativePath
         return FilesProposeResult(
             actionId: actionId,
             confirmationToken: token,
             expiresAt: obj["expiresAt"] as? String,
             op: op,
+            destRelativePath: destRelativePath.isEmpty ? detail : destRelativePath,
             detail: detail
         )
     }
@@ -1297,5 +1301,7 @@ struct FilesProposeResult: Sendable, Identifiable {
     let confirmationToken: String
     let expiresAt: String?
     let op: String
+    /// Chemin relatif cible (mkdir / move) — aussi exposé via `detail` pour l’UI.
+    let destRelativePath: String
     let detail: String
 }
