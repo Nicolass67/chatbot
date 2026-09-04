@@ -165,9 +165,22 @@ final class AppNavigation {
     }
 
     func openFilesAssistant(_ context: FilesAssistantContext = .global) {
+        // Plus d’UI Assistant Files — exploration native uniquement.
         filesAssistantContext = context
-        presentFilesAssistant = true
-        selectedTab = .files
+        presentFilesAssistant = false
+        switch context {
+        case .global:
+            selectedTab = .files
+        case .folder(let rootId, let path, let title):
+            openFileFolder(rootId: rootId, folderPath: path, title: title)
+        case .file(let fileId, let name, let rootId, let path):
+            openFilePreview(
+                fileId: fileId,
+                fileName: name,
+                rootId: rootId.isEmpty ? nil : rootId,
+                folderPath: path
+            )
+        }
     }
 
     /// Ancien API — redirige vers Assistant **dans** Mail (plus vers Chat général).
@@ -176,7 +189,13 @@ final class AppNavigation {
     }
 
     func askAboutFile(fileId: String, name: String) {
-        openFilesAssistant(.file(fileId: fileId, name: name, rootId: "", path: ""))
+        // Pas d’assistant Files : ouvre le fichier dans l’explorateur natif.
+        openFilePreview(
+            fileId: fileId,
+            fileName: name,
+            rootId: nil,
+            folderPath: nil
+        )
     }
 
     func applyQaIntent(_ intent: QaNavIntent) {

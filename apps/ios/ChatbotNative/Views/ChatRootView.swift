@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Racine Chat Mobile 3.0 — ouvre une **nouvelle conversation**, historique en switcher.
+/// Racine Chat Mobile 3.0 — restaure la conversation générale ; « Nouveau chat » seul réinitialise.
 struct ChatRootView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
@@ -33,7 +33,7 @@ struct ChatRootView: View {
                         message: bootError ?? "Réessaie pour créer une conversation.",
                         actionTitle: "Réessayer"
                     ) {
-                        Task { await bootNewConversation() }
+                        Task { await bootOrRestoreGeneral(forceNew: false) }
                     }
                 }
             }
@@ -42,21 +42,29 @@ struct ChatRootView: View {
         .task {
             if UserDefaults.standard.bool(forKey: "intent.requestNewChat") {
                 UserDefaults.standard.set(false, forKey: "intent.requestNewChat")
-                await bootNewConversation()
+                await bootOrRestoreGeneral(forceNew: true)
             } else if let req = nav.chatContextRequest {
                 await openContextChat(req)
             } else if conversation == nil {
-                await bootNewConversation()
+                await bootOrRestoreGeneral(forceNew: false)
             }
         }
         .sheet(isPresented: $showSwitcher) {
             ConversationSwitcherSheet(
                 activeId: conversation?.id,
                 onSelect: { selected in
+                    ConversationSessionStore.save(
+                        conversationId: selected.id,
+                        scope: .general
+                    )
                     conversation = selected
                     showSwitcher = false
                 },
                 onCreated: { created in
+                    ConversationSessionStore.save(
+                        conversationId: created.id,
+                        scope: .general
+                    )
                     conversation = created
                     showSwitcher = false
                 }
@@ -69,7 +77,7 @@ struct ChatRootView: View {
             guard let id else { return }
             if id == "__new__" {
                 nav.openConversationId = nil
-                Task { await bootNewConversation() }
+                Task { await bootOrRestoreGeneral(forceNew: true) }
                 return
             }
             Task { await openExisting(id: id) }
@@ -80,12 +88,43 @@ struct ChatRootView: View {
         }
     }
 
-    private func bootNewConversation() async {
+    /// Restaure la conversation générale active, ou en crée une si absente / `forceNew`.
+    private func bootOrRestoreGeneral(forceNew: Bool) async {
         booting = true
         bootError = nil
         defer { booting = false }
         do {
-            conversation = try await client.createConversation(scope: .general)
+            if forceNew {
+                if let old = conversation?.id {
+                    ConversationSessionStore.clear(
+                        conversationId: old,
+                        scope: .general
+                    )
+                } else {
+                    ConversationSessionStore.clear(scope: .general)
+                }
+                let created = try await client.createConversation(scope: .general)
+                ConversationSessionStore.save(conversationId: created.id, scope: .general)
+                conversation = created
+                return
+            }
+            if let existing = ConversationSessionStore.conversationId(scope: .general) {
+                let list = try await client.listConversations(scope: .general)
+                if let match = list.first(where: { $0.id == existing }) {
+                    conversation = match
+                    return
+                }
+            }
+            // Dernière conversation récente plutôt qu'un vide systématique
+            let list = try await client.listConversations(scope: .general)
+            if let recent = list.first {
+                ConversationSessionStore.save(conversationId: recent.id, scope: .general)
+                conversation = recent
+                return
+            }
+            let created = try await client.createConversation(scope: .general)
+            ConversationSessionStore.save(conversationId: created.id, scope: .general)
+            conversation = created
         } catch {
             bootError = error.localizedDescription
             conversation = nil
@@ -99,6 +138,7 @@ struct ChatRootView: View {
         do {
             let list = try await client.listConversations(scope: .general)
             if let match = list.first(where: { $0.id == id }) {
+                ConversationSessionStore.save(conversationId: match.id, scope: .general)
                 conversation = match
             }
             nav.openConversationId = nil
@@ -113,8 +153,12 @@ struct ChatRootView: View {
         case .mail:
             nav.openMailAssistant(.thread(threadId: req.key, subject: req.title, from: nil))
         case .file:
-            nav.openFilesAssistant(
-                .file(fileId: req.key, name: req.title, rootId: "", path: "")
+            // Plus d’assistant Files UI — deep-link vers le fichier / recherche.
+            nav.openFilePreview(
+                fileId: req.key,
+                fileName: req.title,
+                rootId: nil,
+                folderPath: nil
             )
         }
     }
@@ -341,6 +385,7 @@ struct ConversationSwitcherSheet: View {
     private func create() async {
         do {
             let created = try await client.createConversation(scope: .general)
+            ConversationSessionStore.save(conversationId: created.id, scope: .general)
             items.insert(created, at: 0)
             onCreated(created)
         } catch {

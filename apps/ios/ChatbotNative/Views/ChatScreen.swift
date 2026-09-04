@@ -100,7 +100,7 @@ struct ChatScreen: View {
         ZStack {
             AmbientBackground()
             VStack(spacing: 0) {
-                if let scope = forcedScope {
+                if let scope = forcedScope, scope == .mail {
                     PersistentProductActionsBar(
                         scope: scope,
                         hasMailThread: forcedActiveContext?.mailThreadId != nil,
@@ -200,6 +200,7 @@ struct ChatScreen: View {
             conversationTitle = conversation.title ?? ""
             chatMode = conversation.chatMode ?? "chat"
             reasoningEffort = conversation.reasoningEffort ?? ""
+            chromeById = ConversationSessionStore.chrome(for: conversation.id)
             await loadMessages()
             await loadSettings()
             await refreshRuntimeStatus()
@@ -860,6 +861,18 @@ struct ChatScreen: View {
         do {
             let server = try await client.listMessages(conversationId: conversation.id)
             messages = mergeMessages(local: messages, server: server, preserveAssistantId: preserveAssistantId)
+            if let preserveAssistantId {
+                chromeById = ConversationSessionStore.remountChrome(
+                    conversationId: conversation.id,
+                    from: preserveAssistantId,
+                    onto: messages
+                )
+            } else {
+                let stored = ConversationSessionStore.chrome(for: conversation.id)
+                if !stored.isEmpty {
+                    chromeById = stored
+                }
+            }
             error = nil
             let ids = messages.flatMap { $0.attachments ?? [] }
                 .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
@@ -1324,11 +1337,9 @@ struct ChatScreen: View {
             lastMailHandoff = streamMailHandoff
             lastFilesHandoff = streamFilesHandoff
             let finalFound = streamFilesFound
-            var finalText = streamingText
-            // Résultat structuré = principal : pas de double narration.
-            if suppressAssistantNarration || !finalFound.isEmpty {
-                finalText = ""
-            }
+            // Garder le texte streamé : MessageBubble masque la narration fichier redondante.
+            // Vider ici provoquait un flash (vide ~1s pendant loadMessages, puis réapparition).
+            let finalText = streamingText
             let finalSources = streamSources
             let finalMail = streamMailHandoff
             let finalFiles = streamFilesHandoff
@@ -1340,35 +1351,53 @@ struct ChatScreen: View {
                         id: promoteId,
                         role: "assistant",
                         content: finalText,
-                        createdAt: messages[idx].createdAt
+                        createdAt: messages[idx].createdAt,
+                        attachments: messages[idx].attachments
                     )
                 } else {
                     messages.append(
                         MessageDTO(id: promoteId, role: "assistant", content: finalText, createdAt: nil)
                     )
                 }
-                chromeById[promoteId] = MessageChromeMeta(
+                let meta = MessageChromeMeta(
                     sources: finalSources,
                     mailHandoff: finalMail,
                     filesHandoff: finalFiles,
                     filesFound: finalFound
                 )
+                chromeById[promoteId] = meta
+                ConversationSessionStore.setChrome(
+                    meta,
+                    conversationId: conversation.id,
+                    messageId: promoteId
+                )
             }
             streamingText = ""
             suppressAssistantNarration = false
-            await loadMessages(preserveAssistantId: promoteId)
-            if let last = messages.last(where: { $0.role == "assistant" }),
-               !finalSources.isEmpty || finalMail != nil || finalFiles != nil || !finalFound.isEmpty {
-                if chromeById[last.id] == nil {
-                    chromeById[last.id] = MessageChromeMeta(
-                        sources: finalSources,
-                        mailHandoff: finalMail,
-                        filesHandoff: finalFiles,
-                        filesFound: finalFound
+            // ID serveur déjà stable (assistant_start) : sync soft sans remplacer l’identité ForEach.
+            if streamingAssistantId != nil {
+                streamingAssistantId = nil
+                scrollToken += 1
+                Task {
+                    contextSnapshot = try? await client.conversationContext(conversationId: conversation.id)
+                }
+            } else {
+                await loadMessages(preserveAssistantId: promoteId)
+                if let last = messages.last(where: { $0.role == "assistant" }) {
+                    var meta = chromeById[last.id] ?? MessageChromeMeta()
+                    if meta.sources.isEmpty { meta.sources = finalSources }
+                    if meta.mailHandoff == nil { meta.mailHandoff = finalMail }
+                    if meta.filesHandoff == nil { meta.filesHandoff = finalFiles }
+                    if meta.filesFound.isEmpty { meta.filesFound = finalFound }
+                    chromeById[last.id] = meta
+                    ConversationSessionStore.setChrome(
+                        meta,
+                        conversationId: conversation.id,
+                        messageId: last.id
                     )
                 }
+                scrollToken += 1
             }
-            scrollToken += 1
         } catch is CancellationError {
             thinkingKind = nil
         } catch {
@@ -1659,12 +1688,17 @@ struct ChatScreen: View {
                 streamFilesFound = parsed
                 if !parsed.isEmpty {
                     suppressAssistantNarration = true
-                    streamingText = ""
+                    // Ne pas vider streamingText ici — provoque un flash « disparaît / réapparaît ».
                 }
                 if let id = streamingAssistantId {
                     var chrome = chromeById[id] ?? MessageChromeMeta()
                     chrome.filesFound = parsed
                     chromeById[id] = chrome
+                    ConversationSessionStore.mergeChrome(
+                        chrome,
+                        conversationId: conversation.id,
+                        messageId: id
+                    )
                 }
             }
         case "draft_preview":

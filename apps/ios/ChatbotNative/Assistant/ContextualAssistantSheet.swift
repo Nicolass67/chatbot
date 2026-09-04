@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Sheet Assistant in-place (Mail / Files) — conserve l’écran hôte derrière.
+/// Sheet Assistant in-place (Mail) — conserve l’écran hôte derrière.
+/// Conversation persistante : fermer ≠ recréer (sauf « Nouvelle conversation »).
 struct ContextualAssistantSheet: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
@@ -18,6 +19,12 @@ struct ContextualAssistantSheet: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var contextKey: String {
+        contextRef.mailThreadId
+            ?? contextRef.fileId
+            ?? ConversationSessionStore.globalContextKey
     }
 
     var body: some View {
@@ -71,6 +78,11 @@ struct ContextualAssistantSheet: View {
                     scope: scope,
                     activeId: conversation?.id,
                     onSelect: { conv in
+                        ConversationSessionStore.save(
+                            conversationId: conv.id,
+                            scope: scope,
+                            contextKey: contextKey
+                        )
                         conversation = conv
                         showHistory = false
                     },
@@ -112,40 +124,31 @@ struct ContextualAssistantSheet: View {
         booting = true
         defer { booting = false }
         do {
-            if let key = contextRef.mailThreadId ?? contextRef.fileId {
-                let storageKind: ChatContextRequest.Kind = scope == .mail ? .mail : .file
-                let req = ChatContextRequest(
-                    kind: storageKind,
-                    key: key,
-                    title: title,
-                    prefill: "",
-                    forcePrefill: false
-                )
-                if let existing = ContextualChatStore.conversationId(for: req) {
-                    let all = try await client.listConversations(scope: scope)
-                    if let match = all.first(where: { $0.id == existing }) {
-                        conversation = match
-                        error = nil
-                        return
-                    }
+            if let existing = ConversationSessionStore.conversationId(
+                scope: scope,
+                contextKey: contextKey
+            ) {
+                let all = try await client.listConversations(scope: scope)
+                if let match = all.first(where: { $0.id == existing }) {
+                    conversation = match
+                    error = nil
+                    return
                 }
-                let created = try await client.createConversation(
-                    scope: scope,
-                    contextKey: key,
-                    contextLabel: contextLabel,
-                    title: title
-                )
-                ContextualChatStore.save(conversationId: created.id, for: req)
-                conversation = created
-            } else {
-                let created = try await client.createConversation(
-                    scope: scope,
-                    contextKey: nil,
-                    contextLabel: contextLabel,
-                    title: title
-                )
-                conversation = created
             }
+            let created = try await client.createConversation(
+                scope: scope,
+                contextKey: contextKey == ConversationSessionStore.globalContextKey
+                    ? nil
+                    : contextKey,
+                contextLabel: contextLabel,
+                title: title
+            )
+            ConversationSessionStore.save(
+                conversationId: created.id,
+                scope: scope,
+                contextKey: contextKey
+            )
+            conversation = created
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -154,19 +157,28 @@ struct ContextualAssistantSheet: View {
 
     private func createFresh() async {
         do {
+            if let old = conversation?.id {
+                ConversationSessionStore.clear(
+                    conversationId: old,
+                    scope: scope,
+                    contextKey: contextKey
+                )
+            } else {
+                ConversationSessionStore.clear(scope: scope, contextKey: contextKey)
+            }
             let created = try await client.createConversation(
                 scope: scope,
-                contextKey: contextRef.mailThreadId ?? contextRef.fileId,
+                contextKey: contextKey == ConversationSessionStore.globalContextKey
+                    ? nil
+                    : contextKey,
                 contextLabel: contextLabel,
                 title: title
             )
-            if let key = contextRef.mailThreadId ?? contextRef.fileId {
-                let storageKind: ChatContextRequest.Kind = scope == .mail ? .mail : .file
-                ContextualChatStore.save(
-                    conversationId: created.id,
-                    for: ChatContextRequest(kind: storageKind, key: key, title: title, prefill: "")
-                )
-            }
+            ConversationSessionStore.save(
+                conversationId: created.id,
+                scope: scope,
+                contextKey: contextKey
+            )
             conversation = created
         } catch {
             self.error = error.localizedDescription

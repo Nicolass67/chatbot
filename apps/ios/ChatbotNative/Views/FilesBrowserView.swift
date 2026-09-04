@@ -38,8 +38,6 @@ struct FilesBrowserView: View {
     @State private var searchQuery = ""
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
-    @State private var showAssistant = false
-    @State private var assistantContext = FilesAssistantContext.global
     @State private var pendingDeepLink: FilesDeepLink?
 
     private var client: APIClient {
@@ -51,11 +49,6 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 content
-                ContextualAssistantButton {
-                    assistantContext = .global
-                    showAssistant = true
-                }
-                .accessibilityIdentifier(A11yID.Files.assistant)
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
@@ -89,10 +82,10 @@ struct FilesBrowserView: View {
                 nav.filesDeepLink = nil
             }
             .onChange(of: nav.presentFilesAssistant) { _, present in
+                // Assistant Files UI retiré — deep-link vers recherche / racine.
                 if present {
-                    assistantContext = nav.filesAssistantContext
-                    showAssistant = true
                     nav.presentFilesAssistant = false
+                    selectedTabStayOnFiles()
                 }
             }
             .onChange(of: nav.qaIntent) { _, intent in
@@ -111,15 +104,11 @@ struct FilesBrowserView: View {
                 case .filesNested:
                     if let root = roots.first {
                         path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Root"))
-                        // Nested drill-in requires folder listing — UI tests / HID handle deeper levels.
                     }
                     nav.qaIntent = nil
                 case .filesFile:
-                    // Prefers search hit / first file once a folder is open — intent marks request.
                     nav.qaIntent = nil
                 case .filesAssistant:
-                    assistantContext = .global
-                    showAssistant = true
                     nav.qaIntent = nil
                 default:
                     break
@@ -130,24 +119,15 @@ struct FilesBrowserView: View {
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
             }
-            .sheet(isPresented: $showAssistant) {
-                ContextualAssistantSheet(
-                    scope: .files,
-                    title: assistantContext.sheetTitle,
-                    contextLabel: assistantContext.label,
-                    contextRef: assistantContext.ref
-                )
-                .environmentObject(session)
-                .environment(nav)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
         }
+    }
+
+    private func selectedTabStayOnFiles() {
+        // no-op : reste sur l’onglet Files sans ouvrir d’assistant
     }
 
     /// Navigation exacte : preview fichier, dossier parent, ou recherche.
     private func applyFilesDeepLink(_ link: FilesDeepLink) {
-        showAssistant = false
         switch link.intent {
         case .search:
             if let q = link.query, !q.isEmpty {
@@ -244,10 +224,6 @@ struct FilesBrowserView: View {
                                 folderPath: folderPath
                             )
                         )
-                    },
-                    onAskAssistant: {
-                        assistantContext = .folder(rootId: root.id, path: folderPath, title: title)
-                        showAssistant = true
                     }
                 )
             } else {
@@ -257,15 +233,8 @@ struct FilesBrowserView: View {
                     message: "Cette racine n’est plus disponible."
                 )
             }
-        case .file(let fileId, let title, let rootId, let folderPath):
-            FilePreviewView(
-                fileId: fileId,
-                title: title,
-                onAskAssistant: {
-                    assistantContext = .file(fileId: fileId, name: title, rootId: rootId, path: folderPath)
-                    showAssistant = true
-                }
-            )
+        case .file(let fileId, let title, _, _):
+            FilePreviewView(fileId: fileId, title: title)
         }
     }
 
@@ -424,7 +393,6 @@ struct FileFolderView: View {
     let title: String
     var onOpenFolder: (FileEntryDTO) -> Void
     var onOpenFile: (FileEntryDTO) -> Void
-    var onAskAssistant: () -> Void
 
     @State private var entries: [FileEntryDTO] = []
     @State private var loading = true
@@ -499,7 +467,6 @@ struct FileFolderView: View {
                     list
                 }
             }
-            ContextualAssistantButton(action: onAskAssistant)
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -808,7 +775,6 @@ struct FilePreviewView: View {
     @EnvironmentObject private var session: AppSessionStore
     let fileId: String
     let title: String
-    var onAskAssistant: (() -> Void)? = nil
 
     @State private var content: FileContentDTO?
     @State private var image: UIImage?
@@ -868,28 +834,15 @@ struct FilePreviewView: View {
                     SoftEmptyState(
                         systemImage: "doc",
                         title: "Aperçu indisponible",
-                        message: "Ce type de fichier n’a pas d’aperçu natif — utilise Partager ou Demander."
+                        message: "Ce type de fichier n’a pas d’aperçu natif — utilise Partager."
                     )
                 }
-            }
-            if let onAskAssistant {
-                ContextualAssistantButton(action: onAskAssistant)
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if let onAskAssistant {
-                    Button {
-                        AppHaptics.light()
-                        onAskAssistant()
-                    } label: {
-                        Image(systemName: "sparkles")
-                    }
-                    .accessibilityLabel("Assistant Files")
-                    .accessibilityIdentifier(A11yID.Files.assistant)
-                }
                 if let shareURL {
                     ShareLink(item: shareURL) {
                         Image(systemName: "square.and.arrow.up")

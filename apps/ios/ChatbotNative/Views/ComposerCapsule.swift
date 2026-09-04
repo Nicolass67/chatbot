@@ -409,14 +409,18 @@ struct PersistentProductActionsBar: View {
             ]
         }
         return [
-            (.searchUnread, "Explorer", "folder"),
+            // Pas d’action « Explorer » — Files est déjà l’explorateur natif.
         ]
     }
 
     var body: some View {
+        let items = actions
+        if items.isEmpty {
+            EmptyView()
+        } else {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(actions, id: \.0) { item in
+                ForEach(items, id: \.0) { item in
                     Button {
                         AppHaptics.light()
                         onAction(item.0)
@@ -448,6 +452,7 @@ struct PersistentProductActionsBar: View {
                 .frame(height: 0.5)
         }
         .accessibilityIdentifier("assistant.productActions")
+        }
     }
 }
 

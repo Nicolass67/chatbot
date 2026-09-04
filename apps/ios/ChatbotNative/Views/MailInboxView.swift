@@ -17,6 +17,7 @@ struct MailInboxView: View {
     @State private var showAssistant = false
     @State private var assistantContext: MailAssistantContext = .global
     @State private var sheetContext: MailAssistantContext = .global
+    @State private var assistantDetent: PresentationDetent = .large
 
     private let categories: [(id: String, label: String)] = [
         ("primary", "Principal"),
@@ -34,6 +35,7 @@ struct MailInboxView: View {
     private func openMailAssistant(_ context: MailAssistantContext) {
         assistantContext = context
         sheetContext = context
+        assistantDetent = .large
         showAssistant = true
     }
 
@@ -135,8 +137,12 @@ struct MailInboxView: View {
                 )
                 .environmentObject(session)
                 .environment(nav)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.medium, .large], selection: $assistantDetent)
                 .presentationDragIndicator(.visible)
+                .onAppear { assistantDetent = .large }
+            }
+            .onChange(of: showAssistant) { _, presented in
+                if presented { assistantDetent = .large }
             }
             .alert(
                 "Mettre à la corbeille ?",
@@ -438,6 +444,7 @@ struct MailThreadView: View {
     @State private var draftStreaming = false
     @State private var trashing = false
     @State private var showAssistant = false
+    @State private var assistantDetent: PresentationDetent = .large
     @State private var confirmSend = false
     @State private var sendStatus: String?
 
@@ -476,6 +483,7 @@ struct MailThreadView: View {
                 }
             }
             ContextualAssistantButton {
+                assistantDetent = .large
                 showAssistant = true
             }
         }
@@ -496,8 +504,12 @@ struct MailThreadView: View {
             )
             .environmentObject(session)
             .environment(nav)
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $assistantDetent)
             .presentationDragIndicator(.visible)
+            .onAppear { assistantDetent = .large }
+        }
+        .onChange(of: showAssistant) { _, presented in
+            if presented { assistantDetent = .large }
         }
         .alert(
             "Envoyer cette réponse à \(summary.from?.email ?? "destinataire") ?",
@@ -586,6 +598,7 @@ struct MailThreadView: View {
             .disabled(aiBusy)
             .accessibilityIdentifier(A11yID.Mail.reply)
             Button {
+                assistantDetent = .large
                 showAssistant = true
             } label: {
                 Label("Assistant", systemImage: "sparkles")
