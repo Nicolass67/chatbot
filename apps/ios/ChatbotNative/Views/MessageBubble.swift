@@ -145,10 +145,6 @@ struct MessageBubble: View {
     }
 }
 
-private extension AppTheme {
-    static let space10: CGFloat = 10
-}
-
 struct HandoffBanner: View {
     let title: String
     let subtitle: String

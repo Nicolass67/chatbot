@@ -802,18 +802,18 @@ struct FilePreviewView: View {
                 } else if let text = content?.text {
                     ScrollView {
                         Text(text)
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(CNFont.mono)
                             .foregroundStyle(AppTheme.foreground)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
+                            .padding(AppTheme.space16)
                             .textSelection(.enabled)
                     }
                     .background(AppTheme.codeBg.opacity(0.55))
                     if content?.truncated == true {
                         Text("Aperçu tronqué")
-                            .font(.caption2)
+                            .font(CNFont.caption2)
                             .foregroundStyle(AppTheme.muted)
-                            .padding(.bottom, 8)
+                            .padding(.bottom, AppTheme.space8)
                     }
                 } else if let pdfURL {
                     QuickLookPreview(url: pdfURL)
