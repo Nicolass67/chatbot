@@ -181,7 +181,7 @@ struct MainTabView: View {
                 .environmentObject(session)
                 .environmentObject(appearance)
                 .environment(nav)
-                .preferredColorScheme(appearance.mode.preferredColorScheme)
+                .chatbotSheetAppearance(appearance.mode)
                 .id(appearance.mode)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)

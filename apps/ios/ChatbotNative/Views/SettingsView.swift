@@ -62,7 +62,7 @@ struct SettingsView: View {
                 NavigationStack { settingsContent }
             }
         }
-        .preferredColorScheme(appearance.mode.preferredColorScheme)
+        .chatbotSheetAppearance(appearance.mode)
         .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
         .id(appearance.mode)
     }
