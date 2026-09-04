@@ -118,7 +118,7 @@ struct AmbientBackground: View {
             AppTheme.background
             RadialGradient(
                 colors: [
-                    AppTheme.accent.opacity(scheme == .dark ? 0.10 : 0.06),
+                    AppTheme.accent.opacity(scheme == .dark ? 0.10 : 0.09),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.88, y: 0.02),
@@ -127,7 +127,7 @@ struct AmbientBackground: View {
             )
             RadialGradient(
                 colors: [
-                    AppTheme.ambientWarm.opacity(scheme == .dark ? 0.05 : 0.04),
+                    AppTheme.ambientWarm.opacity(scheme == .dark ? 0.05 : 0.07),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.08, y: 0.95),

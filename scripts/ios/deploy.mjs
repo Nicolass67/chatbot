@@ -78,6 +78,18 @@ function gitSha() {
   return sh("git", ["rev-parse", "HEAD"]).stdout.trim();
 }
 
+/** Normalise short/long SHA → full 40-char (gh --commit exige souvent le full). */
+function resolveSha(input) {
+  const raw = (input || "").trim();
+  if (!raw) return gitSha();
+  if (/^[0-9a-f]{40}$/i.test(raw)) return raw.toLowerCase();
+  try {
+    return sh("git", ["rev-parse", "--verify", raw]).stdout.trim().toLowerCase();
+  } catch {
+    return raw.toLowerCase();
+  }
+}
+
 function gitBranch() {
   try {
     return sh("git", ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
@@ -189,14 +201,14 @@ function verifyMeta(expectedSha) {
 
 async function cmdFastBuild({ sha, ref, force = false }) {
   ensureGh();
-  const expectSha = sha || gitSha();
+  const expectSha = resolveSha(sha);
   const branch = ref || gitBranch();
   console.log(`[ios:deploy] Fast QA for SHA ${expectSha} (ref ${branch})${force ? " [force]" : ""}`);
 
   let run = force ? null : findRunForSha(expectSha);
   if (force || !run || (run.status === "completed" && run.conclusion !== "success")) {
     triggerWorkflow(branch);
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 90; i++) {
       sleep(2000);
       const json = sh("gh", [
         "run",
@@ -249,7 +261,7 @@ async function cmdFastBuild({ sha, ref, force = false }) {
 
 async function cmdDownload({ sha, runId }) {
   ensureGh();
-  const expectSha = sha || gitSha();
+  const expectSha = resolveSha(sha);
   let id = runId;
   if (!id) {
     const run = findRunForSha(expectSha, { preferInProgress: false });
@@ -284,7 +296,7 @@ async function cmdDeploy(opts) {
     if (!fs.existsSync(ipaPath) || !fs.existsSync(metaPath)) {
       await cmdDownload(opts);
     } else {
-      verifyMeta(opts.sha || gitSha());
+      verifyMeta(resolveSha(opts.sha));
     }
   }
 

@@ -103,7 +103,7 @@ struct MessageBubble: View {
                     style: .continuous
                 )
                 .stroke(
-                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.borderSubtle,
+                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.accent.opacity(0.18),
                     lineWidth: isEditing ? 1.5 : 1
                 )
             )
