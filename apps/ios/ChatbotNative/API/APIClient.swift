@@ -1195,6 +1195,19 @@ struct MailMessageSummary: Identifiable, Codable, Hashable {
     let date: String?
     let isUnread: Bool?
     let hasAttachments: Bool?
+
+    func withUnread(_ value: Bool) -> MailMessageSummary {
+        MailMessageSummary(
+            id: id,
+            threadId: threadId,
+            from: from,
+            subject: subject,
+            snippet: snippet,
+            date: date,
+            isUnread: value,
+            hasAttachments: hasAttachments
+        )
+    }
 }
 
 struct MailMessagesPage: Codable, Hashable {

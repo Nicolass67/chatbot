@@ -353,21 +353,21 @@ struct MailInboxView: View {
                 showAssistant = false
             }
             .alert(
-                "Mettre à la corbeille ?",
+                "Supprimer ce mail ?",
                 isPresented: Binding(
                     get: { trashTarget != nil },
                     set: { if !$0 { trashTarget = nil } }
                 )
             ) {
                 Button("Annuler", role: .cancel) { trashTarget = nil }
-                Button("Corbeille", role: .destructive) {
+                Button("Supprimer", role: .destructive) {
                     if let target = trashTarget {
                         Task { await trashMessage(target) }
                     }
                     trashTarget = nil
                 }
             } message: {
-                Text(trashTarget?.subject ?? "Ce message sera proposé à la suppression (confirmation serveur).")
+                Text(trashTarget?.subject ?? "Le message sera mis à la corbeille.")
             }
         }
     }
@@ -541,11 +541,14 @@ struct MailInboxView: View {
                     .listRowBackground(AppTheme.surface.opacity(0.55))
                     .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
+                        // Pas de role .destructive ici : sinon la List retire la ligne
+                        // dès le tap (avant la confirmation) puis la fait réapparaître.
+                        Button {
                             trashTarget = msg
                         } label: {
-                            Label("Corbeille", systemImage: "trash")
+                            Label("Supprimer", systemImage: "trash")
                         }
+                        .tint(AppTheme.danger)
                     }
                     .swipeActions(edge: .leading) {
                         if msg.isUnread == true {
@@ -763,26 +766,81 @@ struct MailInboxView: View {
         return error.localizedDescription
     }
 
+    /// Retire un mail de la liste affichée + fenêtre triée (sans recharger).
+    private func removeMessageLocally(_ id: String) -> (messageIndex: Int?, windowIndex: Int?) {
+        let messageIndex = messages.firstIndex(where: { $0.id == id })
+        let windowIndex = sortedWindow.firstIndex(where: { $0.id == id })
+        messages.removeAll { $0.id == id }
+        sortedWindow.removeAll { $0.id == id }
+        persistMailCache()
+        return (messageIndex, windowIndex)
+    }
+
+    private func restoreMessageLocally(
+        _ msg: MailMessageSummary,
+        messageIndex: Int?,
+        windowIndex: Int?
+    ) {
+        if !messages.contains(where: { $0.id == msg.id }) {
+            let idx = min(messageIndex ?? 0, messages.count)
+            messages.insert(msg, at: idx)
+        }
+        if !sortedWindow.contains(where: { $0.id == msg.id }) {
+            let idx = min(windowIndex ?? 0, sortedWindow.count)
+            sortedWindow.insert(msg, at: idx)
+        }
+        persistMailCache()
+    }
+
+    private func applyLocalRead(_ id: String) {
+        if unreadOnly {
+            _ = removeMessageLocally(id)
+            return
+        }
+        if let i = messages.firstIndex(where: { $0.id == id }) {
+            messages[i] = messages[i].withUnread(false)
+        }
+        if let i = sortedWindow.firstIndex(where: { $0.id == id }) {
+            sortedWindow[i] = sortedWindow[i].withUnread(false)
+        }
+        persistMailCache()
+    }
+
     private func trashMessage(_ msg: MailMessageSummary) async {
+        // UX : disparition immédiate ; propose+confirm serveur en arrière-plan.
+        let indices = removeMessageLocally(msg.id)
+        AppHaptics.warning()
         do {
             let proposal = try await client.proposeMailTrash(messageId: msg.id)
             try await client.confirmMailTrash(
                 actionId: proposal.actionId,
                 confirmationToken: proposal.confirmationToken
             )
-            AppHaptics.warning()
-            messages.removeAll { $0.id == msg.id }
         } catch {
+            restoreMessageLocally(msg, messageIndex: indices.messageIndex, windowIndex: indices.windowIndex)
             self.error = error.localizedDescription
+            AppHaptics.warning()
         }
     }
 
     private func markRead(_ msg: MailMessageSummary) async {
+        applyLocalRead(msg.id)
+        AppHaptics.light()
         do {
             try await client.markMailRead(id: msg.id)
-            AppHaptics.light()
-            scheduleLoad()
         } catch {
+            // Restaure l’état non-lu sans refresh liste.
+            if unreadOnly {
+                restoreMessageLocally(msg, messageIndex: 0, windowIndex: 0)
+            } else {
+                if let i = messages.firstIndex(where: { $0.id == msg.id }) {
+                    messages[i] = messages[i].withUnread(true)
+                }
+                if let i = sortedWindow.firstIndex(where: { $0.id == msg.id }) {
+                    sortedWindow[i] = sortedWindow[i].withUnread(true)
+                }
+                persistMailCache()
+            }
             self.error = error.localizedDescription
         }
     }
