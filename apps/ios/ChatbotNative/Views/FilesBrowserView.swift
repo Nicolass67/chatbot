@@ -246,8 +246,7 @@ struct FilesBrowserView: View {
                         AppHaptics.light()
                     },
                     onDelete: { showDeleteConfirm = true },
-                    onClear: { selection.clear() },
-                    onDone: { selection.endSelecting() }
+                    onClear: { selection.clear() }
                 )
             }
         }
@@ -1603,7 +1602,7 @@ struct MkdirConfirmSheet: View {
     }
 }
 
-/// Barre d’actions multi-sélection Files (déplacer + mail + supprimer).
+/// Barre multi-sélection Files — dock compact (OK uniquement dans la nav du haut).
 private struct FilesMultiSelectBar: View {
     let count: Int
     let busy: Bool
@@ -1611,63 +1610,90 @@ private struct FilesMultiSelectBar: View {
     let onMail: () -> Void
     let onDelete: () -> Void
     let onClear: () -> Void
-    let onDone: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             Divider().overlay(AppTheme.borderSubtle)
-            VStack(spacing: 10) {
-                HStack {
-                    Button(action: onClear) {
-                        Text(count == 0 ? "Aucun sélectionné" : "\(count) sélectionné\(count > 1 ? "s" : "")")
-                            .font(CNFont.callout.weight(.semibold))
-                            .foregroundStyle(AppTheme.foreground)
+
+            HStack(alignment: .center, spacing: AppTheme.space12) {
+                Button(action: onClear) {
+                    HStack(spacing: 6) {
+                        Text("\(max(count, 0))")
+                            .font(CNFont.callout.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(AppTheme.accentForeground)
+                            .frame(minWidth: 22)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(AppTheme.filesAccent)
+                            )
+                        Text(count <= 1 ? "sélectionné" : "sélectionnés")
+                            .font(CNFont.caption.weight(.medium))
+                            .foregroundStyle(AppTheme.muted)
                     }
-                    .disabled(busy || count == 0)
-                    .accessibilityLabel(count == 0 ? "Aucun fichier sélectionné" : "\(count) sélectionnés, tout désélectionner")
-
-                    Spacer(minLength: 0)
-
-                    Button("OK", action: onDone)
-                        .font(CNFont.callout.weight(.semibold))
-                        .disabled(busy)
                 }
+                .buttonStyle(.plain)
+                .disabled(busy || count == 0)
+                .accessibilityLabel(
+                    count == 0
+                        ? "Aucun fichier sélectionné"
+                        : "\(count) sélectionnés, tout désélectionner"
+                )
+
+                Spacer(minLength: 8)
 
                 HStack(spacing: 8) {
-                    Button(action: onMove) {
-                        Label("Déplacer", systemImage: "folder")
-                            .font(CNFont.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.filesAccent)
-                    .disabled(busy || count == 0)
-
-                    Button(action: onMail) {
-                        Label("Mail", systemImage: "envelope.badge")
-                            .font(CNFont.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.mailAccent)
-                    .disabled(busy || count == 0)
-
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Supprimer", systemImage: "trash")
-                            .font(CNFont.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(busy || count == 0)
+                    multiSelectAction(
+                        title: "Déplacer",
+                        systemImage: "folder",
+                        tint: AppTheme.filesAccent,
+                        emphasized: true,
+                        action: onMove
+                    )
+                    multiSelectAction(
+                        title: "Mail",
+                        systemImage: "envelope",
+                        tint: AppTheme.mailAccent,
+                        emphasized: true,
+                        action: onMail
+                    )
+                    multiSelectAction(
+                        title: "Supprimer",
+                        systemImage: "trash",
+                        tint: AppTheme.danger,
+                        emphasized: false,
+                        action: onDelete
+                    )
                 }
+                .disabled(busy || count == 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
-            .background(.ultraThinMaterial)
+            .padding(.horizontal, AppTheme.space14)
+            .padding(.vertical, AppTheme.space10)
+            .opacity(busy ? 0.55 : 1)
         }
+        .background(.ultraThinMaterial)
+    }
+
+    private func multiSelectAction(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        emphasized: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(emphasized ? AppTheme.accentForeground : tint)
+                .frame(width: 40, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(emphasized ? tint : tint.opacity(0.16))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
