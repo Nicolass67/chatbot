@@ -1113,6 +1113,13 @@ struct FileIndexResult: Codable, Hashable {
     let skipped: Int?
     let purged: Bool?
     let ok: Bool?
+
+    init(indexed: Int? = nil, skipped: Int? = nil, purged: Bool? = nil, ok: Bool? = nil) {
+        self.indexed = indexed
+        self.skipped = skipped
+        self.purged = purged
+        self.ok = ok
+    }
 }
 
 struct MailThreadMessage: Identifiable, Codable, Hashable {
