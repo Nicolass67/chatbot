@@ -529,6 +529,9 @@ export async function runChatOrchestrator(
       }
     }
 
+    // PJ du tour courant → outils mail (auto-attach sur email_create_draft).
+    toolCtxBase.pendingAttachmentIds = pendingAttachments.map((a) => a.id);
+
     const imageCount = pendingAttachments.filter((a) => a.type === "image").length;
 
     if (imageCount > 0) {
@@ -708,6 +711,19 @@ export async function runChatOrchestrator(
         documentContext = documentContext.trim()
           ? `${documentContext}\n\n${instructions}`
           : instructions;
+      }
+      if (pendingAttachments.length > 0) {
+        const list = pendingAttachments
+          .map((a) => `- ${a.filename} (id=${a.id}, type=${a.type})`)
+          .join("\n");
+        const attachBlock = `<chat_attachments>
+Pièces jointes déjà fournies par l'utilisateur (NE PAS redemander) :
+${list}
+Elles seront attachées automatiquement au brouillon email_create_draft.
+</chat_attachments>`;
+        documentContext = documentContext.trim()
+          ? `${documentContext}\n\n${attachBlock}`
+          : attachBlock;
       }
     }
 

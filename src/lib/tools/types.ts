@@ -19,6 +19,8 @@ export interface ToolContext {
   runtimeLocation: ToolRuntimeLocation;
   /** Identifiant utilisateur (CF Access ou "local" en dev). */
   userId?: string;
+  /** PJ du message utilisateur courant — auto-attachées au brouillon mail. */
+  pendingAttachmentIds?: string[];
   /** Contexte policy optionnel (email OAuth, confirmation). */
   policyContext?: Partial<
     Omit<PolicyContext, "userId" | "conversationId">

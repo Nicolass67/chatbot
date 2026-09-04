@@ -44,11 +44,27 @@ export async function dbMessageToChatMessage(
   }
 
   const images = msgAttachments.filter((a) => a.type === "image");
+  const documents = msgAttachments.filter((a) => a.type !== "image");
+  // Les documents ne sont pas multimodaux : sans ce rappel, le LLM « ne voit » pas la PJ.
+  const attachmentNotice =
+    documents.length > 0
+      ? `\n\n[Pièces jointes du message : ${documents
+          .map((a) => `${a.filename} (id=${a.id})`)
+          .join(", ")}]`
+      : "";
+  const textWithAttachments = `${text || ""}${attachmentNotice}`.trim();
+
   if (images.length > 0) {
-    return buildMultimodalUserMessage(text, images);
+    return buildMultimodalUserMessage(
+      textWithAttachments || text || msg.content,
+      images
+    );
   }
 
-  return { role: "user", content: text || msg.content };
+  return {
+    role: "user",
+    content: textWithAttachments || msg.content,
+  };
 }
 
 export async function getConversationAttachments(

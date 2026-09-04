@@ -29,6 +29,13 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe("ID du message auquel répondre"),
+  /** IDs d’attachments chat ; sinon les PJ du message courant (ctx) sont auto-jointes. */
+  attachmentIds: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "IDs des pièces jointes du chat à attacher (sinon auto depuis le message)"
+    ),
 });
 
 export type EmailCreateDraftInput = z.infer<typeof inputSchema>;
@@ -36,7 +43,7 @@ export type EmailCreateDraftInput = z.infer<typeof inputSchema>;
 export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
   name: "email_create_draft",
   description:
-    "Crée un brouillon Gmail pour toute demande d'écrire ou d'envoyer un mail (y compris à soi-même). L'envoi réel se fait ensuite via confirmation utilisateur (bouton Envoyer) — pas via un autre outil.",
+    "Crée un brouillon Gmail pour toute demande d'écrire ou d'envoyer un mail (y compris à soi-même). Les pièces jointes déjà présentes dans le message chat sont attachées automatiquement. L'envoi réel se fait ensuite via confirmation utilisateur (bouton Envoyer) — pas via un autre outil.",
   inputSchema,
   preferredRuntime: "local",
   async execute(input, ctx) {
@@ -79,6 +86,15 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       referencesHeader,
     });
 
+    const attachmentIds = [
+      ...new Set(
+        [
+          ...(input.attachmentIds ?? []),
+          ...(ctx.pendingAttachmentIds ?? []),
+        ].filter(Boolean)
+      ),
+    ];
+
     const stored = await persistEmailDraft({
       userId,
       conversationId: ctx.conversationId,
@@ -91,14 +107,18 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       subject: input.subject,
       bodyText: input.bodyText,
       inReplyToMessageId: input.inReplyToMessageId ?? null,
+      attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
     });
 
     const preview = await toEmailDraftPreview(stored);
 
     return {
       ...preview,
+      attachedCount: attachmentIds.length,
       notice:
-        "Brouillon créé — l'envoi nécessite une validation explicite de l'utilisateur.",
+        attachmentIds.length > 0
+          ? `Brouillon créé avec ${attachmentIds.length} pièce(s) jointe(s) — validation Envoyer requise.`
+          : "Brouillon créé — l'envoi nécessite une validation explicite de l'utilisateur.",
     };
   },
 };
