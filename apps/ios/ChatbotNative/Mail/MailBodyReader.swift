@@ -248,7 +248,7 @@ struct MailAttachmentRow: View {
             previewItem = MailAttachmentPreviewItem(url: url, title: displayName)
             AppHaptics.light()
         } catch {
-            self.error = error.localizedDescription
+            self.error = Self.userFacingError(error)
         }
     }
 
@@ -260,7 +260,7 @@ struct MailAttachmentRow: View {
             NativeShare.present(url: url, title: displayName)
             AppHaptics.success()
         } catch {
-            self.error = error.localizedDescription
+            self.error = Self.userFacingError(error)
         }
     }
 
@@ -272,14 +272,58 @@ struct MailAttachmentRow: View {
             messageId: messageId,
             attachmentId: attachment.id
         )
-        let name = attachment.filename ?? "attachment.bin"
-        let safe = name.replacingOccurrences(of: "/", with: "_")
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mail-att", isDirectory: true)
+        // Les IDs Gmail font souvent plusieurs centaines de caractères — invalides
+        // comme nom de fichier iOS (limite ~255). On isole via un hash court.
+        let folder = Self.shortStableId(attachment.id)
+        let fileName = Self.safeFileName(attachment.filename)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mail-att", isDirectory: true)
+            .appendingPathComponent(folder, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("\(attachment.id)-\(safe)")
+        let url = dir.appendingPathComponent(fileName)
         try data.write(to: url, options: .atomic)
         localURL = url
         return url
+    }
+
+    /// Hash déterministe court (16 hex) — stable entre lancements, sans CryptoKit.
+    private static func shortStableId(_ id: String) -> String {
+        var hash: UInt64 = 5381
+        for byte in id.utf8 {
+            hash = ((hash &<< 5) &+ hash) &+ UInt64(byte)
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    /// Nom affichable / partageable, sans caractères de chemin, tronqué sous la limite FS.
+    private static func safeFileName(_ raw: String?) -> String {
+        var name = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { name = "attachment.bin" }
+        let invalid = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+            .union(.newlines)
+            .union(.controlCharacters)
+        name = name.components(separatedBy: invalid).joined(separator: "_")
+        let maxLen = 180
+        guard name.count > maxLen else { return name }
+        let ns = name as NSString
+        let ext = ns.pathExtension
+        let stem = ns.deletingPathExtension
+        if ext.isEmpty { return String(name.prefix(maxLen)) }
+        let budget = max(1, maxLen - ext.count - 1)
+        return "\(String(stem.prefix(budget))).\(ext)"
+    }
+
+    private static func userFacingError(_ error: Error) -> String {
+        let raw = error.localizedDescription
+        if raw.localizedCaseInsensitiveContains("file name")
+            || raw.localizedCaseInsensitiveContains("couldn't be saved")
+            || raw.localizedCaseInsensitiveContains("invalid") {
+            return "Impossible d’enregistrer la pièce jointe (nom de fichier invalide)."
+        }
+        if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Impossible d’ouvrir la pièce jointe. Réessaie."
+        }
+        return raw
     }
 }
 
