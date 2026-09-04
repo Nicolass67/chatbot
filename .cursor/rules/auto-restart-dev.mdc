@@ -1,13 +1,15 @@
 ---
-description: Relancer automatiquement le serveur de dev après des changements
+description: Relancer le serveur de dev Next uniquement si le backend/web runtime change
 alwaysApply: true
 ---
 
-# Relance automatique de l'app
+# Relance automatique du serveur de dev
 
-Après toute modification de code qui affecte l'UI, l'API ou le comportement runtime :
+**Ne s’applique pas** aux tâches 100 % iOS native (`apps/ios/ChatbotNative/**` seulement). Dans ce cas : pas de `npm run dev`, uniquement Flash IPA en fin de tâche si demandé.
 
-1. **Relancer le serveur de dev** sans attendre que l'utilisateur le demande.
+Après une modification de code qui affecte l’**API**, le **backend** ou le **runtime web** (pas l’UI iOS pure) :
+
+1. **Relancer le serveur de dev** sans attendre que l’utilisateur le demande.
 2. Utiliser `npm.cmd run dev` (pas `npm run dev` — PowerShell bloque les scripts).
 3. Avant de relancer : tuer le processus qui écoute sur le port **3000**.
 4. Lancer en **arrière-plan** et vérifier que le serveur répond (log « Ready » ou http://localhost:3000).
@@ -18,4 +20,4 @@ Commande PowerShell standard :
 Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { if ($_.OwningProcess -gt 0) { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } }; Start-Sleep -Seconds 2; Set-Location D:\Chatbot; npm.cmd run dev
 ```
 
-Ne pas demander à l'utilisateur s'il veut relancer — le faire systématiquement en fin de tâche.
+Ne pas demander à l’utilisateur s’il veut relancer — le faire systématiquement en fin de tâche **web/backend**.
