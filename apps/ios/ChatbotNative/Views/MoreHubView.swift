@@ -2,7 +2,6 @@ import SwiftUI
 
 /// Hub Réglages / Mémoire / À propos (ex-tab « Plus » — désormais sheet).
 struct SettingsHubView: View {
-    @EnvironmentObject private var appearance: AppearanceStore
     @Environment(AppNavigation.self) private var nav
     @State private var path = NavigationPath()
 
@@ -66,8 +65,7 @@ struct SettingsHubView: View {
                 MemoryListView()
             }
         }
-        .chatbotSheetAppearance(appearance.mode)
-        .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
+        // Clair/Sombre via fenêtre UIKit (AppearanceStore) — pas de remount ici.
     }
 }
 

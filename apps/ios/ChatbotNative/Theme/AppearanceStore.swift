@@ -87,22 +87,11 @@ private extension UIView {
 }
 
 extension View {
-    /// Apparence forcée pour le contenu d’une sheet (chaque bascule, pas seulement la 1ʳᵉ).
-    @ViewBuilder
+    /// Apparence sheet — chaîne de modifiers **fixe** (pas de `switch` ViewBuilder).
+    /// Le vrai basculement Clair/Sombre passe par `AppearanceStore.applyWindowInterfaceStyle`
+    /// pour éviter le remount de NavigationStack.
     func chatbotSheetAppearance(_ mode: AppAppearanceMode) -> some View {
-        switch mode {
-        case .system:
-            preferredColorScheme(nil)
-                .background(InterfaceStyleBridge(style: .unspecified))
-        case .light:
-            preferredColorScheme(.light)
-                .environment(\.colorScheme, .light)
-                .background(InterfaceStyleBridge(style: .light))
-        case .dark:
-            preferredColorScheme(.dark)
-                .environment(\.colorScheme, .dark)
-                .background(InterfaceStyleBridge(style: .dark))
-        }
+        background(InterfaceStyleBridge(style: mode.uiUserInterfaceStyle))
     }
 }
 
@@ -116,6 +105,9 @@ final class AppearanceStore: ObservableObject {
     @Published var mode: AppAppearanceMode {
         didSet {
             UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey)
+            // UIKit window : change Clair/Sombre sans remount SwiftUI (preferredColorScheme
+            // sur WindowGroup / sheet reconstruit parfois NavigationStack).
+            Self.applyWindowInterfaceStyle(mode.uiUserInterfaceStyle)
         }
     }
 
@@ -162,6 +154,24 @@ final class AppearanceStore: ObservableObject {
 
         isHydrating = false
         applyPaletteToBridge(bumpRevision: false)
+        Self.applyWindowInterfaceStyle(mode.uiUserInterfaceStyle)
+    }
+
+    /// Applique Clair/Sombre au niveau fenêtre — pas de reconstruction de hiérarchie SwiftUI.
+    static func applyWindowInterfaceStyle(_ style: UIUserInterfaceStyle) {
+        let apply = {
+            for scene in UIApplication.shared.connectedScenes {
+                guard let windowScene = scene as? UIWindowScene else { continue }
+                for window in windowScene.windows {
+                    window.overrideUserInterfaceStyle = style
+                }
+            }
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
+        }
     }
 
     var primarySwatch: ThemeColorSwatch { ThemePaletteCatalog.primary(id: primaryId) }

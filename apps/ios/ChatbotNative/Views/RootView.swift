@@ -183,10 +183,10 @@ struct MainTabView: View {
                 .environmentObject(appearance)
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
-                .chatbotSheetAppearance(appearance.mode)
+                // Bridge UIKit seulement — pas de preferredColorScheme ici (remount).
+                .background(InterfaceStyleBridge(style: appearance.mode.uiUserInterfaceStyle))
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                // Identité stable : ne pas remonter la sheet à chaque pastille.
                 .id("settings-hub")
         }
     }

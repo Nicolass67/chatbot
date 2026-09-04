@@ -14,11 +14,13 @@ struct ChatbotNativeApp: App {
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
                 .tint(AppTheme.accent)
-                .preferredColorScheme(appearance.mode.preferredColorScheme)
-                // Pas de `.id(themeRevision)` : ça détruisait toute la hiérarchie
-                // (sheet Réglages fermée/rouverte à chaque pastille).
+                // Style via `AppearanceStore.applyWindowInterfaceStyle` (UIKit) —
+                // `preferredColorScheme` sur WindowGroup remountait la sheet Réglages.
                 .onOpenURL { url in
                     handleDeepLink(url)
+                }
+                .onAppear {
+                    AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
                 }
         }
     }
