@@ -33,12 +33,58 @@ actor ChatStreamingService {
             return
         }
 
+        var lastTransient: Error?
+        // 502/503 = tunnel Cloudflare / PC momentanément injoignable après une grosse requête.
+        for attempt in 0..<3 {
+            guard myGeneration == generation else { return }
+            do {
+                try await streamOnce(
+                    baseURL: baseURL,
+                    token: token,
+                    conversationId: conversationId,
+                    message: message,
+                    options: options,
+                    myGeneration: myGeneration,
+                    onEvent: onEvent
+                )
+                return
+            } catch let APIClientError.http(code, detail) where code == 502 || code == 503 {
+                let message = Self.friendlyTransientMessage(code: code, detail: detail)
+                lastTransient = APIClientError.http(code, message)
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64(450_000_000) * UInt64(attempt + 1))
+                    continue
+                }
+                throw lastTransient!
+            }
+        }
+        throw lastTransient ?? APIClientError.http(503, Self.friendlyTransientMessage(code: 503, detail: nil))
+    }
+
+    private static func friendlyTransientMessage(code: Int, detail: String?) -> String {
+        let d = (detail ?? "").lowercased()
+        if d.contains("backend_offline") || d.contains("indisponible") {
+            return "Le PC est momentanément injoignable. Réessaie dans quelques secondes."
+        }
+        return "Connexion interrompue (HTTP \(code)). Réessaie."
+    }
+
+    private func streamOnce(
+        baseURL: URL,
+        token: String?,
+        conversationId: String,
+        message: String,
+        options: ChatSendOptions,
+        myGeneration: UInt64,
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+    ) async throws {
         var req = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("ios", forHTTPHeaderField: "X-Client")
         req.setValue("3.0.0", forHTTPHeaderField: "X-App-Version")
+        req.timeoutInterval = 120
         if let token {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -69,7 +115,20 @@ actor ChatStreamingService {
             throw APIClientError.unauthorized
         }
         if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw APIClientError.http(http.statusCode, "SSE failed")
+            var detail = "SSE failed"
+            var collected = Data()
+            for try await chunk in bytes {
+                collected.append(chunk)
+                if collected.count > 2048 { break }
+            }
+            if let obj = try? JSONSerialization.jsonObject(with: collected) as? [String: Any] {
+                if let err = obj["error"] as? String, !err.isEmpty {
+                    detail = err
+                } else if let message = obj["message"] as? String, !message.isEmpty {
+                    detail = message
+                }
+            }
+            throw APIClientError.http(http.statusCode, detail)
         }
 
         for try await line in bytes.lines {

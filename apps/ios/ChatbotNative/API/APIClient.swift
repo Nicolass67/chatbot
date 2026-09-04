@@ -104,7 +104,16 @@ enum APIClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unauthorized: return "Session expirée — reconnectez-vous."
-        case .http(let code, let body): return "HTTP \(code): \(body)"
+        case .http(let code, let body):
+            let lower = body.lowercased()
+            if (code == 502 || code == 503) &&
+                (lower.contains("backend_offline") || lower.contains("injoignable") || lower.contains("indisponible") || body == "SSE failed") {
+                return "Le PC est momentanément injoignable. Réessaie dans quelques secondes."
+            }
+            if body.isEmpty || body == "SSE failed" {
+                return "HTTP \(code)"
+            }
+            return body.hasPrefix("HTTP") ? body : "HTTP \(code): \(body)"
         case .decode: return "Réponse invalide"
         }
     }

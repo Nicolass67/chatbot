@@ -1743,19 +1743,50 @@ struct ChatScreen: View {
             }
         } catch is CancellationError {
             thinkingKind = nil
+            runtimeStatus = "READY"
         } catch {
+            thinkingKind = nil
+            if agentActivity.visible {
+                agentActivity.lastError = nil
+                agentActivity.completed = true
+                agentActivity.visible = false
+            }
             if Self.isUserCancellation(error) {
-                thinkingKind = nil
+                runtimeStatus = "READY"
             } else {
-                self.error = error.localizedDescription
+                self.error = friendlyChatSendError(error)
                 canRetrySend = true
                 if case APIClientError.unauthorized = error {
                     await session.logout()
+                }
+                await refreshRuntimeStatus()
+                if runtimeStatus.uppercased() == "BUSY" {
+                    runtimeStatus = "READY"
                 }
             }
         }
         isSending = false
         sendTask = nil
+    }
+
+    private func friendlyChatSendError(_ error: Error) -> String {
+        if case APIClientError.http(let code, let body) = error {
+            let lower = body.lowercased()
+            if code == 502 || code == 503 {
+                if lower.contains("backend_offline") || lower.contains("injoignable") || lower.contains("indisponible") {
+                    return "Le PC est momentanément injoignable. Réessaie dans quelques secondes."
+                }
+                return "Connexion interrompue. Réessaie — le serveur a eu un trou d’air."
+            }
+            if code >= 500 {
+                return "Le serveur a rencontré une erreur (HTTP \(code)). Réessaie."
+            }
+            if !body.isEmpty && body != "SSE failed" {
+                return body
+            }
+            return "HTTP \(code)"
+        }
+        return error.localizedDescription
     }
 
     /// Stop utilisateur / invalidate URLSession — pas une erreur à afficher.
