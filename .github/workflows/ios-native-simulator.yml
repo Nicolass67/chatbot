@@ -173,6 +173,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             -only-testing:ChatbotNativeUITests/SimulatorMVPUITests \
             -only-testing:ChatbotNativeUITests/MailReadabilityUITests \
+            -only-testing:ChatbotNativeUITests/ChatGateUITests \
             2>&1 | tee /tmp/xcodebuild-sim.log
           XC_STATUS=${PIPESTATUS[0]}
           set -e
@@ -215,6 +216,12 @@ jobs:
                   *mail-detail-text*) dest="mail-detail-text.png" ;;
                   *mail-summary*) dest="mail-summary.png" ;;
                   *files-root*) dest="files-root.png" ;;
+                  *chat-composer*) dest="chat-composer.png" ;;
+                  *chat-keyboard-dismissed*) dest="chat-keyboard-dismissed.png" ;;
+                  *chat-thinking*) dest="chat-thinking.png" ;;
+                  *chat-agent-error*) dest="chat-agent-error.png" ;;
+                  *chat-agent-stopped*) dest="chat-agent-stopped.png" ;;
+                  *chat-agent*) dest="chat-agent.png" ;;
                 esac
                 if [ -n "$dest" ]; then
                   cp -f "$f" "$DIR/$dest"
@@ -233,7 +240,18 @@ jobs:
           DIR="${{ github.workspace }}/artifacts/simulator"
           echo "## Screenshots" >> "$GITHUB_STEP_SUMMARY"
           ls -la "$DIR" || true
-          REQUIRED=(chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png)
+          REQUIRED=(
+            chat-empty.png
+            mail-inbox.png
+            mail-detail-html.png
+            mail-detail-text.png
+            mail-summary.png
+            files-root.png
+            chat-composer.png
+            chat-keyboard-dismissed.png
+            chat-thinking.png
+            chat-agent.png
+          )
           MISSING=0
           for f in "${REQUIRED[@]}"; do
             if [ -f "$DIR/$f" ]; then

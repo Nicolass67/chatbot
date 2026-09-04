@@ -8,7 +8,7 @@ struct MailBodyReader: View {
     let text: String?
     let snippet: String?
 
-    @State private var measuredHeight: CGFloat = 180
+    @State private var measuredHeight: CGFloat = 240
     @State private var showHTML = false
 
     private var trimmedHtml: String {
@@ -58,10 +58,16 @@ struct MailBodyReader: View {
                 }
             } else if !trimmedHtml.isEmpty {
                 contentModeCaption("Version HTML")
-                MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
-                    .frame(height: measuredHeight)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier(A11yID.Mail.bodyHtml)
+                // GeometryReader force une largeur réelle avant loadHTMLString (évite WKWebView blank).
+                GeometryReader { geo in
+                    MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
+                        .frame(width: max(geo.size.width, 1), height: measuredHeight)
+                }
+                .frame(height: measuredHeight)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier(A11yID.Mail.bodyHtml)
+                .accessibilityLabel("Version HTML")
+                .accessibilityValue(htmlA11yPlain)
 
                 if preferPlain {
                     Button {
@@ -97,6 +103,14 @@ struct MailBodyReader: View {
             .foregroundStyle(AppTheme.mutedForeground)
             .textCase(.uppercase)
             .tracking(0.4)
+    }
+
+    /// Texte dépouillé pour a11y / XCUITest (WKWebView n’expose pas toujours le DOM).
+    private var htmlA11yPlain: String {
+        var s = trimmedHtml
+        s = s.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

@@ -247,6 +247,7 @@ struct ChatToolsSheet: View {
                         Text("Agent").tag("agent")
                     }
                     .pickerStyle(.segmented)
+                    .accessibilityIdentifier("chat.mode.picker")
                     .listRowBackground(AppTheme.surface)
 
                     Toggle("Recherche web", isOn: Binding(

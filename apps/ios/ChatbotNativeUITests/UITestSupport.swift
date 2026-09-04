@@ -27,9 +27,12 @@ enum UITestA11y {
 }
 
 extension XCUIApplication {
-    func launchForUITesting(extraArgs: [String] = []) {
+    func launchForUITesting(extraArgs: [String] = [], sseScenario: String? = nil) {
         launchArguments += ["-UITesting"] + extraArgs
         launchEnvironment["CHATBOT_UI_TESTING"] = "1"
+        if let sseScenario, !sseScenario.isEmpty {
+            launchEnvironment["CHATBOT_UI_SSE_SCENARIO"] = sseScenario
+        }
         launch()
     }
 

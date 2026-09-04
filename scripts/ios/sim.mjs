@@ -158,6 +158,10 @@ function main() {
     "mail-detail-text.png",
     "mail-summary.png",
     "files-root.png",
+    "chat-composer.png",
+    "chat-keyboard-dismissed.png",
+    "chat-thinking.png",
+    "chat-agent.png",
   ];
   console.log("[4/4] Verify PNG…");
   const missing = [];

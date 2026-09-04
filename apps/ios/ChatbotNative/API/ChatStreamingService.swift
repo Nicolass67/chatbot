@@ -25,14 +25,11 @@ actor ChatStreamingService {
 
         // Deterministic SSE for Simulator XCUITest — never hits the network.
         if UITestMode.isActive {
-            onEvent(ChatSSEParser.Event(type: "status", payload: ["type": "status", "phase": "thinking"]))
-            try await Task.sleep(nanoseconds: 80_000_000)
-            guard myGeneration == generation else { return }
-            onEvent(ChatSSEParser.Event(type: "token", payload: [
-                "type": "token",
-                "delta": "Réponse UITest déterministe. ",
-            ]))
-            onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+            try await streamUITestFixture(
+                mode: options.mode,
+                myGeneration: myGeneration,
+                onEvent: onEvent
+            )
             return
         }
 
@@ -82,6 +79,98 @@ actor ChatStreamingService {
                 onEvent(event)
             }
         }
+    }
+
+    /// Fixtures SSE : thinking visible assez longtemps pour screenshot ; agent timeline ; Stop via cancel().
+    private func streamUITestFixture(
+        mode: String,
+        myGeneration: UInt64,
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+    ) async throws {
+        let scenario = UITestMode.sseScenario
+        let useAgent = mode == "agent" || scenario == "agent" || scenario == "agent-error"
+
+        if useAgent {
+            onEvent(ChatSSEParser.Event(type: "agent_start", payload: ["type": "agent_start"]))
+            try await Task.sleep(nanoseconds: 120_000_000)
+            guard myGeneration == generation else { return }
+
+            onEvent(ChatSSEParser.Event(type: "agent_plan", payload: [
+                "type": "agent_plan",
+                "plan": [
+                    "steps": [
+                        ["id": "1", "title": "Analyser la demande"],
+                        ["id": "2", "title": "Préparer la réponse"],
+                    ],
+                ],
+            ] as [String: Any]))
+            try await Task.sleep(nanoseconds: 200_000_000)
+            guard myGeneration == generation else { return }
+
+            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+                "type": "agent_step",
+                "stepId": "1",
+                "stepIndex": 0,
+                "totalSteps": 2,
+                "status": "running",
+                "message": "Analyser la demande",
+            ]))
+            // Hold agent strip visible for XCUITest screenshot / Stop tap.
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            guard myGeneration == generation else { return }
+
+            if scenario == "agent-error" {
+                onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+                    "type": "agent_step",
+                    "stepId": "1",
+                    "status": "error",
+                    "message": "Permission denied accessing file",
+                ]))
+                try await Task.sleep(nanoseconds: 400_000_000)
+                guard myGeneration == generation else { return }
+                onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+                return
+            }
+
+            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+                "type": "agent_step",
+                "stepId": "1",
+                "status": "done",
+            ]))
+            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+                "type": "agent_step",
+                "stepId": "2",
+                "stepIndex": 1,
+                "totalSteps": 2,
+                "status": "running",
+                "message": "Préparer la réponse",
+            ]))
+            try await Task.sleep(nanoseconds: 200_000_000)
+            guard myGeneration == generation else { return }
+
+            onEvent(ChatSSEParser.Event(type: "token", payload: [
+                "type": "token",
+                "content": "Réponse Agent UITest. ",
+            ]))
+            onEvent(ChatSSEParser.Event(type: "agent_done", payload: ["type": "agent_done"]))
+            onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+            return
+        }
+
+        // Chat / thinking : status visible avant le premier token.
+        onEvent(ChatSSEParser.Event(type: "thinking", payload: [
+            "type": "thinking",
+            "message": "Réflexion…",
+        ]))
+        let holdNs: UInt64 = (scenario == "thinking" || scenario == "chat") ? 1_000_000_000 : 400_000_000
+        try await Task.sleep(nanoseconds: holdNs)
+        guard myGeneration == generation else { return }
+
+        onEvent(ChatSSEParser.Event(type: "token", payload: [
+            "type": "token",
+            "content": "Réponse UITest déterministe. ",
+        ]))
+        onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
     }
 }
 

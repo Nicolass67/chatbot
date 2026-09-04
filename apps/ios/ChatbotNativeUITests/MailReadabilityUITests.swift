@@ -12,11 +12,7 @@ final class MailReadabilityUITests: XCTestCase {
         app.assertUITestSession()
 
         app.tapTab(UITestA11y.tabMail)
-        XCTAssertTrue(
-            app.element(id: UITestA11y.mailRoot, timeout: 10).exists
-                || app.navigationBars["Mail"].waitForExistence(timeout: 5),
-            "Mail inbox root"
-        )
+        XCTAssertTrue(assertInbox(app), "Mail inbox root")
         XCTAssertTrue(
             app.staticTexts["Votre facture Free du mois"].waitForExistence(timeout: 8),
             "Free invoice fixture in inbox"
@@ -24,23 +20,31 @@ final class MailReadabilityUITests: XCTestCase {
         saveScreenshot(app, name: "mail-inbox")
 
         // HTML-primary mail (short plain → WebView)
-        XCTAssertTrue(app.staticTexts["Newsletter HTML"].waitForExistence(timeout: 6))
-        app.staticTexts["Newsletter HTML"].tap()
+        openMail(app, subject: "Newsletter HTML")
         XCTAssertTrue(app.element(id: "mail.detail", timeout: 10).exists)
+        let htmlBody = app.element(id: "mail.body.html", timeout: 10)
         XCTAssertTrue(
-            app.element(id: "mail.body.html", timeout: 10).exists
-                || app.staticTexts["Version HTML"].waitForExistence(timeout: 6),
+            htmlBody.exists || app.staticTexts["Version HTML"].waitForExistence(timeout: 6),
             "HTML body mode expected for newsletter fixture"
         )
-        // Contraste : le texte forcé sombre d’origine ne doit pas rester #000 brut non sanitisé côté a11y label —
-        // on vérifie la présence du mode HTML + caption.
+        // Laisser WKWebView charger + remesurer avant le screenshot DoD.
+        RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+        if htmlBody.exists {
+            let value = htmlBody.value as? String ?? ""
+            XCTAssertTrue(
+                value.localizedCaseInsensitiveContains("Contenu")
+                    || value.localizedCaseInsensitiveContains("HTML")
+                    || value.localizedCaseInsensitiveContains("Newsletter")
+                    || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Contenu")).firstMatch
+                        .waitForExistence(timeout: 2),
+                "HTML a11y value / visible content expected after sanitize"
+            )
+        }
         saveScreenshot(app, name: "mail-detail-html")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["Mail"].waitForExistence(timeout: 6))
+        popToInbox(app)
 
         // Plain-text fallback (long readable body)
-        XCTAssertTrue(app.staticTexts["Texte brut (fallback)"].waitForExistence(timeout: 6))
-        app.staticTexts["Texte brut (fallback)"].tap()
+        openMail(app, subject: "Texte brut (fallback)")
         XCTAssertTrue(app.element(id: "mail.detail", timeout: 10).exists)
         XCTAssertTrue(
             app.element(id: "mail.body.plain", timeout: 10).exists
@@ -53,19 +57,16 @@ final class MailReadabilityUITests: XCTestCase {
             "Long plain fixture content must be visible"
         )
         saveScreenshot(app, name: "mail-detail-text")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["Mail"].waitForExistence(timeout: 6))
+        popToInbox(app)
 
         // Summary Markdown via Free invoice
-        XCTAssertTrue(app.staticTexts["Votre facture Free du mois"].waitForExistence(timeout: 6))
-        app.staticTexts["Votre facture Free du mois"].tap()
+        openMail(app, subject: "Votre facture Free du mois")
         XCTAssertTrue(app.element(id: "mail.detail", timeout: 10).exists)
 
-        // Open overflow → Résumer
         let overflow = app.navigationBars.buttons["Actions du mail"]
         if overflow.waitForExistence(timeout: 4) {
             overflow.tap()
-        } else {
+        } else if app.navigationBars.buttons.count > 0 {
             app.navigationBars.buttons.element(boundBy: app.navigationBars.buttons.count - 1).tap()
         }
         let resume = app.buttons["Résumer"]
@@ -74,7 +75,6 @@ final class MailReadabilityUITests: XCTestCase {
 
         let summary = app.element(id: "mail.summary", timeout: 10)
         XCTAssertTrue(summary.exists, "MailSummaryBlock must appear")
-        // Markdown rendered: heading text without raw "##" as only content
         XCTAssertTrue(
             app.staticTexts["Résumé"].waitForExistence(timeout: 6),
             "Summary caption / markdown heading"
@@ -85,12 +85,50 @@ final class MailReadabilityUITests: XCTestCase {
         )
         saveScreenshot(app, name: "mail-summary")
 
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        popToInbox(app)
+        saveScreenshot(app, name: "mail-inbox-after-back")
+    }
+
+    @discardableResult
+    private func assertInbox(_ app: XCUIApplication) -> Bool {
+        // Titre large « Mail » = racine inbox (pas le détail dont le titre = sujet).
+        app.navigationBars["Mail"].waitForExistence(timeout: 3)
+            || (
+                app.element(id: UITestA11y.mailRoot, timeout: 2).exists
+                    && app.searchFields.firstMatch.exists
+            )
+    }
+
+    private func openMail(_ app: XCUIApplication, subject: String) {
+        if !assertInbox(app) {
+            popToInbox(app)
+        }
+        XCTAssertTrue(app.staticTexts[subject].waitForExistence(timeout: 6), "Missing \(subject)")
+        app.staticTexts[subject].tap()
+    }
+
+    private func popToInbox(_ app: XCUIApplication) {
+        for _ in 0..<5 {
+            if app.navigationBars["Mail"].waitForExistence(timeout: 1.2) {
+                return
+            }
+            if app.navigationBars.buttons["Back"].exists {
+                app.navigationBars.buttons["Back"].tap()
+                continue
+            }
+            if app.navigationBars.buttons.count > 0 {
+                app.navigationBars.buttons.element(boundBy: 0).tap()
+                continue
+            }
+            break
+        }
+        // Dernier recours : retaper l’onglet Mail (recharge la racine).
+        app.tapTab(UITestA11y.tabChat)
+        app.tapTab(UITestA11y.tabMail)
         XCTAssertTrue(
             app.navigationBars["Mail"].waitForExistence(timeout: 6)
-                || app.element(id: UITestA11y.mailRoot, timeout: 6).exists,
-            "Back to inbox"
+                || app.element(id: UITestA11y.mailRoot, timeout: 4).exists,
+            "Back to inbox after tab bounce"
         )
-        saveScreenshot(app, name: "mail-inbox-after-back")
     }
 }

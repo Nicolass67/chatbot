@@ -140,14 +140,12 @@ enum UITestFixtures {
         let html: String?
         let text: String?
         if summary.id == htmlMail.id {
-            // HTML primaire (texte court → pas preferPlain) + styles sombres pour valider sanitize/contraste.
+            // Fragment HTML (pas de document imbriqué) + styles sombres pour valider sanitize/contraste.
             html = """
-            <html><body bgcolor="#ffffff" style="color:#111111;background:#ffffff">
             <h1 style="color:#000000">Newsletter HTML</h1>
             <p style="color:#222222">Contenu <b>HTML</b> UITest avec contraste forcé.</p>
             <p style="color:#333333">Ligne longue pour vérifier le wrapping : facturation, abonnement, renouvellement automatique.</p>
             <a href="https://example.com" style="color:#0000ee">Lien exemple</a>
-            </body></html>
             """
             text = "Newsletter HTML"
         } else if summary.id == plainMail.id {
