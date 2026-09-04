@@ -57,7 +57,8 @@ struct FilesBrowserView: View {
     @State private var assistantDetent: PresentationDetent = .large
     @State private var selection = FilesSelectionStore()
     @State private var showDeleteConfirm = false
-    @State private var deletingSelection = false
+    @State private var showMovePicker = false
+    @State private var mutatingSelection = false
     @State private var selectionError: String?
 
     private var client: APIClient {
@@ -84,24 +85,6 @@ struct FilesBrowserView: View {
                     ContextualAssistantButton(tint: AppTheme.filesAccent) {
                         openFilesAssistant(.global)
                     }
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if selection.isSelecting {
-                    FilesMultiSelectBar(
-                        count: selection.count,
-                        busy: deletingSelection,
-                        onMail: {
-                            let files = selection.items.map { (fileId: $0.fileId, filename: $0.filename) }
-                            guard !files.isEmpty else { return }
-                            selection.endSelecting()
-                            nav.shareFilesToMail(files: files)
-                            AppHaptics.light()
-                        },
-                        onDelete: { showDeleteConfirm = true },
-                        onClear: { selection.clear() },
-                        onDone: { selection.endSelecting() }
-                    )
                 }
             }
             .navigationTitle("Files")
@@ -245,25 +228,58 @@ struct FilesBrowserView: View {
             .onChange(of: nav.assistantDismissToken) { _, _ in
                 showAssistant = false
             }
-            .alert(
-                selection.count <= 1 ? "Supprimer le fichier ?" : "Supprimer \(selection.count) fichiers ?",
-                isPresented: $showDeleteConfirm
-            ) {
-                Button("Annuler", role: .cancel) {}
-                Button("Supprimer", role: .destructive) {
-                    Task { await deleteSelectedFiles() }
+        }
+        // Barre + alertes sur le NavigationStack (pas le root) pour rester visibles
+        // dans les dossiers poussés (Documents, etc.).
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selection.isSelecting {
+                FilesMultiSelectBar(
+                    count: selection.count,
+                    busy: mutatingSelection,
+                    onMove: { showMovePicker = true },
+                    onMail: {
+                        let files = selection.items.map { (fileId: $0.fileId, filename: $0.filename) }
+                        guard !files.isEmpty else { return }
+                        selection.endSelecting()
+                        nav.shareFilesToMail(files: files)
+                        AppHaptics.light()
+                    },
+                    onDelete: { showDeleteConfirm = true },
+                    onClear: { selection.clear() },
+                    onDone: { selection.endSelecting() }
+                )
+            }
+        }
+        .sheet(isPresented: $showMovePicker) {
+            FilesMovePickerSheet(
+                itemCount: selection.count,
+                previewNames: selection.items.map(\.filename),
+                onCancel: { showMovePicker = false },
+                onPick: { dest in
+                    showMovePicker = false
+                    Task { await moveSelectedFiles(to: dest) }
                 }
-            } message: {
-                Text("Cette action est définitive. Une confirmation serveur est demandée pour chaque fichier.")
+            )
+            .environmentObject(session)
+        }
+        .alert(
+            selection.count <= 1 ? "Supprimer le fichier ?" : "Supprimer \(selection.count) fichiers ?",
+            isPresented: $showDeleteConfirm
+        ) {
+            Button("Annuler", role: .cancel) {}
+            Button("Supprimer", role: .destructive) {
+                Task { await deleteSelectedFiles() }
             }
-            .alert("Files", isPresented: Binding(
-                get: { selectionError != nil },
-                set: { if !$0 { selectionError = nil } }
-            )) {
-                Button("OK", role: .cancel) { selectionError = nil }
-            } message: {
-                Text(selectionError ?? "")
-            }
+        } message: {
+            Text("Cette action est définitive. Une confirmation serveur est demandée pour chaque fichier.")
+        }
+        .alert("Files", isPresented: Binding(
+            get: { selectionError != nil },
+            set: { if !$0 { selectionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { selectionError = nil }
+        } message: {
+            Text(selectionError ?? "")
         }
         .environment(selection)
     }
@@ -271,8 +287,8 @@ struct FilesBrowserView: View {
     private func deleteSelectedFiles() async {
         let targets = selection.items
         guard !targets.isEmpty else { return }
-        deletingSelection = true
-        defer { deletingSelection = false }
+        mutatingSelection = true
+        defer { mutatingSelection = false }
         var failed: [String] = []
         var deletedIds = Set<String>()
         for item in targets {
@@ -289,6 +305,53 @@ struct FilesBrowserView: View {
             }
         }
         selection.remove(fileIds: deletedIds)
+        selection.bumpContent()
+        if failed.isEmpty {
+            AppHaptics.success()
+            if selection.isEmpty { selection.endSelecting() }
+        } else {
+            AppHaptics.warning()
+            selectionError = "Échec pour : \(failed.joined(separator: ", "))"
+        }
+    }
+
+    private func moveSelectedFiles(to dest: FilesSaveDestination) async {
+        let targets = selection.items
+        guard !targets.isEmpty else { return }
+        mutatingSelection = true
+        defer { mutatingSelection = false }
+        let destDir = dest.path
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var failed: [String] = []
+        var movedIds = Set<String>()
+        for item in targets {
+            let basename = (item.filename as NSString).lastPathComponent
+            let destRel = destDir.isEmpty ? basename : "\(destDir)/\(basename)"
+            let sourceParent = (item.relativePath as NSString).deletingLastPathComponent
+                .replacingOccurrences(of: "\\", with: "/")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if item.rootId == dest.rootId && sourceParent == destDir {
+                movedIds.insert(item.fileId)
+                continue
+            }
+            do {
+                let proposal = try await client.proposeMoveFile(
+                    sourceFileId: item.fileId,
+                    destRootId: dest.rootId,
+                    destRelativePath: destRel
+                )
+                try await client.confirmFilesAction(
+                    actionId: proposal.actionId,
+                    confirmationToken: proposal.confirmationToken,
+                    confirm: true
+                )
+                movedIds.insert(item.fileId)
+            } catch {
+                failed.append(item.filename)
+            }
+        }
+        selection.remove(fileIds: movedIds)
         selection.bumpContent()
         if failed.isEmpty {
             AppHaptics.success()
@@ -1461,10 +1524,11 @@ struct MkdirConfirmSheet: View {
     }
 }
 
-/// Barre d’actions multi-sélection Files (mail + supprimer).
+/// Barre d’actions multi-sélection Files (déplacer + mail + supprimer).
 private struct FilesMultiSelectBar: View {
     let count: Int
     let busy: Bool
+    let onMove: () -> Void
     let onMail: () -> Void
     let onDelete: () -> Void
     let onClear: () -> Void
@@ -1473,39 +1537,57 @@ private struct FilesMultiSelectBar: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider().overlay(AppTheme.borderSubtle)
-            HStack(spacing: 12) {
-                Button(action: onClear) {
-                    Text(count == 0 ? "Aucun" : "\(count)")
+            VStack(spacing: 10) {
+                HStack {
+                    Button(action: onClear) {
+                        Text(count == 0 ? "Aucun sélectionné" : "\(count) sélectionné\(count > 1 ? "s" : "")")
+                            .font(CNFont.callout.weight(.semibold))
+                            .foregroundStyle(AppTheme.foreground)
+                    }
+                    .disabled(busy || count == 0)
+                    .accessibilityLabel(count == 0 ? "Aucun fichier sélectionné" : "\(count) sélectionnés, tout désélectionner")
+
+                    Spacer(minLength: 0)
+
+                    Button("OK", action: onDone)
                         .font(CNFont.callout.weight(.semibold))
-                        .foregroundStyle(AppTheme.foreground)
-                        .frame(minWidth: 44)
+                        .disabled(busy)
                 }
-                .disabled(busy || count == 0)
-                .accessibilityLabel(count == 0 ? "Aucun fichier sélectionné" : "\(count) sélectionnés, tout désélectionner")
 
-                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Button(action: onMove) {
+                        Label("Déplacer", systemImage: "folder")
+                            .font(CNFont.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.filesAccent)
+                    .disabled(busy || count == 0)
 
-                Button(action: onMail) {
-                    Label("Mail", systemImage: "envelope.badge")
-                        .font(CNFont.callout.weight(.semibold))
+                    Button(action: onMail) {
+                        Label("Mail", systemImage: "envelope.badge")
+                            .font(CNFont.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.mailAccent)
+                    .disabled(busy || count == 0)
+
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Supprimer", systemImage: "trash")
+                            .font(CNFont.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(busy || count == 0)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(AppTheme.mailAccent)
-                .disabled(busy || count == 0)
-
-                Button(role: .destructive, action: onDelete) {
-                    Label("Supprimer", systemImage: "trash")
-                        .font(CNFont.callout.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .disabled(busy || count == 0)
-
-                Button("OK", action: onDone)
-                    .font(CNFont.callout.weight(.semibold))
-                    .disabled(busy)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
             .background(.ultraThinMaterial)
         }
     }

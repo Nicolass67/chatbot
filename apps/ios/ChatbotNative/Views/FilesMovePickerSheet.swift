@@ -1,55 +1,13 @@
 import SwiftUI
 
-/// Destination récente pour « Enregistrer dans Files ».
-struct FilesSaveDestination: Codable, Hashable, Identifiable {
-    var id: String { "\(rootId)|\(path)" }
-    let rootId: String
-    let rootLabel: String
-    let path: String
-
-    var displayPath: String {
-        let label = rootLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let p = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if p.isEmpty { return label.isEmpty ? "Racine" : label }
-        return "\(label.isEmpty ? "Files" : label) / \(p.replacingOccurrences(of: "/", with: " / "))"
-    }
-}
-
-enum FilesRecentDestinations {
-    private static let key = "files.recentSaveDestinations"
-    private static let maxCount = 5
-
-    static func load() -> [FilesSaveDestination] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([FilesSaveDestination].self, from: data)
-        else { return [] }
-        return items
-    }
-
-    static func remember(_ dest: FilesSaveDestination) {
-        var items = load().filter { $0.id != dest.id }
-        items.insert(dest, at: 0)
-        if items.count > maxCount { items = Array(items.prefix(maxCount)) }
-        if let data = try? JSONEncoder().encode(items) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-}
-
-private struct FolderPickerNav: Hashable {
-    let root: FileRootDTO
-    let path: String
-    let title: String
-}
-
-/// Sélecteur de dossier Files (racines → navigation → recherche → enregistrer ici).
-struct FilesFolderPickerSheet: View {
+/// Sélecteur d’emplacement moderne pour « Déplacer vers » (multi-sélection Files).
+struct FilesMovePickerSheet: View {
     @EnvironmentObject private var session: AppSessionStore
 
-    let filename: String
-    let mimeType: String
-    let loadData: () async throws -> Data
-    var onFinished: (_ saved: Bool, _ destination: FilesSaveDestination?) -> Void
+    let itemCount: Int
+    let previewNames: [String]
+    var onCancel: () -> Void
+    var onPick: (FilesSaveDestination) -> Void
 
     @State private var roots: [FileRootDTO] = []
     @State private var path = NavigationPath()
@@ -59,15 +17,14 @@ struct FilesFolderPickerSheet: View {
     @State private var searchText = ""
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
-    @State private var saving = false
-    @State private var saveError: String?
+    @State private var currentFolder: MovePickerNav?
+    @State private var folderRefresh = 0
     @State private var mkdirName = ""
     @State private var showMkdir = false
     @State private var mkdirConfirm: FilesProposeResult?
     @State private var confirmingMkdir = false
-    @State private var currentFolder: FolderPickerNav?
-    @State private var folderRefresh = 0
     @State private var pendingMkdirDest: String?
+    @State private var actionError: String?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -77,26 +34,36 @@ struct FilesFolderPickerSheet: View {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
     }
 
+    private var summaryLine: String {
+        if itemCount <= 1 {
+            return previewNames.first ?? "1 fichier"
+        }
+        let head = previewNames.prefix(2).joined(separator: ", ")
+        let extra = itemCount - min(2, previewNames.count)
+        if extra > 0 {
+            return "\(head) +\(extra)"
+        }
+        return head
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             rootContent
-                .navigationTitle("Enregistrer dans Files")
+                .navigationTitle("Déplacer vers")
                 .navigationBarTitleDisplayMode(.inline)
                 .searchable(text: $searchText, prompt: "Chercher un dossier")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Annuler") { onFinished(false, nil) }
-                            .disabled(saving)
+                        Button("Annuler", action: onCancel)
                     }
                 }
-                .navigationDestination(for: FolderPickerNav.self) { folder in
-                    folderBrowser(folder)
+                .navigationDestination(for: MovePickerNav.self) { folder in
+                    moveFolderBrowser(folder)
                         .id("\(folder.root.id)|\(folder.path)|\(folderRefresh)")
                 }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(saving)
         .task { await loadRoots() }
         .onChange(of: searchText) { _, q in
             Task { await runSearch(q) }
@@ -119,13 +86,13 @@ struct FilesFolderPickerSheet: View {
                 onCancel: { Task { await resolveMkdir(proposal, confirm: false) } }
             )
         }
-        .alert("Enregistrement", isPresented: Binding(
-            get: { saveError != nil },
-            set: { if !$0 { saveError = nil } }
+        .alert("Déplacement", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
         )) {
-            Button("OK", role: .cancel) { saveError = nil }
+            Button("OK", role: .cancel) { actionError = nil }
         } message: {
-            Text(saveError ?? "")
+            Text(actionError ?? "")
         }
     }
 
@@ -145,33 +112,33 @@ struct FilesFolderPickerSheet: View {
             } else {
                 List {
                     Section {
-                        HStack(spacing: 10) {
-                            Image(systemName: "doc.badge.arrow.up")
-                                .foregroundStyle(AppTheme.accent)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(filename)
-                                    .font(CNFont.callout.weight(.semibold))
-                                    .foregroundStyle(AppTheme.foreground)
-                                    .lineLimit(2)
-                                Text("Choisis un dossier, puis Enregistrer ici.")
-                                    .font(CNFont.caption2)
-                                    .foregroundStyle(AppTheme.muted)
-                            }
-                        }
-                        .listRowBackground(AppTheme.surface.opacity(0.55))
+                        moveHeroCard
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
 
                     if !recent.isEmpty {
                         Section("Récents") {
                             ForEach(recent) { dest in
                                 Button {
-                                    Task { await save(to: dest) }
+                                    AppHaptics.light()
+                                    onPick(dest)
                                 } label: {
-                                    Label(dest.displayPath, systemImage: "clock.arrow.circlepath")
-                                        .foregroundStyle(AppTheme.foreground)
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "clock.arrow.circlepath")
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(AppTheme.filesAccent)
+                                            .frame(width: 28)
+                                        Text(dest.displayPath)
+                                            .foregroundStyle(AppTheme.foreground)
+                                            .multilineTextAlignment(.leading)
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "arrow.right.circle.fill")
+                                            .foregroundStyle(AppTheme.filesAccent.opacity(0.85))
+                                    }
                                 }
-                                .disabled(saving)
-                                .listRowBackground(AppTheme.surface.opacity(0.35))
+                                .listRowBackground(AppTheme.surface.opacity(0.4))
                             }
                         }
                     }
@@ -179,7 +146,7 @@ struct FilesFolderPickerSheet: View {
                     Section("Emplacements") {
                         ForEach(roots) { root in
                             Button {
-                                let nav = FolderPickerNav(
+                                let nav = MovePickerNav(
                                     root: root,
                                     path: "",
                                     title: root.label ?? "Racine"
@@ -187,24 +154,83 @@ struct FilesFolderPickerSheet: View {
                                 currentFolder = nav
                                 path.append(nav)
                             } label: {
-                                Label(root.label ?? "Racine", systemImage: "externaldrive.fill")
-                                    .foregroundStyle(AppTheme.foreground)
+                                HStack(spacing: 12) {
+                                    Image(systemName: "externaldrive.fill")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(AppTheme.filesAccent)
+                                        .frame(width: 28)
+                                    Text(root.label ?? "Racine")
+                                        .foregroundStyle(AppTheme.foreground)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.muted)
+                                }
                             }
-                            .listRowBackground(AppTheme.surface.opacity(0.35))
+                            .listRowBackground(AppTheme.surface.opacity(0.4))
                         }
                     }
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
             }
-
-            if saving {
-                Color.black.opacity(0.25).ignoresSafeArea()
-                ProgressView("Enregistrement…")
-                    .padding(20)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
         }
+    }
+
+    private var moveHeroCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    AppTheme.filesAccent.opacity(0.95),
+                                    AppTheme.accent.opacity(0.75),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "folder.fill.badge.gearshape")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(itemCount <= 1 ? "1 fichier à déplacer" : "\(itemCount) fichiers à déplacer")
+                        .font(CNFont.callout.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                    Text(summaryLine)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(2)
+                }
+            }
+            Text("Choisis un dossier, puis Déplacer ici. Les noms sont conservés.")
+                .font(CNFont.caption)
+                .foregroundStyle(AppTheme.muted)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.surface.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    AppTheme.filesAccent.opacity(0.45),
+                                    AppTheme.borderSubtle,
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+        )
     }
 
     private var searchResultsList: some View {
@@ -245,15 +271,14 @@ struct FilesFolderPickerSheet: View {
         .scrollContentBackground(.hidden)
     }
 
-    private func folderBrowser(_ folder: FolderPickerNav) -> some View {
-        FolderPickerBrowser(
+    private func moveFolderBrowser(_ folder: MovePickerNav) -> some View {
+        MovePickerBrowser(
             root: folder.root,
             path: folder.path,
             title: folder.title,
-            filename: filename,
-            saving: saving,
+            itemCount: itemCount,
             onOpenSubfolder: { entry in
-                let next = FolderPickerNav(
+                let next = MovePickerNav(
                     root: folder.root,
                     path: entry.relativePath,
                     title: entry.name ?? entry.relativePath
@@ -261,13 +286,15 @@ struct FilesFolderPickerSheet: View {
                 currentFolder = next
                 path.append(next)
             },
-            onSaveHere: {
+            onMoveHere: {
                 let dest = FilesSaveDestination(
                     rootId: folder.root.id,
                     rootLabel: folder.root.label ?? "Racine",
                     path: folder.path
                 )
-                Task { await save(to: dest) }
+                AppHaptics.light()
+                FilesRecentDestinations.remember(dest)
+                onPick(dest)
             },
             onNewFolder: {
                 currentFolder = folder
@@ -317,7 +344,7 @@ struct FilesFolderPickerSheet: View {
         else { return }
         let folderPath = hit.relativePath ?? ""
         path = NavigationPath()
-        let rootNav = FolderPickerNav(root: root, path: "", title: root.label ?? "Racine")
+        let rootNav = MovePickerNav(root: root, path: "", title: root.label ?? "Racine")
         path.append(rootNav)
         let normalized = folderPath
             .replacingOccurrences(of: "\\", with: "/")
@@ -327,7 +354,7 @@ struct FilesFolderPickerSheet: View {
             for segment in normalized.split(separator: "/") {
                 cumulative = cumulative.isEmpty ? String(segment) : "\(cumulative)/\(segment)"
                 path.append(
-                    FolderPickerNav(
+                    MovePickerNav(
                         root: root,
                         path: cumulative,
                         title: String(segment)
@@ -335,35 +362,13 @@ struct FilesFolderPickerSheet: View {
                 )
             }
         }
-        currentFolder = FolderPickerNav(
+        currentFolder = MovePickerNav(
             root: root,
             path: normalized,
             title: hit.name ?? hit.filename ?? String(normalized.split(separator: "/").last ?? "Dossier")
         )
         searchText = ""
         searchHits = []
-    }
-
-    private func save(to dest: FilesSaveDestination) async {
-        saving = true
-        saveError = nil
-        defer { saving = false }
-        do {
-            let data = try await loadData()
-            try await client.uploadFiles(
-                rootId: dest.rootId,
-                destRelativePath: dest.path,
-                filename: filename,
-                data: data,
-                mimeType: mimeType.isEmpty ? "application/octet-stream" : mimeType
-            )
-            FilesRecentDestinations.remember(dest)
-            AppHaptics.success()
-            onFinished(true, dest)
-        } catch {
-            AppHaptics.warning()
-            saveError = error.localizedDescription
-        }
     }
 
     private func proposeMkdir() async {
@@ -382,7 +387,7 @@ struct FilesFolderPickerSheet: View {
             mkdirConfirm = proposal
         } catch {
             pendingMkdirDest = nil
-            saveError = error.localizedDescription
+            actionError = error.localizedDescription
         }
     }
 
@@ -409,7 +414,7 @@ struct FilesFolderPickerSheet: View {
                     return
                 }
                 let name = dest.split(separator: "/").last.map(String.init) ?? dest
-                let next = FolderPickerNav(root: folder.root, path: dest, title: name)
+                let next = MovePickerNav(root: folder.root, path: dest, title: name)
                 currentFolder = next
                 path.append(next)
                 folderRefresh += 1
@@ -418,20 +423,25 @@ struct FilesFolderPickerSheet: View {
             }
         } catch {
             pendingMkdirDest = nil
-            saveError = error.localizedDescription
+            actionError = error.localizedDescription
         }
     }
 }
 
-private struct FolderPickerBrowser: View {
+private struct MovePickerNav: Hashable {
+    let root: FileRootDTO
+    let path: String
+    let title: String
+}
+
+private struct MovePickerBrowser: View {
     @EnvironmentObject private var session: AppSessionStore
     let root: FileRootDTO
     let path: String
     let title: String
-    let filename: String
-    let saving: Bool
+    let itemCount: Int
     let onOpenSubfolder: (FileEntryDTO) -> Void
-    let onSaveHere: () -> Void
+    let onMoveHere: () -> Void
     let onNewFolder: () -> Void
 
     @State private var folders: [FileEntryDTO] = []
@@ -466,8 +476,8 @@ private struct FolderPickerBrowser: View {
                         if folders.isEmpty {
                             Section {
                                 Text(fileCount > 0
-                                      ? "Aucun sous-dossier — tu peux enregistrer ici."
-                                      : "Dossier vide — tu peux enregistrer ici.")
+                                      ? "Aucun sous-dossier — tu peux déplacer ici."
+                                      : "Dossier vide — tu peux déplacer ici.")
                                     .font(CNFont.callout)
                                     .foregroundStyle(AppTheme.muted)
                                     .listRowBackground(Color.clear)
@@ -502,29 +512,25 @@ private struct FolderPickerBrowser: View {
                     Image(systemName: "folder.badge.plus")
                 }
                 .accessibilityLabel("Nouveau dossier")
-                .disabled(saving)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider().overlay(AppTheme.borderSubtle)
-                Button(action: onSaveHere) {
-                    Label("Enregistrer ici", systemImage: "square.and.arrow.down.fill")
-                        .font(CNFont.callout.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                Button(action: onMoveHere) {
+                    Label(
+                        itemCount <= 1 ? "Déplacer ici" : "Déplacer \(itemCount) ici",
+                        systemImage: "folder.fill.badge.plus"
+                    )
+                    .font(CNFont.callout.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(saving)
+                .tint(AppTheme.filesAccent)
                 .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
-                Text(filename)
-                    .font(CNFont.caption2)
-                    .foregroundStyle(AppTheme.muted)
-                    .lineLimit(1)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                .padding(.top, 12)
+                .padding(.bottom, 14)
             }
             .background(.ultraThinMaterial)
         }
