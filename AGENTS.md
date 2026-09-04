@@ -34,9 +34,19 @@ Les clients consomment les **mêmes** contrats (`contracts/`) et la **Client Sur
 [ ] Pas de modif UX/UI Web / Capacitor sans nécessité démontrée
 [ ] contracts/VERSION bump si breaking API
 [ ] X-Client non utilisé pour auth
-[ ] Fin de tâche : commit → push → npm.cmd run ios:ipa:flash uniquement
-[ ] Pas de Simulator / Contracts / Full CI sans demande explicite
+[ ] Fin de tâche feature iPhone : commit → push → npm.cmd run ios:deploy:wifi
+      (Flash IPA → download → sign local → Trusted Tunnel RSD → install → launch)
+[ ] USB fallback seulement si Wi-Fi échoue : ios:deploy:usb / ios:deploy:auto
+[ ] Pas de Simulator / Contracts / Full CI / screenshots sans demande explicite
+[ ] Aucun secret Apple / 2FA / pairing dans git ou logs
 ```
+
+## Pipeline autonome (défaut)
+
+Voir `docs/IOS-AUTONOMOUS-DEPLOY.md`.
+
+Ne pas demander confirmation pour : commit, push, Flash IPA, download IPA, install Wi‑Fi, launch, retry deploy.
+Ne rebuild pas GHA si seule l’étape install/tunnel échoue — réutiliser l’IPA.
 
 ## Références
 
@@ -46,3 +56,4 @@ Les clients consomment les **mêmes** contrats (`contracts/`) et la **Client Sur
 - Architecture Swift : `docs/ARCHITECTURE-SWIFT-NATIVE.md`
 - Auth app : `docs/adr/001-app-session-bearer.md`
 - QA autonome : `docs/IOS-AUTONOMOUS-QA.md`
+- Deploy autonome : `docs/IOS-AUTONOMOUS-DEPLOY.md`

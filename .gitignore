@@ -92,6 +92,10 @@ scripts/ios/tools/isideload-cli/target/
 scripts/ios/tools/bin/
 apps/ios/QA.xcconfig
 
+# Local Wi-Fi deploy Python venv (Python 3.13 + pymobiledevice3) — never commit
+scripts/ios/.deploy-venv/
+sidestore-prep/signed-app/
+
 
 .build-home/
 

@@ -41,7 +41,12 @@ Ne touche au TS que si tu **démontres** que la cause est un endpoint/backend co
 
 ## CI autorisée
 
-Après commit + push des changements natives : **uniquement** `npm.cmd run ios:ipa:flash` (Flash IPA). Aucun autre workflow sans demande explicite.
+Après commit + push des changements natives : **`npm.cmd run ios:deploy:wifi`**
+(Flash IPA → download → sign local → Trusted Tunnel RSD → install → launch).
+
+USB fallback : `ios:deploy:usb` / `ios:deploy:auto`. Aucun autre workflow (Simulator / Contracts / Full CI) sans demande explicite. Pas de screenshots automatiques.
+
+Voir `docs/IOS-AUTONOMOUS-DEPLOY.md`.
 
 ## Décisions UX
 
