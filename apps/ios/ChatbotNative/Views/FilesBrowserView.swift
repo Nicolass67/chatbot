@@ -752,6 +752,8 @@ struct FileFolderView: View {
     @State private var mkdirConfirm: FilesProposeResult?
     @State private var renameTarget: FileEntryDTO?
     @State private var renameText = ""
+    @State private var deleteTarget: FileEntryDTO?
+    @State private var deletingSingle = false
     @State private var showImporter = false
     @State private var pendingPropose: FilesProposeResult?
     @State private var confirming = false
@@ -917,6 +919,25 @@ struct FileFolderView: View {
             Button("Annuler", role: .cancel) { renameTarget = nil }
             Button("Proposer") { Task { await renameEntry() } }
         }
+        .alert(
+            "Supprimer le fichier ?",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            )
+        ) {
+            Button("Annuler", role: .cancel) { deleteTarget = nil }
+            Button("Supprimer", role: .destructive) {
+                guard let target = deleteTarget else { return }
+                Task { await deleteSingleFile(target) }
+            }
+        } message: {
+            if let name = deleteTarget?.name ?? deleteTarget?.relativePath {
+                Text("« \(name) » sera définitivement supprimé.")
+            } else {
+                Text("Ce fichier sera définitivement supprimé.")
+            }
+        }
         .alert("Confirmer l’action ?", isPresented: Binding(
             get: { pendingPropose != nil && mkdirConfirm == nil },
             set: { if !$0 && !confirming { pendingPropose = nil } }
@@ -964,6 +985,46 @@ struct FileFolderView: View {
         )
     }
 
+    @ViewBuilder
+    private func entryContextMenu(_ entry: FileEntryDTO) -> some View {
+        if let fileId = entry.fileId, !isFolder(entry) {
+            Button {
+                if !selection.isSelecting { selection.beginSelecting() }
+                if let item = selectedItem(for: entry) { selection.select(item) }
+            } label: {
+                Label("Sélectionner", systemImage: "checkmark.circle")
+            }
+            Button {
+                nav.shareFilesToMail(
+                    files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
+                )
+            } label: {
+                Label("Envoyer par mail", systemImage: "envelope.badge")
+            }
+            Button {
+                renameTarget = entry
+                renameText = entry.name ?? ""
+            } label: {
+                Label("Renommer", systemImage: "pencil")
+            }
+            Divider()
+            Button(role: .destructive) {
+                deleteTarget = entry
+                AppHaptics.light()
+            } label: {
+                Label("Supprimer", systemImage: "trash")
+            }
+            .disabled(deletingSingle)
+        } else if entry.fileId != nil {
+            Button {
+                renameTarget = entry
+                renameText = entry.name ?? ""
+            } label: {
+                Label("Renommer", systemImage: "pencil")
+            }
+        }
+    }
+
     private func handleEntryTap(_ entry: FileEntryDTO) {
         if selection.isSelecting {
             if let item = selectedItem(for: entry) {
@@ -1004,30 +1065,15 @@ struct FileFolderView: View {
                         : AppTheme.surface.opacity(0.35)
                 )
                 .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
-                .contextMenu {
-                    if let fileId = entry.fileId, entry.isDirectory != true {
-                        Button {
-                            if !selection.isSelecting { selection.beginSelecting() }
-                            if let item = selectedItem(for: entry) { selection.select(item) }
+                .contextMenu { entryContextMenu(entry) }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    if entry.fileId != nil, !isFolder(entry) {
+                        Button(role: .destructive) {
+                            deleteTarget = entry
+                            AppHaptics.light()
                         } label: {
-                            Label("Sélectionner", systemImage: "checkmark.circle")
+                            Label("Supprimer", systemImage: "trash")
                         }
-                        Button {
-                            nav.shareFilesToMail(
-                                files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
-                            )
-                        } label: {
-                            Label("Envoyer par mail", systemImage: "envelope.badge")
-                        }
-                        Button {
-                            renameTarget = entry
-                            renameText = entry.name ?? ""
-                        } label: { Label("Renommer", systemImage: "pencil") }
-                    } else if entry.fileId != nil {
-                        Button {
-                            renameTarget = entry
-                            renameText = entry.name ?? ""
-                        } label: { Label("Renommer", systemImage: "pencil") }
                     }
                 }
                 .onAppear {
@@ -1095,23 +1141,7 @@ struct FileFolderView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .contextMenu {
-                        if let fileId = entry.fileId, !isFolder(entry) {
-                            Button {
-                                if !selection.isSelecting { selection.beginSelecting() }
-                                if let item = selectedItem(for: entry) { selection.select(item) }
-                            } label: {
-                                Label("Sélectionner", systemImage: "checkmark.circle")
-                            }
-                            Button {
-                                nav.shareFilesToMail(
-                                    files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
-                                )
-                            } label: {
-                                Label("Envoyer par mail", systemImage: "envelope.badge")
-                            }
-                        }
-                    }
+                    .contextMenu { entryContextMenu(entry) }
                     .onAppear {
                         if entry.id == filtered.last?.id {
                             Task { await loadMoreIfNeeded() }
@@ -1268,6 +1298,29 @@ struct FileFolderView: View {
             AppHaptics.light()
         } catch {
             openError = error.localizedDescription
+        }
+    }
+
+    private func deleteSingleFile(_ target: FileEntryDTO) async {
+        guard let fileId = target.fileId else { return }
+        deleteTarget = nil
+        deletingSingle = true
+        defer { deletingSingle = false }
+        do {
+            let proposal = try await client.proposeDeleteFile(sourceFileId: fileId)
+            try await client.confirmFilesAction(
+                actionId: proposal.actionId,
+                confirmationToken: proposal.confirmationToken,
+                confirm: true
+            )
+            entries.removeAll { $0.fileId == fileId }
+            selection.remove(fileIds: [fileId])
+            selection.bumpContent()
+            AppHaptics.success()
+        } catch {
+            AppHaptics.warning()
+            openError = error.localizedDescription
+            await load(reset: true)
         }
     }
 
