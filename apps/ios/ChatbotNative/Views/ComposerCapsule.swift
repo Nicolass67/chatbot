@@ -131,8 +131,9 @@ struct ComposerCapsule: View {
         }
         .padding(.horizontal, AppTheme.space8)
         .padding(.vertical, AppTheme.space4)
-        .modifier(ComposerGlassChrome(editing: editing, reduceTransparency: reduceTransparency))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(A11yID.Chat.composer)
+        .modifier(ComposerGlassChrome(editing: editing, reduceTransparency: reduceTransparency))
         .animation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.82), value: isSending)
         .sheet(isPresented: $showTools) {
             ChatToolsSheet(

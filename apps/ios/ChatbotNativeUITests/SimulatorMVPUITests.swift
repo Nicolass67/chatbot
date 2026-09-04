@@ -108,29 +108,29 @@ final class SimulatorMVPUITests: XCTestCase {
     }
 
     private func requireComposerField(_ app: XCUIApplication) throws -> XCUIElement {
-        // 1) Identifiant dédié
+        // Identifiant dédié (peut être masqué par glassEffect — fallbacks ci-dessous).
         let byId = app.descendants(matching: .any)[UITestA11y.chatComposerField]
-        if byId.waitForExistence(timeout: 8) { return byId }
+        if byId.waitForExistence(timeout: 4) { return byId }
 
-        // 2) Capsule composer puis TextField / TextView « Message »
-        let composer = app.descendants(matching: .any)[UITestA11y.chatComposer]
-        XCTAssertTrue(composer.waitForExistence(timeout: 16), "chat.composer capsule required")
-        composer.tap()
-
+        // Placeholder « Message » — visible même si chat.composer n’est pas exposé.
         let tf = app.textFields["Message"]
-        if tf.waitForExistence(timeout: 4) { return tf }
+        if tf.waitForExistence(timeout: 10) { return tf }
         let tv = app.textViews["Message"]
         if tv.waitForExistence(timeout: 4) { return tv }
+        let anyMsg = app.descendants(matching: .any)["Message"]
+        if anyMsg.waitForExistence(timeout: 4), anyMsg.isHittable {
+            return anyMsg
+        }
 
-        // 3) Premier champ éditable sous la capsule
-        let anyField = composer.textFields.firstMatch
-        if anyField.waitForExistence(timeout: 2) { return anyField }
-        let anyView = composer.textViews.firstMatch
-        if anyView.waitForExistence(timeout: 2) { return anyView }
+        // Capsule si exposée
+        let composer = app.descendants(matching: .any)[UITestA11y.chatComposer]
+        if composer.waitForExistence(timeout: 3) {
+            composer.tap()
+            if tf.waitForExistence(timeout: 2) { return tf }
+            if byId.waitForExistence(timeout: 2) { return byId }
+        }
 
-        // 4) Query globale last resort
-        if byId.waitForExistence(timeout: 3) { return byId }
-        XCTFail("Composer field not found (tried id, Message, capsule children)")
+        XCTFail("Composer field not found (id / Message / capsule)")
         return byId
     }
 }
