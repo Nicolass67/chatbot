@@ -37,6 +37,42 @@ struct MailInboxView: View {
         showAssistant = true
     }
 
+    private func handleMailDeepLink(_ link: MailDeepLink?) {
+        guard let link else { return }
+        if let threadId = link.threadId {
+            if let match = messages.first(where: { $0.threadId == threadId || $0.id == threadId }) {
+                path.append(match)
+            }
+        } else if let q = link.query?.lowercased(), !q.isEmpty {
+            if let match = messages.first(where: { msg in
+                let subject = (msg.subject ?? "").lowercased()
+                let snippet = (msg.snippet ?? "").lowercased()
+                return subject.contains(q) || snippet.contains(q)
+            }) {
+                path.append(match)
+            }
+        }
+        nav.mailDeepLink = nil
+    }
+
+    private func handleQaIntent(_ intent: QaNavIntent?) {
+        guard let intent else { return }
+        switch intent {
+        case .mail:
+            nav.qaIntent = nil
+        case .mailDetail:
+            if let first = messages.first {
+                path.append(first)
+            }
+            nav.qaIntent = nil
+        case .mailAssistant:
+            openMailAssistant(.global)
+            nav.qaIntent = nil
+        default:
+            break
+        }
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
@@ -82,18 +118,7 @@ struct MailInboxView: View {
                 await load()
             }
             .onChange(of: nav.mailDeepLink) { _, link in
-                guard let link else { return }
-                if let threadId = link.threadId,
-                   let match = messages.first(where: { $0.threadId == threadId || $0.id == threadId }) {
-                    path.append(match)
-                } else if let q = link.query?.lowercased(), !q.isEmpty,
-                          let match = messages.first(where: {
-                              ($0.subject ?? "").lowercased().contains(q)
-                                  || ($0.snippet ?? "").lowercased().contains(q)
-                          }) {
-                    path.append(match)
-                }
-                nav.mailDeepLink = nil
+                handleMailDeepLink(link)
             }
             .onChange(of: nav.presentMailAssistant) { _, present in
                 if present {
@@ -102,21 +127,7 @@ struct MailInboxView: View {
                 }
             }
             .onChange(of: nav.qaIntent) { _, intent in
-                guard let intent else { return }
-                switch intent {
-                case .mail:
-                    nav.qaIntent = nil
-                case .mailDetail:
-                    if let first = messages.first {
-                        path.append(first)
-                    }
-                    nav.qaIntent = nil
-                case .mailAssistant:
-                    openMailAssistant(.global)
-                    nav.qaIntent = nil
-                default:
-                    break
-                }
+                handleQaIntent(intent)
             }
             .navigationDestination(for: MailMessageSummary.self) { msg in
                 MailThreadView(summary: msg)
@@ -458,37 +469,7 @@ struct MailThreadView: View {
                         actionTitle: "Réessayer"
                     ) { Task { await load() } }
                 } else if let thread {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 16) {
-                            if let summaryText {
-                                MailSummaryBlock(text: summaryText)
-                            }
-                            if let replyDraft {
-                                MailDraftProposal(
-                                    draftText: Binding(
-                                        get: { replyDraft ?? "" },
-                                        set: { self.replyDraft = $0 }
-                                    ),
-                                    draftId: replyDraftId,
-                                    isEditing: editingDraft,
-                                    busy: aiBusy,
-                                    onEditToggle: { editingDraft.toggle() },
-                                    onRetry: { Task { await runSuggest() } },
-                                    onSend: { confirmSend = true }
-                                )
-                            }
-                            if let sendStatus {
-                                Text(sendStatus)
-                                    .font(CNFont.caption)
-                                    .foregroundStyle(AppTheme.success)
-                            }
-                            ForEach(thread.messages ?? []) { msg in
-                                MailThreadMessageCard(message: msg)
-                            }
-                        }
-                        .padding(14)
-                        .padding(.bottom, 88)
-                    }
+                    threadContent(thread)
                 }
             }
             ContextualAssistantButton(
@@ -504,39 +485,7 @@ struct MailThreadView: View {
         .accessibilityIdentifier(A11yID.Mail.detail)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        Task { await runSummarize() }
-                    } label: {
-                        Label("Résumer", systemImage: "text.alignleft")
-                    }
-                    .disabled(aiBusy)
-                    .accessibilityIdentifier(A11yID.Mail.summaryAction)
-                    Button {
-                        Task { await runSuggest() }
-                    } label: {
-                        Label("Préparer une réponse", systemImage: "arrowshape.turn.up.left")
-                    }
-                    .disabled(aiBusy)
-                    .accessibilityIdentifier(A11yID.Mail.reply)
-                    Button {
-                        showAssistant = true
-                    } label: {
-                        Label("Assistant", systemImage: "sparkles")
-                    }
-                    .accessibilityIdentifier("mail.menu.assistant")
-                    Divider()
-                    Button(role: .destructive) {
-                        Task { await trashFromThread() }
-                    } label: {
-                        Label("Corbeille", systemImage: "trash")
-                    }
-                    .disabled(aiBusy || trashing)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .accessibilityLabel("Actions du mail")
-                .accessibilityIdentifier(A11yID.Mail.overflow)
+                mailOverflowMenu
             }
         }
         .sheet(isPresented: $showAssistant) {
@@ -561,6 +510,81 @@ struct MailThreadView: View {
             Text("Une confirmation serveur sera demandée. L’envoi n’est jamais automatique.")
         }
         .task { await load() }
+    }
+
+    @ViewBuilder
+    private func threadContent(_ thread: MailThreadDTO) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if let summaryText {
+                    MailSummaryBlock(text: summaryText)
+                }
+                if replyDraft != nil {
+                    MailDraftProposal(
+                        draftText: replyDraftBinding,
+                        draftId: replyDraftId,
+                        isEditing: editingDraft,
+                        busy: aiBusy,
+                        onEditToggle: { editingDraft.toggle() },
+                        onRetry: { Task { await runSuggest() } },
+                        onSend: { confirmSend = true }
+                    )
+                }
+                if let sendStatus {
+                    Text(sendStatus)
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.success)
+                }
+                ForEach(thread.messages ?? []) { msg in
+                    MailThreadMessageCard(message: msg)
+                }
+            }
+            .padding(14)
+            .padding(.bottom, 88)
+        }
+    }
+
+    private var replyDraftBinding: Binding<String> {
+        Binding(
+            get: { replyDraft ?? "" },
+            set: { replyDraft = $0 }
+        )
+    }
+
+    private var mailOverflowMenu: some View {
+        Menu {
+            Button {
+                Task { await runSummarize() }
+            } label: {
+                Label("Résumer", systemImage: "text.alignleft")
+            }
+            .disabled(aiBusy)
+            .accessibilityIdentifier(A11yID.Mail.summaryAction)
+            Button {
+                Task { await runSuggest() }
+            } label: {
+                Label("Préparer une réponse", systemImage: "arrowshape.turn.up.left")
+            }
+            .disabled(aiBusy)
+            .accessibilityIdentifier(A11yID.Mail.reply)
+            Button {
+                showAssistant = true
+            } label: {
+                Label("Assistant", systemImage: "sparkles")
+            }
+            .accessibilityIdentifier("mail.menu.assistant")
+            Divider()
+            Button(role: .destructive) {
+                Task { await trashFromThread() }
+            } label: {
+                Label("Corbeille", systemImage: "trash")
+            }
+            .disabled(aiBusy || trashing)
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("Actions du mail")
+        .accessibilityIdentifier(A11yID.Mail.overflow)
     }
 
     private func load() async {
