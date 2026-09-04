@@ -287,6 +287,9 @@ struct FilesBrowserView: View {
             selectionError = "Échec pour : \(failed.joined(separator: ", "))"
         }
     }
+
+    /// Navigation exacte : preview fichier, dossier parent, ou recherche.
+    private func applyFilesDeepLink(_ link: FilesDeepLink) {
         switch link.intent {
         case .search:
             if let q = link.query, !q.isEmpty {
