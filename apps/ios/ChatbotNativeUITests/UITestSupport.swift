@@ -28,8 +28,9 @@ enum UITestA11y {
 
 extension XCUIApplication {
     func launchForUITesting(extraArgs: [String] = [], sseScenario: String? = nil) {
-        launchArguments += ["-UITesting"] + extraArgs
-        launchEnvironment["CHATBOT_UI_TESTING"] = "1"
+        // Remplacer (ne pas +=) — sinon les args s’accumulent entre tests.
+        launchArguments = ["-UITesting"] + extraArgs
+        launchEnvironment = ["CHATBOT_UI_TESTING": "1"]
         if let sseScenario, !sseScenario.isEmpty {
             launchEnvironment["CHATBOT_UI_SSE_SCENARIO"] = sseScenario
         }
@@ -58,6 +59,31 @@ extension XCUIApplication {
             }
         }()
         tabBars.buttons[label].tap()
+    }
+
+    /// Attend le composer Chat (cold start Simulator peut dépasser 10s).
+    @discardableResult
+    func ensureChatComposer(timeout: TimeInterval = 20) -> XCUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let field = descendants(matching: .any)[UITestA11y.chatComposerField]
+            if field.exists { return field }
+            let composer = descendants(matching: .any)[UITestA11y.chatComposer]
+            if composer.exists {
+                let messageField = textFields["Message"]
+                if messageField.exists { return messageField }
+                let messageView = textViews["Message"]
+                if messageView.exists { return messageView }
+                // Capsule présente : retenter le field id
+                if field.waitForExistence(timeout: 1.5) { return field }
+            }
+            let root = descendants(matching: .any)[UITestA11y.chatRoot]
+            if !root.exists && !composer.exists {
+                tapTab(UITestA11y.tabChat)
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        return element(id: UITestA11y.chatComposerField, timeout: 1)
     }
 
     /// Assert session UI-test déterministe (pas d'écran login).

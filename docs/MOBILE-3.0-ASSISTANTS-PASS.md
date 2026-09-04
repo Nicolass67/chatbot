@@ -33,7 +33,7 @@ Puis P5…P17
 - [x] Résumé Markdown rendu (`MailSummaryBlock` → `MarkdownMessageView`)
 - [x] PJ listées (fixture Free)
 - [x] Fallbacks HTML → plain (modes distincts + a11y)
-- [ ] DoD Simulator P1b (html contraste visible + summary PNG) — en cours lot CI
+- [x] DoD Simulator P1b (html contraste visible + summary PNG) — run 33829223957
 
 ## Phases
 
@@ -41,7 +41,7 @@ Puis P5…P17
 |-------|--------|
 | P0 Doc | done |
 | P1 Files nav | done (NavigationPath + cursor + breadcrumb) |
-| P1b Mail readability | **code + fix HTML WebView / nav tests — DoD = prochain Fast Simulator** |
+| P1b Mail readability | **PASS Simulator** (html contraste + text + summary PNG run 33829223957) |
 | GATE | **levé** (descriptions) ; screenshots Chat via `ChatGateUITests` |
 | P2 Keyboard | done (build 25) + UITest + PNG requis |
 | P3 Thinking | done (build 25) + UITest + PNG requis |

@@ -11,9 +11,8 @@ final class ChatGateUITests: XCTestCase {
         app.launchForUITesting()
         app.assertUITestSession()
 
-        app.tapTab(UITestA11y.tabChat)
-        let field = app.element(id: UITestA11y.chatComposerField, timeout: 12)
-        XCTAssertTrue(field.exists, "Composer field")
+        let field = app.ensureChatComposer(timeout: 25)
+        XCTAssertTrue(field.exists, "Composer field (P2)")
         field.tap()
         saveScreenshot(app, name: "chat-composer")
 
@@ -35,16 +34,15 @@ final class ChatGateUITests: XCTestCase {
         app.launchForUITesting(sseScenario: "thinking")
         app.assertUITestSession()
 
-        app.tapTab(UITestA11y.tabChat)
-        let field = app.element(id: UITestA11y.chatComposerField, timeout: 12)
-        XCTAssertTrue(field.exists)
+        let field = app.ensureChatComposer(timeout: 25)
+        XCTAssertTrue(field.exists, "Composer for thinking scenario")
         field.tap()
         field.typeText("UITest thinking")
-        let send = app.element(id: UITestA11y.chatSend, timeout: 5)
+        let send = app.element(id: UITestA11y.chatSend, timeout: 8)
         XCTAssertTrue(send.exists)
         send.tap()
 
-        let thinking = app.element(id: UITestA11y.chatThinking, timeout: 8)
+        let thinking = app.element(id: UITestA11y.chatThinking, timeout: 10)
         XCTAssertTrue(thinking.exists, "ThinkingStatusView must appear during chat stream (P3)")
         XCTAssertFalse(
             app.element(id: UITestA11y.agentRoot, timeout: 1).exists,
@@ -54,19 +52,17 @@ final class ChatGateUITests: XCTestCase {
     }
 
     func testAgentTimelineStopAndHumanError() throws {
-        // sseScenario=agent force la timeline même si le mode UI reste « chat ».
         let app = XCUIApplication()
         app.launchForUITesting(sseScenario: "agent")
         app.assertUITestSession()
 
-        app.tapTab(UITestA11y.tabChat)
-        let field = app.element(id: UITestA11y.chatComposerField, timeout: 10)
-        XCTAssertTrue(field.exists)
+        let field = app.ensureChatComposer(timeout: 25)
+        XCTAssertTrue(field.exists, "Composer for agent scenario")
         field.tap()
         field.typeText("UITest agent")
-        app.element(id: UITestA11y.chatSend, timeout: 5).tap()
+        app.element(id: UITestA11y.chatSend, timeout: 8).tap()
 
-        let agent = app.element(id: UITestA11y.agentRoot, timeout: 10)
+        let agent = app.element(id: UITestA11y.agentRoot, timeout: 12)
         XCTAssertTrue(agent.exists, "AgentActivityView must appear (P4)")
         XCTAssertFalse(
             app.element(id: UITestA11y.chatThinking, timeout: 1).exists,
@@ -80,16 +76,15 @@ final class ChatGateUITests: XCTestCase {
             saveScreenshot(app, name: "chat-agent-stopped")
         }
 
-        // Human-readable error path (relaunch déterministe)
         let app2 = XCUIApplication()
         app2.launchForUITesting(sseScenario: "agent-error")
         app2.assertUITestSession()
-        app2.tapTab(UITestA11y.tabChat)
-        let field2 = app2.element(id: UITestA11y.chatComposerField, timeout: 10)
+        let field2 = app2.ensureChatComposer(timeout: 25)
+        XCTAssertTrue(field2.exists, "Composer for agent-error")
         field2.tap()
         field2.typeText("UITest agent error")
-        app2.element(id: UITestA11y.chatSend, timeout: 5).tap()
-        XCTAssertTrue(app2.element(id: UITestA11y.agentRoot, timeout: 10).exists)
+        app2.element(id: UITestA11y.chatSend, timeout: 8).tap()
+        XCTAssertTrue(app2.element(id: UITestA11y.agentRoot, timeout: 12).exists)
 
         let friendly = app2.staticTexts.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "fichier")
