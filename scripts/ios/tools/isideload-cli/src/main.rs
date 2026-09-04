@@ -10,8 +10,9 @@
 //!   APPLE_APP_SPECIFIC_PASSWORD (or APPLE_PASSWORD)
 //!   IOS_SIDELLOAD_2FA_CODE (optional one-shot code)
 //!   IOS_SIDELLOAD_MACHINE_NAME (optional)
+//!   IOS_INSTALL_TRANSPORT = auto|usb|wifi|network  (default: auto = USB then Wi-Fi)
 
-use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
+use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice};
 use isideload::{
     auth::apple_account::{TwoFactorCallbackParams, TwoFactorCallbackResponse},
     auth::builder::AppleAccountBuilder,
@@ -32,6 +33,14 @@ use tracing_subscriber::FmtSubscriber;
 
 static NEED_HUMAN: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Transport {
+    /// Prefer USB; fall back to usbmux Network (Wi-Fi lockdown).
+    Auto,
+    UsbOnly,
+    WifiOnly,
+}
+
 fn exit_human(msg: &str) -> ! {
     eprintln!("HUMAN_REQUIRED: {msg}");
     process::exit(2);
@@ -44,10 +53,49 @@ fn exit_fail(msg: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "Usage: chatbot-isideload-cli install <path-to.ipa|.app>\n\
-         Env: APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD (or APPLE_PASSWORD)"
+        "Usage: chatbot-isideload-cli install [--transport auto|usb|wifi] <path-to.ipa|.app>\n\
+         Env: APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD (or APPLE_PASSWORD)\n\
+         Env: IOS_INSTALL_TRANSPORT=auto|usb|wifi (default auto)"
     );
     process::exit(1);
+}
+
+fn parse_transport(raw: &str) -> Transport {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" | "" => Transport::Auto,
+        "usb" => Transport::UsbOnly,
+        "wifi" | "network" | "wi-fi" => Transport::WifiOnly,
+        other => {
+            eprintln!("WARN: unknown transport '{other}', using auto");
+            Transport::Auto
+        }
+    }
+}
+
+fn is_usb(dev: &UsbmuxdDevice) -> bool {
+    matches!(dev.connection_type, Connection::Usb)
+}
+
+fn is_wifi(dev: &UsbmuxdDevice) -> bool {
+    matches!(dev.connection_type, Connection::Network(_))
+}
+
+fn conn_label(dev: &UsbmuxdDevice) -> String {
+    match &dev.connection_type {
+        Connection::Usb => "USB".into(),
+        Connection::Network(ip) => format!("Wi-Fi/{ip}"),
+        Connection::Unknown(s) => format!("Unknown/{s}"),
+    }
+}
+
+fn pick_device(devs: &[UsbmuxdDevice], transport: Transport) -> Option<&UsbmuxdDevice> {
+    let usb = devs.iter().find(|d| is_usb(d));
+    let wifi = devs.iter().find(|d| is_wifi(d));
+    match transport {
+        Transport::UsbOnly => usb,
+        Transport::WifiOnly => wifi,
+        Transport::Auto => usb.or(wifi).or_else(|| devs.first()),
+    }
 }
 
 #[tokio::main]
@@ -68,7 +116,32 @@ async fn main() {
     if cmd != "install" || args.is_empty() {
         usage();
     }
-    let app_path = PathBuf::from(&args[0]);
+
+    let mut transport = parse_transport(
+        &env::var("IOS_INSTALL_TRANSPORT").unwrap_or_else(|_| "auto".into()),
+    );
+    let mut path_arg: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--transport" {
+            if i + 1 >= args.len() {
+                usage();
+            }
+            transport = parse_transport(&args[i + 1]);
+            i += 2;
+            continue;
+        }
+        if args[i].starts_with("--transport=") {
+            transport = parse_transport(args[i].split_once('=').map(|(_, v)| v).unwrap_or(""));
+            i += 1;
+            continue;
+        }
+        if path_arg.is_none() && !args[i].starts_with('-') {
+            path_arg = Some(args[i].clone());
+        }
+        i += 1;
+    }
+    let app_path = PathBuf::from(path_arg.unwrap_or_else(|| usage()));
     if !app_path.exists() {
         exit_fail(&format!("path not found: {}", app_path.display()));
     }
@@ -132,10 +205,33 @@ async fn main() {
         Err(e) => exit_fail(&format!("list devices: {e}")),
     };
     if devs.is_empty() {
-        exit_fail("no USB iPhone found");
+        exit_fail(
+            "no iPhone in usbmux (USB or Wi-Fi). \
+             USB: plug cable + Trust. \
+             Wi-Fi: once over USB run `pymobiledevice3 lockdown wifi-connections on`, \
+             same LAN, unlocked; then `npm.cmd run ios:wifi-probe`.",
+        );
     }
+
+    let Some(dev) = pick_device(&devs, transport) else {
+        let listed = devs
+            .iter()
+            .map(|d| format!("{} [{}]", d.udid, conn_label(d)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        exit_fail(&format!(
+            "no device matching transport={transport:?}. seen: {listed}"
+        ));
+    };
+
+    println!(
+        "device {} via {} (transport={transport:?})",
+        dev.udid,
+        conn_label(dev)
+    );
+
     let provider =
-        devs[0].to_provider(UsbmuxdAddr::from_env_var().unwrap(), "chatbot-isideload");
+        dev.to_provider(UsbmuxdAddr::from_env_var().unwrap(), "chatbot-isideload");
 
     let machine = env::var("IOS_SIDELLOAD_MACHINE_NAME")
         .unwrap_or_else(|_| "chatbot-pc".to_string());

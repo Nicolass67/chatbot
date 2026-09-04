@@ -61,6 +61,8 @@ function parseArgs(argv) {
     noLaunch: false,
     force: false,
     ipa: null,
+    /** @type {"auto"|"usb"|"wifi"} */
+    transport: "auto",
   };
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
@@ -70,7 +72,13 @@ function parseArgs(argv) {
     else if (a === "--skip-build") out.skipBuild = true;
     else if (a === "--no-launch") out.noLaunch = true;
     else if (a === "--force") out.force = true;
-    else if (!a.startsWith("-") && !out.ipa) out.ipa = a;
+    else if (a === "--wifi") out.transport = "wifi";
+    else if (a === "--usb") out.transport = "usb";
+    else if (a === "--auto") out.transport = "auto";
+    else if (a === "--transport" && argv[i + 1]) {
+      const t = String(argv[++i]).toLowerCase();
+      out.transport = t === "network" ? "wifi" : /** @type {"auto"|"usb"|"wifi"} */ (t);
+    } else if (!a.startsWith("-") && !out.ipa) out.ipa = a;
   }
   return out;
 }
@@ -339,7 +347,7 @@ async function cmdDownload({ sha, runId }) {
   return verifyMeta(expectSha);
 }
 
-async function cmdInstall(ipa) {
+async function cmdInstall(ipa, transport = "auto") {
   const target = ipa || ipaPath;
   if (!fs.existsSync(target)) throw new Error(`IPA introuvable: ${target}`);
   if (fs.existsSync(metaPath)) {
@@ -350,7 +358,7 @@ async function cmdInstall(ipa) {
       console.warn(`[ios:deploy] warning meta: ${e.message}`);
     }
   }
-  return installIpa(target);
+  return installIpa(target, { transport });
 }
 
 async function cmdDeploy(opts) {
@@ -365,7 +373,7 @@ async function cmdDeploy(opts) {
     }
   }
 
-  const installResult = await cmdInstall(opts.ipa || ipaPath);
+  const installResult = await cmdInstall(opts.ipa || ipaPath, opts.transport || "auto");
   if (installResult.code !== 0 && installResult.code !== 2) {
     throw new Error(installResult.message || "install failed");
   }
@@ -415,8 +423,14 @@ function usage() {
   node scripts/ios/deploy.mjs flash-build [--sha SHA] [--ref branch] [--force]
   node scripts/ios/deploy.mjs fast-build [--sha SHA] [--ref branch] [--force]
   node scripts/ios/deploy.mjs download [--sha SHA] [--run id]
-  node scripts/ios/deploy.mjs install [ipa]
-  node scripts/ios/deploy.mjs deploy [--sha SHA] [--skip-build] [--no-launch] [--force]
+  node scripts/ios/deploy.mjs install [ipa] [--auto|--usb|--wifi]
+  node scripts/ios/deploy.mjs deploy [--sha SHA] [--skip-build] [--no-launch] [--force] [--auto|--usb|--wifi]
+  node scripts/ios/deploy.mjs wifi-probe [discover|enable|status]
+
+  Transport (install/deploy):
+    --auto  USB si présent, sinon Wi-Fi lockdown (usbmux Network)  [défaut]
+    --usb   USB uniquement (chemin historique fiable)
+    --wifi  Wi-Fi lockdown uniquement (device doit apparaître Network dans usbmux)
 `);
 }
 
@@ -438,8 +452,14 @@ async function main() {
       console.log(JSON.stringify({ ok: true, meta, ipaPath }, null, 2));
       return;
     }
+    if (opts.cmd === "wifi-probe") {
+      const probe = path.join(root, "scripts", "ios", "wifi-probe.mjs");
+      const sub = opts.ipa || "discover";
+      shInherit("node", [probe, sub]);
+      return;
+    }
     if (opts.cmd === "install") {
-      const r = await cmdInstall(opts.ipa);
+      const r = await cmdInstall(opts.ipa, opts.transport || "auto");
       process.exitCode = r.code === 2 ? 2 : r.code === 0 ? 0 : 1;
       console.log(JSON.stringify(r, null, 2));
       return;

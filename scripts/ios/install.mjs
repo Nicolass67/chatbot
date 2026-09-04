@@ -151,37 +151,57 @@ function openIloaderFallback(ipaPath) {
 
 /**
  * @param {string} ipaPath
- * @returns {Promise<{code:number, humanRequired?:boolean, message:string, backend:string}>}
+ * @param {{ transport?: "auto"|"usb"|"wifi" }} [opts]
+ * @returns {Promise<{code:number, humanRequired?:boolean, message:string, backend:string, transport?:string}>}
  */
-export async function installIpa(ipaPath) {
+export async function installIpa(ipaPath, opts = {}) {
   const abs = path.resolve(ipaPath);
   if (!fs.existsSync(abs)) {
     return { code: 1, message: `IPA introuvable: ${abs}`, backend: "none" };
+  }
+
+  const transport = String(
+    opts.transport || process.env.IOS_INSTALL_TRANSPORT || "auto"
+  )
+    .trim()
+    .toLowerCase();
+  const transportNorm =
+    transport === "network" || transport === "wi-fi" ? "wifi" : transport;
+  if (!["auto", "usb", "wifi"].includes(transportNorm)) {
+    return {
+      code: 1,
+      message: `transport invalide: ${transport} (auto|usb|wifi)`,
+      backend: "none",
+    };
   }
 
   const cli = findCli();
   const creds = resolveAppleCredentials();
 
   if (cli && creds) {
-    console.log(`[ios:install] isideload CLI (${cli}) via ${creds.source}`);
-    const r = spawnSync(
-      cli,
-      ["install", abs],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          APPLE_ID: creds.appleId,
-          APPLE_APP_SPECIFIC_PASSWORD: creds.password,
-          APPLE_PASSWORD: creds.password,
-        },
-        windowsHide: true,
-        timeout: 10 * 60 * 1000,
-      }
+    console.log(
+      `[ios:install] isideload CLI (${cli}) via ${creds.source} transport=${transportNorm}`
     );
+    const r = spawnSync(cli, ["install", "--transport", transportNorm, abs], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        APPLE_ID: creds.appleId,
+        APPLE_APP_SPECIFIC_PASSWORD: creds.password,
+        APPLE_PASSWORD: creds.password,
+        IOS_INSTALL_TRANSPORT: transportNorm,
+      },
+      windowsHide: true,
+      timeout: 10 * 60 * 1000,
+    });
     const out = ((r.stdout || "") + (r.stderr || "")).trim();
     if (r.status === 0) {
-      return { code: 0, message: out || "installed", backend: "isideload" };
+      return {
+        code: 0,
+        message: out || "installed",
+        backend: "isideload",
+        transport: transportNorm,
+      };
     }
     if (r.status === 2 || /HUMAN_REQUIRED|2FA|two.?factor/i.test(out)) {
       console.warn("[ios:install] isideload HUMAN_REQUIRED → iLoader fallback");
@@ -207,12 +227,23 @@ export async function installIpa(ipaPath) {
 
 // CLI entry
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const ipa = process.argv[2];
+  let transport = process.env.IOS_INSTALL_TRANSPORT || "auto";
+  let ipa = null;
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--transport" && argv[i + 1]) transport = argv[++i];
+    else if (argv[i] === "--wifi") transport = "wifi";
+    else if (argv[i] === "--usb") transport = "usb";
+    else if (argv[i] === "--auto") transport = "auto";
+    else if (!argv[i].startsWith("-") && !ipa) ipa = argv[i];
+  }
   if (!ipa) {
-    console.error("Usage: node scripts/ios/install.mjs <ipa>");
+    console.error(
+      "Usage: node scripts/ios/install.mjs [--auto|--usb|--wifi] [--transport auto|usb|wifi] <ipa>"
+    );
     process.exit(1);
   }
-  installIpa(ipa).then((r) => {
+  installIpa(ipa, { transport }).then((r) => {
     console.log(JSON.stringify(r, null, 2));
     process.exit(r.code === 2 ? 2 : r.code === 0 ? 0 : 1);
   });

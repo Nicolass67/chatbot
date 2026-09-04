@@ -4,26 +4,23 @@ CLI locale pour `ios:deploy` (wrapper [isideload](https://crates.io/crates/iside
 
 ## Build
 
-```powershell
-cd D:\Chatbot\scripts\ios\tools\isideload-cli
+```bat
+cd D:\chatbot-public\scripts\ios\tools\isideload-cli
 cargo build --release
 ```
 
 Binaire : `target/release/chatbot-isideload-cli.exe`
 
-## Credentials (hors git)
+## Usage
 
-```powershell
-$env:APPLE_ID = "you@example.com"
-$env:APPLE_APP_SPECIFIC_PASSWORD = "xxxx-xxxx-xxxx-xxxx"
+```bat
+chatbot-isideload-cli install [--transport auto|usb|wifi] path\to.app.ipa
 ```
 
-Ou Windows Credential Manager target `ChatbotAppleID`.
+- `auto` (défaut) : USB si présent, sinon usbmux **Network** (Wi-Fi lockdown)
+- `usb` : USB uniquement
+- `wifi` : Network uniquement
 
-## Exit codes
+Env : `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `IOS_INSTALL_TRANSPORT`, `IOS_SIDELLOAD_2FA_CODE`
 
-| Code | Sens |
-|------|------|
-| 0 | Install OK |
-| 2 | HUMAN_REQUIRED (2FA) → fallback iLoader |
-| 1 | FAIL |
+Voir `docs/IOS-WIFI-DEPLOY.md`.
