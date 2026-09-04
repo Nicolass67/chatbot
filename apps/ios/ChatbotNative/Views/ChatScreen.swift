@@ -1234,8 +1234,7 @@ struct ChatScreen: View {
 
         suppressAssistantNarration = false
 
-        // Feedback immédiat Mail Assistant (avant premier token)
-        let immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
+        var immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
         let lower = text.lowercased()
         if lower.contains("moi-même") || lower.contains("moi meme") || lower.contains("à moi") || lower.contains("a moi") {
             immediateThinking = .custom("Recherche du destinataire…")

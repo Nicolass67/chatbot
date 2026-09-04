@@ -554,9 +554,12 @@ final class APIClient: @unchecked Sendable {
 
     func summarizeMail(threadId: String) async throws -> String {
         if UITestMode.isActive { return UITestFixtures.mailSummaryMarkdown }
-        var collected = ""
-        try await streamSummarizeMail(threadId: threadId) { collected += $0 }
-        return collected
+        final class Box: @unchecked Sendable {
+            var value = ""
+        }
+        let box = Box()
+        try await streamSummarizeMail(threadId: threadId) { box.value += $0 }
+        return box.value
     }
 
     /// Streaming réel résumé mail (SSE backend).
