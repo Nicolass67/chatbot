@@ -17,9 +17,37 @@ enum TabMemoryCache {
         var windowExhausted: Bool
     }
 
+    struct FileFolderSnapshot {
+        var entries: [FileEntryDTO]
+        var nextCursor: String?
+    }
+
     static var mail: MailSnapshot?
     static var fileRoots: [FileRootDTO]?
+    /// Contenu des dossiers Files (clé `rootId|path`).
+    static var fileFolders: [String: FileFolderSnapshot] = [:]
+    /// Pile de navigation Files (dossiers / fichiers) — conserve l’emplacement entre onglets.
+    static var filesPath: [FilesDestination]?
     static var chatMessagesByConversation: [String: [MessageDTO]] = [:]
+
+    static func folderKey(rootId: String, path: String) -> String {
+        "\(rootId)|\(path)"
+    }
+
+    static func saveFolder(rootId: String, path: String, entries: [FileEntryDTO], nextCursor: String?) {
+        fileFolders[folderKey(rootId: rootId, path: path)] = .init(
+            entries: entries,
+            nextCursor: nextCursor
+        )
+    }
+
+    static func folder(rootId: String, path: String) -> FileFolderSnapshot? {
+        fileFolders[folderKey(rootId: rootId, path: path)]
+    }
+
+    static func invalidateFolder(rootId: String, path: String) {
+        fileFolders.removeValue(forKey: folderKey(rootId: rootId, path: path))
+    }
 
     static func saveChat(conversationId: String, messages: [MessageDTO]) {
         guard !messages.isEmpty else { return }

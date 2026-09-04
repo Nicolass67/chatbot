@@ -22,7 +22,7 @@ enum FilesTypeFilter: String, CaseIterable, Identifiable {
 }
 
 /// Destination unique enregistrée à la racine du NavigationStack (évite destinations imbriquées).
-enum FilesDestination: Hashable {
+enum FilesDestination: Hashable, Codable {
     case folder(rootId: String, path: String, title: String)
     case file(fileId: String, title: String, rootId: String, folderPath: String)
 }
@@ -42,7 +42,8 @@ enum FilesIndexStatus: Equatable {
 struct FilesBrowserView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
-    @State private var path = NavigationPath()
+    /// Pile typée (pas `NavigationPath`) pour pouvoir la cacher entre onglets.
+    @State private var path: [FilesDestination] = []
     @State private var roots: [FileRootDTO] = []
     @State private var rootsById: [String: FileRootDTO] = [:]
     @State private var loading = false
@@ -185,8 +186,15 @@ struct FilesBrowserView: View {
                 if roots.isEmpty {
                     await loadRoots()
                 }
+                // Restaure l’emplacement (dossier ouvert) après un remount TabView Mail ↔ Files.
+                if path.isEmpty, let saved = TabMemoryCache.filesPath, !saved.isEmpty {
+                    path = saved
+                }
                 // Deep-link posé avant l’apparition de l’onglet (ex. « Ouvrir le dossier » depuis Mail).
                 consumePendingFilesDeepLink()
+            }
+            .onChange(of: path) { _, newPath in
+                TabMemoryCache.filesPath = newPath
             }
             .onChange(of: roots) { _, newRoots in
                 rootsById = Dictionary(newRoots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
@@ -377,14 +385,13 @@ struct FilesBrowserView: View {
                 Task { await runSearch(q) }
             }
             if let rootId = link.rootId, rootsById[rootId] != nil {
-                path = NavigationPath()
-                path.append(
+                path = [
                     FilesDestination.folder(
                         rootId: rootId,
                         path: "",
                         title: rootsById[rootId]?.label ?? "Root"
                     )
-                )
+                ]
             }
         case .folder:
             navigateToFolder(rootId: link.rootId, folderPath: link.folderPath ?? "")
@@ -415,14 +422,13 @@ struct FilesBrowserView: View {
         else { return }
         let rootKey = root.id
         // Une seule assignation de path (évite crash SwiftUI sur appends enchaînés).
-        var next = NavigationPath()
-        next.append(
+        var next: [FilesDestination] = [
             FilesDestination.folder(
                 rootId: rootKey,
                 path: "",
                 title: root.label ?? "Root"
             )
-        )
+        ]
         let normalized = folderPath.replacingOccurrences(of: "\\", with: "/")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !normalized.isEmpty {
@@ -955,7 +961,24 @@ struct FileFolderView: View {
         .onChange(of: selection.contentEpoch) { _, _ in
             Task { await load(reset: true) }
         }
-        .task { await load(reset: true) }
+        .task {
+            // Même logique que les roots : restaurer le cache process avant tout réseau
+            // (évite le flash « Chargement… » au retour Mail → Files).
+            if entries.isEmpty,
+               let snap = TabMemoryCache.folder(rootId: root.id, path: path),
+               !snap.entries.isEmpty
+            {
+                entries = snap.entries
+                nextCursor = snap.nextCursor
+                loading = false
+                return
+            }
+            if entries.isEmpty {
+                await load(reset: true)
+            } else {
+                loading = false
+            }
+        }
     }
 
     private func isFolder(_ entry: FileEntryDTO) -> Bool { entry.isDirectory == true }
@@ -1188,6 +1211,12 @@ struct FileFolderView: View {
             entries = Self.sorted(list.entries)
             nextCursor = list.nextCursor
             error = nil
+            TabMemoryCache.saveFolder(
+                rootId: root.id,
+                path: path,
+                entries: entries,
+                nextCursor: nextCursor
+            )
         } catch {
             self.error = error.localizedDescription
         }
@@ -1202,6 +1231,12 @@ struct FileFolderView: View {
             let merged = entries + list.entries
             entries = Self.sorted(merged)
             nextCursor = list.nextCursor
+            TabMemoryCache.saveFolder(
+                rootId: root.id,
+                path: path,
+                entries: entries,
+                nextCursor: nextCursor
+            )
         } catch {
             // silent — user still has first page
         }
@@ -1301,6 +1336,12 @@ struct FileFolderView: View {
             entries.removeAll { $0.fileId == fileId }
             selection.remove(fileIds: [fileId])
             selection.bumpContent()
+            TabMemoryCache.saveFolder(
+                rootId: root.id,
+                path: path,
+                entries: entries,
+                nextCursor: nextCursor
+            )
             AppHaptics.success()
         } catch {
             AppHaptics.warning()
