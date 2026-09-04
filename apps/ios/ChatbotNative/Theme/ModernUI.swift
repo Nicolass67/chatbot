@@ -115,6 +115,59 @@ struct SoftLoadingBlock: View {
     }
 }
 
+/// Barre horizontale indéterminée — entre chrome (filtres) et liste, sans overlay.
+/// Hauteur fixe (2pt) pour éviter tout saut de layout.
+struct MailListLoadingIndicator: View {
+    var isActive: Bool
+    var tint: Color = AppTheme.mailAccent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(AppTheme.borderSubtle.opacity(isActive ? 0.7 : 0))
+            if isActive {
+                if reduceMotion {
+                    Rectangle()
+                        .fill(tint.opacity(0.55))
+                        .frame(maxWidth: .infinity)
+                } else {
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { context in
+                        GeometryReader { geo in
+                            let cycle = 1.05
+                            let t = context.date.timeIntervalSinceReferenceDate
+                                .truncatingRemainder(dividingBy: cycle) / cycle
+                            let band = max(72.0, geo.size.width * 0.36)
+                            let x = -band + CGFloat(t) * (geo.size.width + band)
+                            Capsule(style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            tint.opacity(0),
+                                            tint.opacity(0.95),
+                                            tint.opacity(0),
+                                        ],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: band, height: 2)
+                                .offset(x: x)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 2)
+        .opacity(isActive ? 1 : 0)
+        .animation(.easeOut(duration: AppTheme.motionQuick), value: isActive)
+        .accessibilityHidden(!isActive)
+        .accessibilityLabel(isActive ? "Mise à jour de la boîte mail" : "")
+        .accessibilityAddTraits(isActive ? .updatesFrequently : [])
+    }
+}
+
 struct SoftSkeletonList: View {
     var rows: Int = 6
 

@@ -6,6 +6,10 @@ struct MailInboxView: View {
     @Environment(AppNavigation.self) private var nav
     @State private var messages: [MailMessageSummary] = []
     @State private var loading = false
+    /// Barre inline (liste déjà peuplée) — révélée après un court délai anti-flash.
+    @State private var showInlineProgress = false
+    @State private var loadGeneration = 0
+    @State private var loadTask: Task<Void, Never>?
     @State private var error: String?
     @State private var path = NavigationPath()
     @State private var category: String = "primary"
@@ -75,6 +79,12 @@ struct MailInboxView: View {
         }
     }
 
+    /// Lance un chargement (latest-wins) — annule la requête précédente.
+    private func scheduleLoad() {
+        loadTask?.cancel()
+        loadTask = Task { await load() }
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
@@ -103,9 +113,9 @@ struct MailInboxView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .searchable(text: $search, prompt: "Rechercher dans Gmail…")
-            .onSubmit(of: .search) { Task { await load() } }
+            .onSubmit(of: .search) { scheduleLoad() }
             .onChange(of: search) { _, q in
-                if q.isEmpty { Task { await load() } }
+                if q.isEmpty { scheduleLoad() }
             }
             .refreshable { await load() }
             .task {
@@ -167,6 +177,7 @@ struct MailInboxView: View {
     private var mailStack: some View {
         VStack(spacing: 0) {
             mailChrome
+            MailListLoadingIndicator(isActive: showInlineProgress)
             content
         }
     }
@@ -211,7 +222,7 @@ struct MailInboxView: View {
                     Text("Non lus").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: unreadOnly) { _, _ in Task { await load() } }
+                .onChange(of: unreadOnly) { _, _ in scheduleLoad() }
 
                 Menu {
                     Picker("Catégorie", selection: $category) {
@@ -229,7 +240,7 @@ struct MailInboxView: View {
                     .frame(minHeight: 34)
                     .background(AppTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                 }
-                .onChange(of: category) { _, _ in Task { await load() } }
+                .onChange(of: category) { _, _ in scheduleLoad() }
             }
             .padding(.horizontal, 14)
         }
@@ -239,7 +250,7 @@ struct MailInboxView: View {
 
     @ViewBuilder
     private var content: some View {
-        if loading && messages.isEmpty {
+        if loading && messages.isEmpty && !showInlineProgress {
             SoftLoadingBlock(label: "Chargement des mails…")
         } else if let error, messages.isEmpty {
             SoftEmptyState(
@@ -247,7 +258,7 @@ struct MailInboxView: View {
                 title: "Impossible de charger",
                 message: error,
                 actionTitle: "Réessayer"
-            ) { Task { await load() } }
+            ) { scheduleLoad() }
         } else if messages.isEmpty {
             SoftEmptyState(
                 systemImage: "tray",
@@ -299,17 +310,36 @@ struct MailInboxView: View {
     }
 
     private func load() async {
+        loadGeneration += 1
+        let gen = loadGeneration
         loading = true
-        defer { loading = false }
+        error = nil
+        // Feedback immédiat si la liste est déjà à l’écran (pas d’overlay, hauteur fixe).
+        if !messages.isEmpty {
+            showInlineProgress = true
+        }
+
+        defer {
+            if gen == loadGeneration {
+                loading = false
+                showInlineProgress = false
+            }
+        }
+
         do {
             let cat = unreadOnly ? "unread" : category
             let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
-            messages = try await client.listMailMessages(
+            let result = try await client.listMailMessages(
                 category: cat,
                 query: q.isEmpty ? nil : q
             )
+            guard gen == loadGeneration, !Task.isCancelled else { return }
+            messages = result
             error = nil
+        } catch is CancellationError {
+            return
         } catch {
+            guard gen == loadGeneration, !Task.isCancelled else { return }
             self.error = error.localizedDescription
             if case APIClientError.unauthorized = error {
                 await session.logout()
