@@ -67,12 +67,14 @@ struct ChatScreen: View {
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
-    /// Pendant un scroll programmé (envoi / stream / bouton), ignore le flicker de pastille.
-    @State private var suppressScrollDownUntil: Date = .distantPast
-    /// Afficher « bas » seulement après une vraie remontée (≈ 2–3 bulles), pas en bas de fil.
-    private let scrollBottomProximityThreshold: CGFloat = 520
-    /// Redescente : masquer plus tôt que le seuil d’apparition (hystérésis).
-    private let scrollBottomHideThreshold: CGFloat = 160
+    /// Collé en bas → suivi auto du stream. Remontée utilisateur → false.
+    @State private var isPinnedToBottom = true
+    /// Pendant un scroll programmé (envoi / stream / bouton), ignore les pics de distance.
+    @State private var suppressScrollGeometryUntil: Date = .distantPast
+    /// Afficher « bas » seulement après une vraie remontée (pas quasi en bas).
+    private let scrollShowButtonThreshold: CGFloat = 520
+    /// Redescente : re-pin + masquer le bouton (hystérésis).
+    private let scrollHideButtonThreshold: CGFloat = 160
     @State private var scrollToken = 0
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
@@ -471,9 +473,12 @@ struct ChatScreen: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(
-                    DragGesture(minimumDistance: 10).onChanged { _ in
+                    DragGesture(minimumDistance: 12).onChanged { value in
                         Keyboard.dismiss()
-                        // Ne pas forcer showScrollDown ici : la géométrie (seuil ~520pt) décide.
+                        // Remontée volontaire → coupe le suivi auto (le bouton n’apparaît qu’assez haut).
+                        if value.translation.height > 28 {
+                            isPinnedToBottom = false
+                        }
                     }
                 )
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -483,52 +488,53 @@ struct ChatScreen: View {
                     let bottomInset = geometry.contentInsets.bottom
                     return max(0, contentH + bottomInset - visibleH - offsetY)
                 } action: { _, distanceToBottom in
-                    let farFromBottom = distanceToBottom > scrollBottomProximityThreshold
-                    let nearBottom = distanceToBottom <= scrollBottomHideThreshold
+                    // IMPORTANT : pendant le stream, le contenu grandit → distance explose
+                    // avant le scrollTo. Ne jamais interpréter ça comme une remontée user.
+                    if Date() < suppressScrollGeometryUntil { return }
 
-                    if farFromBottom {
+                    if distanceToBottom > scrollShowButtonThreshold {
+                        if isPinnedToBottom { isPinnedToBottom = false }
                         if !showScrollDown {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 showScrollDown = true
                             }
                         }
-                        return
-                    }
-
-                    if Date() < suppressScrollDownUntil { return }
-
-                    // Redescente en bas → cacher le bouton et réactiver l’auto-scroll.
-                    if nearBottom, showScrollDown {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            showScrollDown = false
+                    } else if distanceToBottom <= scrollHideButtonThreshold {
+                        if !isPinnedToBottom { isPinnedToBottom = true }
+                        if showScrollDown {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                showScrollDown = false
+                            }
                         }
                     }
                 }
                 .onChange(of: streamingText) { _, text in
-                    guard !showScrollDown, !text.isEmpty else { return }
-                    // Suppress court : laisse le prochain geste reprendre la main.
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.12)
-                    withAnimation(.easeOut(duration: 0.15)) {
+                    guard isPinnedToBottom, !text.isEmpty else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.4)
+                    withAnimation(.easeOut(duration: 0.12)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: messages.count) { _, _ in
-                    guard !showScrollDown else { return }
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.2)
-                    withAnimation(.easeOut(duration: 0.28)) {
+                    guard isPinnedToBottom else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
+                    withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: scrollToken) { _, _ in
+                    isPinnedToBottom = true
                     showScrollDown = false
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.35)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: isSending) { _, sending in
-                    guard sending, !showScrollDown else { return }
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.2)
+                    guard sending else { return }
+                    isPinnedToBottom = true
+                    showScrollDown = false
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
                     withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo(
                             shouldShowLiveAgentStrip ? "agent-live" : "working-indicator",
@@ -537,21 +543,24 @@ struct ChatScreen: View {
                     }
                 }
                 .onChange(of: thinkingKind) { _, kind in
-                    guard !showScrollDown else { return }
+                    guard isPinnedToBottom else { return }
                     guard isSending, kind != nil, streamingText.isEmpty, !shouldShowLiveAgentStrip else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.3)
                     withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo("working-indicator", anchor: .bottom)
                     }
                 }
                 .onChange(of: agentActivity.planSteps) { _, _ in
-                    guard !showScrollDown, shouldShowLiveAgentStrip else { return }
+                    guard isPinnedToBottom, shouldShowLiveAgentStrip else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.3)
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo("agent-live", anchor: .bottom)
                     }
                 }
                 .onChange(of: draftCardText) { _, _ in
-                    guard !showScrollDown else { return }
+                    guard isPinnedToBottom else { return }
                     guard draftInConversation || draftCardStreaming else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.25)
                     proxy.scrollTo("conversation-draft", anchor: .bottom)
                 }
             }
@@ -1669,6 +1678,7 @@ struct ChatScreen: View {
         streamFilesHandoff = nil
         streamFilesFound = []
         agentActivity = AgentActivityState()
+        isPinnedToBottom = true
         showScrollDown = false
         runtimeStatus = "BUSY"
 
