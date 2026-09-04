@@ -515,24 +515,15 @@ private struct MovePickerBrowser: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider().overlay(AppTheme.borderSubtle)
-                Button(action: onMoveHere) {
-                    Label(
-                        itemCount <= 1 ? "Déplacer ici" : "Déplacer \(itemCount) ici",
-                        systemImage: "folder.fill.badge.plus"
-                    )
-                    .font(CNFont.callout.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(AppTheme.filesAccent)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 14)
-            }
-            .background(.ultraThinMaterial)
+            FilesPickerActionBar(
+                title: itemCount <= 1 ? "Déplacer" : "Déplacer \(itemCount)",
+                subtitle: itemCount <= 1 ? "1 fichier" : "\(itemCount) fichiers",
+                detail: breadcrumb,
+                systemImage: "folder",
+                tint: AppTheme.filesAccent,
+                busy: false,
+                action: onMoveHere
+            )
         }
         .task(id: "\(root.id)|\(path)") { await load() }
     }

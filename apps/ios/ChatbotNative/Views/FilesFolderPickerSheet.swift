@@ -506,27 +506,15 @@ private struct FolderPickerBrowser: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider().overlay(AppTheme.borderSubtle)
-                Button(action: onSaveHere) {
-                    Label("Enregistrer ici", systemImage: "square.and.arrow.down.fill")
-                        .font(CNFont.callout.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(saving)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
-                Text(filename)
-                    .font(CNFont.caption2)
-                    .foregroundStyle(AppTheme.muted)
-                    .lineLimit(1)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-            }
-            .background(.ultraThinMaterial)
+            FilesPickerActionBar(
+                title: "Enregistrer",
+                subtitle: filename,
+                detail: breadcrumb,
+                systemImage: "square.and.arrow.down",
+                tint: AppTheme.accent,
+                busy: saving,
+                action: onSaveHere
+            )
         }
         .task(id: "\(root.id)|\(path)") { await load() }
     }
