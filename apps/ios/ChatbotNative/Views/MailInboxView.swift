@@ -143,7 +143,8 @@ struct MailInboxView: View {
                     scope: .mail,
                     title: sheetContext.sheetTitle,
                     contextLabel: sheetContext.label,
-                    contextRef: sheetContext.ref
+                    contextRef: sheetContext.ref,
+                    persistenceKey: sheetContext.persistenceKey
                 )
                 .environmentObject(session)
                 .environment(nav)
@@ -530,7 +531,8 @@ struct MailThreadView: View {
                 scope: .mail,
                 title: assistantContext.sheetTitle,
                 contextLabel: assistantContext.label,
-                contextRef: assistantContext.ref
+                contextRef: assistantContext.ref,
+                persistenceKey: assistantContext.persistenceKey
             )
             .environmentObject(session)
             .environment(nav)

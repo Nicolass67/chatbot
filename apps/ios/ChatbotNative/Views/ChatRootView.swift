@@ -153,12 +153,8 @@ struct ChatRootView: View {
         case .mail:
             nav.openMailAssistant(.thread(threadId: req.key, subject: req.title, from: nil))
         case .file:
-            // Plus d’assistant Files UI — deep-link vers le fichier / recherche.
-            nav.openFilePreview(
-                fileId: req.key,
-                fileName: req.title,
-                rootId: nil,
-                folderPath: nil
+            nav.openFilesAssistant(
+                .file(fileId: req.key, name: req.title, rootId: "", path: "")
             )
         }
     }

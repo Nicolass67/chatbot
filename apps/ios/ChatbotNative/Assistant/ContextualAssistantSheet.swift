@@ -11,6 +11,8 @@ struct ContextualAssistantSheet: View {
     let title: String
     let contextLabel: String
     let contextRef: ActiveContextHint
+    /// Clé de persistance explicite (Mail thread / Files folder|file|global).
+    var persistenceKey: String? = nil
 
     @State private var conversation: ConversationDTO?
     @State private var error: String?
@@ -22,7 +24,8 @@ struct ContextualAssistantSheet: View {
     }
 
     private var contextKey: String {
-        contextRef.mailThreadId
+        if let persistenceKey, !persistenceKey.isEmpty { return persistenceKey }
+        return contextRef.mailThreadId
             ?? contextRef.fileId
             ?? ConversationSessionStore.globalContextKey
     }

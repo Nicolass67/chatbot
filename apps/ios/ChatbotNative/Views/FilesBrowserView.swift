@@ -39,9 +39,20 @@ struct FilesBrowserView: View {
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
     @State private var pendingDeepLink: FilesDeepLink?
+    @State private var showAssistant = false
+    @State private var assistantContext: FilesAssistantContext = .global
+    @State private var sheetContext: FilesAssistantContext = .global
+    @State private var assistantDetent: PresentationDetent = .large
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private func openFilesAssistant(_ context: FilesAssistantContext) {
+        assistantContext = context
+        sheetContext = context
+        assistantDetent = .large
+        showAssistant = true
     }
 
     var body: some View {
@@ -49,10 +60,16 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 content
+                ContextualAssistantButton(
+                    accessibilityLabelText: "Ouvrir l’assistant Files",
+                    tint: AppTheme.filesAccent
+                ) {
+                    openFilesAssistant(.global)
+                }
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
-                        .toolbar {
+            .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         nav.openSettings()
@@ -82,10 +99,9 @@ struct FilesBrowserView: View {
                 nav.filesDeepLink = nil
             }
             .onChange(of: nav.presentFilesAssistant) { _, present in
-                // Assistant Files UI retiré — deep-link vers recherche / racine.
                 if present {
+                    openFilesAssistant(nav.filesAssistantContext)
                     nav.presentFilesAssistant = false
-                    selectedTabStayOnFiles()
                 }
             }
             .onChange(of: nav.qaIntent) { _, intent in
@@ -109,6 +125,7 @@ struct FilesBrowserView: View {
                 case .filesFile:
                     nav.qaIntent = nil
                 case .filesAssistant:
+                    openFilesAssistant(.global)
                     nav.qaIntent = nil
                 default:
                     break
@@ -119,11 +136,24 @@ struct FilesBrowserView: View {
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
             }
+            .sheet(isPresented: $showAssistant) {
+                ContextualAssistantSheet(
+                    scope: .files,
+                    title: sheetContext.sheetTitle,
+                    contextLabel: sheetContext.label,
+                    contextRef: sheetContext.ref,
+                    persistenceKey: sheetContext.persistenceKey
+                )
+                .environmentObject(session)
+                .environment(nav)
+                .presentationDetents([.medium, .large], selection: $assistantDetent)
+                .presentationDragIndicator(.visible)
+                .onAppear { assistantDetent = .large }
+            }
+            .onChange(of: showAssistant) { _, presented in
+                if presented { assistantDetent = .large }
+            }
         }
-    }
-
-    private func selectedTabStayOnFiles() {
-        // no-op : reste sur l’onglet Files sans ouvrir d’assistant
     }
 
     /// Navigation exacte : preview fichier, dossier parent, ou recherche.
@@ -224,6 +254,11 @@ struct FilesBrowserView: View {
                                 folderPath: folderPath
                             )
                         )
+                    },
+                    onAskAssistant: {
+                        openFilesAssistant(
+                            .folder(rootId: root.id, path: folderPath, title: title)
+                        )
                     }
                 )
             } else {
@@ -233,8 +268,16 @@ struct FilesBrowserView: View {
                     message: "Cette racine n’est plus disponible."
                 )
             }
-        case .file(let fileId, let title, _, _):
-            FilePreviewView(fileId: fileId, title: title)
+        case .file(let fileId, let title, let rootId, let folderPath):
+            FilePreviewView(
+                fileId: fileId,
+                title: title,
+                onAskAssistant: {
+                    openFilesAssistant(
+                        .file(fileId: fileId, name: title, rootId: rootId, path: folderPath)
+                    )
+                }
+            )
         }
     }
 
@@ -393,6 +436,7 @@ struct FileFolderView: View {
     let title: String
     var onOpenFolder: (FileEntryDTO) -> Void
     var onOpenFile: (FileEntryDTO) -> Void
+    var onAskAssistant: (() -> Void)? = nil
 
     @State private var entries: [FileEntryDTO] = []
     @State private var loading = true
@@ -466,6 +510,13 @@ struct FileFolderView: View {
                 } else {
                     list
                 }
+            }
+            if let onAskAssistant {
+                ContextualAssistantButton(
+                    accessibilityLabelText: "Ouvrir l’assistant Files",
+                    tint: AppTheme.filesAccent,
+                    action: onAskAssistant
+                )
             }
         }
         .navigationTitle(title)
@@ -775,6 +826,7 @@ struct FilePreviewView: View {
     @EnvironmentObject private var session: AppSessionStore
     let fileId: String
     let title: String
+    var onAskAssistant: (() -> Void)? = nil
 
     @State private var content: FileContentDTO?
     @State private var image: UIImage?
@@ -837,6 +889,13 @@ struct FilePreviewView: View {
                         message: "Ce type de fichier n’a pas d’aperçu natif — utilise Partager."
                     )
                 }
+            }
+            if let onAskAssistant {
+                ContextualAssistantButton(
+                    accessibilityLabelText: "Ouvrir l’assistant Files",
+                    tint: AppTheme.filesAccent,
+                    action: onAskAssistant
+                )
             }
         }
         .navigationTitle(title)

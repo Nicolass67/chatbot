@@ -73,6 +73,18 @@ enum FilesAssistantContext: Equatable {
             return ActiveContextHint(fileId: fileId, rootId: rootId, label: name)
         }
     }
+
+    /// Clé stable ConversationSessionStore (fermer ≠ nouveau chat).
+    var persistenceKey: String {
+        switch self {
+        case .global:
+            return ConversationSessionStore.globalContextKey
+        case .folder(let rootId, let path, _):
+            return "folder:\(rootId):\(path)"
+        case .file(let fileId, _, _, _):
+            return fileId
+        }
+    }
 }
 
 enum MailAssistantContext: Equatable {
@@ -104,6 +116,15 @@ enum MailAssistantContext: Equatable {
             return ActiveContextHint(label: "Mail")
         case .thread(let threadId, let subject, _):
             return ActiveContextHint(mailThreadId: threadId, label: subject)
+        }
+    }
+
+    var persistenceKey: String {
+        switch self {
+        case .global:
+            return ConversationSessionStore.globalContextKey
+        case .thread(let threadId, _, _):
+            return threadId
         }
     }
 }
