@@ -270,20 +270,63 @@ struct SettingsView: View {
             try await client.setWebSearchEnabled(value)
             statusNote = value ? "Recherche web activée" : "Recherche web désactivée"
         } catch {
+            webSearchEnabled = !value
             statusNote = error.localizedDescription
         }
     }
 
     private func applyModel(_ modelId: String) async {
         guard modelId != selectedModel else { return }
+        let previous = selectedModel
+        selectedModel = modelId
+        if let snap = try? await client.runtimeSnapshot(),
+           snap.phase == "ready",
+           snap.loadedModel == modelId {
+            modelSwitching = false
+            runtimeStatus = "READY"
+            statusNote = "Modèle déjà prêt"
+            AppHaptics.success()
+            return
+        }
         modelSwitching = true
+        runtimeStatus = "SWITCHING"
         defer { modelSwitching = false }
         do {
-            try await client.selectModel(modelId)
-            selectedModel = modelId
-            statusNote = "Modèle mis à jour"
-            AppHaptics.success()
+            let accepted = try await client.selectModel(modelId)
+            if accepted.phase == "ready", accepted.loadedModel == modelId {
+                runtimeStatus = "READY"
+                statusNote = "Modèle mis à jour"
+                AppHaptics.success()
+                return
+            }
+            for _ in 0..<80 {
+                if let snap = try? await client.runtimeSnapshot() {
+                    runtimeStatus = snap.phase == "ready" ? "READY" : "SWITCHING"
+                    if snap.phase == "ready", snap.loadedModel == modelId {
+                        statusNote = "Modèle mis à jour"
+                        AppHaptics.success()
+                        return
+                    }
+                    if snap.phase == "error" {
+                        selectedModel = previous
+                        statusNote = snap.message ?? "Impossible de charger le modèle"
+                        runtimeStatus = "ERROR"
+                        return
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            if let snap = try? await client.runtimeSnapshot(),
+               snap.loadedModel == modelId {
+                runtimeStatus = "READY"
+                statusNote = "Modèle mis à jour"
+                return
+            }
+            selectedModel = previous
+            statusNote = "Le modèle ne confirme pas encore son chargement"
+            runtimeStatus = (try? await client.runtimeStatus()) ?? "UNKNOWN"
         } catch {
+            selectedModel = previous
             statusNote = error.localizedDescription
         }
     }

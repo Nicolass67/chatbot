@@ -149,9 +149,14 @@ export class ModelManager {
   scheduleSwitch(modelKey: string, contextLength?: number): Promise<void> {
     this.desiredModel = modelKey;
     if (contextLength) this.desiredContextLength = contextLength;
-    // Marquer loading immédiatement (évite un GET status encore "ready" pendant la file)
     const alreadyReady =
       this.state.phase === "ready" && this.state.loadedModel === modelKey;
+    if (alreadyReady && !this.switchRunning) {
+      // Rien à faire — rester READY sans enfiler un switch qui re-passerait par loading.
+      this.patchState({ preferredModel: modelKey, targetModel: null });
+      this.resolveWaitersForModel(modelKey);
+      return Promise.resolve();
+    }
     if (!alreadyReady) {
       this.patchState({
         preferredModel: modelKey,
@@ -191,22 +196,37 @@ export class ModelManager {
     targetModelKey: string,
     contextLength: number
   ): Promise<void> {
-    this.patchState({
-      phase: "loading",
-      targetModel: targetModelKey,
-      error: undefined,
-      progress: undefined,
-    });
-
     try {
       let models = await fetchNativeModels();
       let loaded = getLoadedLlmInstances(models);
       const targetLabel = findModelDisplayName(models, targetModelKey);
 
+      // Déjà le seul LLM chargé → READY immédiat (pas de phase loading fictive).
       const alreadyOnlyTarget =
         loaded.length === 1 && loaded[0].modelKey === targetModelKey;
+      if (alreadyOnlyTarget) {
+        this.patchState({
+          phase: "ready",
+          loadedModel: targetModelKey,
+          preferredModel: targetModelKey,
+          targetModel: null,
+          step: undefined,
+          message: undefined,
+          error: undefined,
+          progress: undefined,
+        });
+        this.resolveWaitersForModel(targetModelKey);
+        return;
+      }
 
-      if (!alreadyOnlyTarget) {
+      this.patchState({
+        phase: "loading",
+        targetModel: targetModelKey,
+        error: undefined,
+        progress: undefined,
+      });
+
+      if (loaded.length > 0) {
         for (const inst of loaded) {
           if (this.desiredModel !== targetModelKey) return;
           this.patchState({

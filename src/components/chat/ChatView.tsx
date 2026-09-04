@@ -1179,6 +1179,16 @@ export function ChatView({
         ? modelRuntime.loadedModel
         : selectedModel;
     setSelectedModel(modelId);
+
+    // Déjà prêt → pas de long "Chargement…".
+    if (
+      modelRuntime?.phase === "ready" &&
+      modelRuntime.loadedModel === modelId
+    ) {
+      setRuntimeStatus("READY");
+      return;
+    }
+
     setModelRuntime((prev) =>
       prev
         ? {
@@ -1209,9 +1219,17 @@ export function ChatView({
       if (!(res.status === 202 || res.ok)) {
         throw new Error("Impossible de demander le chargement du modèle");
       }
-      // Ne jamais traiter le 202 comme ready — poll jusqu'à confirmation réelle
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 500));
+      const accepted = (await res.json()) as ModelRuntimeSnapshot & {
+        accepted?: boolean;
+      };
+      if (accepted.phase === "ready" && accepted.loadedModel === modelId) {
+        setModelRuntime(accepted);
+        setRuntimeStatus("READY");
+        return;
+      }
+      // Observer l’état réel — ne pas traiter un délai comme échec si READY arrive.
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 250));
         const st = await fetch("/api/runtime/status");
         if (!st.ok) continue;
         const data = (await st.json()) as {
@@ -1223,13 +1241,27 @@ export function ChatView({
         const phase = data.model?.phase;
         if (phase === "ready" && data.model?.loadedModel === modelId) {
           setRuntimeStatus("READY");
-          break;
+          return;
         }
         if (phase === "error") {
           setSelectedModel(previous);
           setRuntimeStatus(data.model?.loadedModel ? "READY" : "ERROR");
-          break;
+          return;
         }
+      }
+      // Dernière sync : si déjà chargé, READY — sinon message factuel sans faux timeout.
+      const finalSt = await fetch("/api/runtime/status");
+      if (finalSt.ok) {
+        const data = (await finalSt.json()) as {
+          status?: RuntimeStatus;
+          model?: ModelRuntimeSnapshot;
+        };
+        if (data.model) setModelRuntime(data.model);
+        if (data.model?.loadedModel === modelId) {
+          setRuntimeStatus("READY");
+          return;
+        }
+        if (data.status) setRuntimeStatus(data.status);
       }
     } catch {
       setSelectedModel(previous);

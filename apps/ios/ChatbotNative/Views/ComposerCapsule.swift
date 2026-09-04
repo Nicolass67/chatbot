@@ -221,6 +221,7 @@ private struct ComposerGlassChrome: ViewModifier {
 }
 
 /// Sheet d’options — reste ouverte pendant les changements (contrairement à Menu).
+/// État local miroir pour feedback immédiat (ne pas attendre le réseau).
 struct ChatToolsSheet: View {
     let chatMode: String
     let webSearchEnabled: Bool
@@ -235,13 +236,22 @@ struct ChatToolsSheet: View {
     let onReasoningChange: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
+    @State private var localMode: String = "chat"
+    @State private var localWeb = false
+    @State private var localModel = ""
+    @State private var localReasoning = ""
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     Picker("Mode", selection: Binding(
-                        get: { chatMode },
-                        set: { onModeChange($0) }
+                        get: { localMode },
+                        set: { next in
+                            localMode = next
+                            AppHaptics.light()
+                            onModeChange(next)
+                        }
                     )) {
                         Text("Chat").tag("chat")
                         Text("Agent").tag("agent")
@@ -250,8 +260,12 @@ struct ChatToolsSheet: View {
                     .listRowBackground(AppTheme.surface)
 
                     Toggle("Recherche web", isOn: Binding(
-                        get: { webSearchEnabled },
-                        set: { onWebChange($0) }
+                        get: { localWeb },
+                        set: { next in
+                            localWeb = next
+                            AppHaptics.light()
+                            onWebChange(next)
+                        }
                     ))
                     .tint(AppTheme.accent)
                     .listRowBackground(AppTheme.surface)
@@ -263,13 +277,15 @@ struct ChatToolsSheet: View {
                     if modelSwitching {
                         HStack(spacing: AppTheme.space8) {
                             ProgressView().controlSize(.small)
-                            Text("Changement…")
+                            Text("Changement de modèle…")
                                 .foregroundStyle(AppTheme.muted)
                         }
                         .listRowBackground(AppTheme.surface)
                     }
                     ForEach(models) { model in
                         Button {
+                            localModel = model.id
+                            AppHaptics.light()
                             onModelChange(model.id)
                         } label: {
                             HStack {
@@ -277,13 +293,13 @@ struct ChatToolsSheet: View {
                                     .foregroundStyle(AppTheme.foreground)
                                     .multilineTextAlignment(.leading)
                                 Spacer()
-                                if selectedModelName == model.id {
+                                if localModel == model.id {
                                     Image(systemName: "checkmark")
                                         .foregroundStyle(AppTheme.accent)
                                 }
                             }
                         }
-                        .disabled(modelSwitching)
+                        .disabled(modelSwitching && localModel != model.id)
                         .listRowBackground(AppTheme.surface)
                     }
                 } header: {
@@ -294,13 +310,15 @@ struct ChatToolsSheet: View {
                     Section {
                         ForEach(reasoningModes) { mode in
                             Button {
+                                localReasoning = mode.id
+                                AppHaptics.light()
                                 onReasoningChange(mode.id)
                             } label: {
                                 HStack {
                                     Text(mode.label ?? mode.id)
                                         .foregroundStyle(AppTheme.foreground)
                                     Spacer()
-                                    if reasoningEffort == mode.id {
+                                    if localReasoning == mode.id {
                                         Image(systemName: "checkmark")
                                             .foregroundStyle(AppTheme.accent)
                                     }
@@ -328,6 +346,16 @@ struct ChatToolsSheet: View {
                     KeyboardDismissButton()
                 }
             }
+            .onAppear {
+                localMode = chatMode
+                localWeb = webSearchEnabled
+                localModel = selectedModelName
+                localReasoning = reasoningEffort
+            }
+            .onChange(of: chatMode) { _, v in localMode = v }
+            .onChange(of: webSearchEnabled) { _, v in localWeb = v }
+            .onChange(of: selectedModelName) { _, v in localModel = v }
+            .onChange(of: reasoningEffort) { _, v in localReasoning = v }
         }
     }
 }

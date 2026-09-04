@@ -68,6 +68,7 @@ struct ChatScreen: View {
     /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
     @State private var suppressAssistantNarration = false
     @State private var exportShareURL: IdentifiedURL?
+    @State private var settingsHydrated = false
 
     struct PendingFileAction: Identifiable, Equatable {
         let id: String
@@ -144,6 +145,18 @@ struct ChatScreen: View {
                     .padding(.horizontal, AppTheme.space16)
                     .padding(.vertical, AppTheme.space8)
                 }
+                HStack {
+                    RuntimeStatusPill(status: displayRuntimeStatus)
+                    Spacer(minLength: 0)
+                    if !assistantReadyForSend {
+                        Text(sendBlockedHint)
+                            .font(CNFont.caption2)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, AppTheme.space16)
+                .padding(.bottom, 2)
                 composer
             }
         }
@@ -181,7 +194,14 @@ struct ChatScreen: View {
             reasoningEffort = conversation.reasoningEffort ?? ""
             await loadMessages()
             await loadSettings()
-            runtimeStatus = (try? await client.runtimeStatus()) ?? "UNKNOWN"
+            await refreshRuntimeStatus()
+        }
+        .task {
+            // Observation périodique de l’état réel (pas une source de vérité arbitraire).
+            while !Task.isCancelled {
+                await refreshRuntimeStatus()
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
         }
         .onChange(of: nav.chatComposerPrefill) { _, text in
             guard let text, !text.isEmpty else { return }
@@ -668,10 +688,10 @@ struct ChatScreen: View {
                 reasoningEffort: reasoningEffort,
                 models: models,
                 modelSwitching: modelSwitching,
-                onModeChange: { mode in Task { await applyMode(mode) } },
-                onWebChange: { enabled in Task { await applyWeb(enabled) } },
+                onModeChange: { mode in applyMode(mode) },
+                onWebChange: { enabled in applyWeb(enabled) },
                 onModelChange: { modelId in Task { await applyModel(modelId) } },
-                onReasoningChange: { mode in Task { await applyReasoning(mode) } },
+                onReasoningChange: { mode in applyReasoning(mode) },
                 onSend: {
                     sendTask = Task { await send() }
                 },
@@ -695,7 +715,60 @@ struct ChatScreen: View {
 
     private var canSend: Bool {
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasText || !pendingAttachments.isEmpty) && !uploading && !pendingAttachments.contains(where: \.isUploading)
+        let hasContent = (hasText || !pendingAttachments.isEmpty) && !uploading && !pendingAttachments.contains(where: \.isUploading)
+        return hasContent && assistantReadyForSend
+    }
+
+    private var assistantReadyForSend: Bool {
+        switch runtimeStatus.uppercased() {
+        case "READY", "BUSY":
+            return !modelSwitching
+        default:
+            return false
+        }
+    }
+
+    private var displayRuntimeStatus: String {
+        if modelSwitching {
+            return "SWITCHING"
+        }
+        return runtimeStatus
+    }
+
+    private var sendBlockedHint: String {
+        switch displayRuntimeStatus.uppercased() {
+        case "OFFLINE": return "Choisis un modèle"
+        case "LOADING", "LOADING_MODEL", "SWITCHING": return "Patiente…"
+        case "ERROR": return "Vérifie le modèle"
+        default: return "Indisponible"
+        }
+    }
+
+    private func refreshRuntimeStatus() async {
+        guard !modelSwitching else { return }
+        if let snap = try? await client.runtimeSnapshot() {
+            applySnapshotToRuntime(snap)
+        } else if let status = try? await client.runtimeStatus() {
+            runtimeStatus = status
+        }
+    }
+
+    private func applySnapshotToRuntime(_ snap: APIClient.RuntimeSnapshotDTO) {
+        let phase = (snap.phase ?? "").lowercased()
+        if phase == "ready", snap.loadedModel != nil {
+            runtimeStatus = "READY"
+            if let loaded = snap.loadedModel, !loaded.isEmpty, selectedModel.isEmpty {
+                selectedModel = loaded
+            }
+        } else if phase == "loading" || phase == "unloading" {
+            runtimeStatus = modelSwitching || snap.targetModel != nil ? "SWITCHING" : "LOADING_MODEL"
+        } else if phase == "error" {
+            runtimeStatus = "ERROR"
+        } else if snap.loadedModel == nil {
+            runtimeStatus = snap.status.uppercased() == "OFFLINE" ? "OFFLINE" : (snap.status.isEmpty ? "OFFLINE" : snap.status)
+        } else {
+            runtimeStatus = snap.status.isEmpty ? "UNKNOWN" : snap.status
+        }
     }
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
@@ -757,14 +830,25 @@ struct ChatScreen: View {
         async let web = client.getWebSearchEnabled()
         async let settings = client.getSettings()
         async let modelList = client.listModels()
-        webSearchEnabled = (try? await web) ?? false
-        models = (try? await modelList) ?? []
+        let remoteWeb = (try? await web) ?? false
+        let remoteModels = (try? await modelList) ?? []
+        models = remoteModels
+        // Ne pas écraser un toggle utilisateur déjà modifié pendant le load.
+        if !settingsHydrated {
+            webSearchEnabled = remoteWeb
+        }
         if let s = try? await settings {
-            selectedModel = (s["selectedModel"] as? String) ?? ""
+            if selectedModel.isEmpty || !modelSwitching {
+                let remoteModel = (s["selectedModel"] as? String) ?? ""
+                if !modelSwitching {
+                    selectedModel = remoteModel
+                }
+            }
             if reasoningEffort.isEmpty {
                 reasoningEffort = (s["defaultReasoningEffort"] as? String) ?? ""
             }
         }
+        settingsHydrated = true
         await refreshReasoningCaps()
     }
 
@@ -781,69 +865,136 @@ struct ChatScreen: View {
         }
     }
 
-    private func applyMode(_ next: String) async {
-        do {
-            try await client.patchConversationMode(id: conversation.id, mode: next)
-            chatMode = next
-        } catch {
-            self.error = error.localizedDescription
+    private func applyMode(_ next: String) {
+        let previous = chatMode
+        guard next != previous else { return }
+        chatMode = next
+        Task {
+            do {
+                try await client.patchConversationMode(id: conversation.id, mode: next)
+            } catch {
+                chatMode = previous
+                self.error = error.localizedDescription
+            }
         }
     }
 
-    private func applyWeb(_ next: Bool) async {
-        do {
-            try await client.setWebSearchEnabled(next)
-            webSearchEnabled = next
-        } catch {
-            self.error = error.localizedDescription
+    private func applyWeb(_ next: Bool) {
+        let previous = webSearchEnabled
+        guard next != previous else { return }
+        webSearchEnabled = next
+        Task {
+            do {
+                try await client.setWebSearchEnabled(next)
+            } catch {
+                webSearchEnabled = previous
+                self.error = error.localizedDescription
+            }
         }
     }
 
     private func applyModel(_ modelId: String) async {
         let previous = selectedModel
-        modelSwitching = true
-        runtimeStatus = "LOADING_MODEL"
+        guard modelId != previous || modelSwitching else { return }
         selectedModel = modelId
-        defer { modelSwitching = false }
+
+        // Snapshot avant POST — modèle déjà chargé → READY immédiat.
+        if let snap = try? await client.runtimeSnapshot(),
+           snap.phase == "ready",
+           snap.loadedModel == modelId {
+            modelSwitching = false
+            runtimeStatus = "READY"
+            await refreshReasoningCaps()
+            return
+        }
+
+        modelSwitching = true
+        runtimeStatus = "SWITCHING"
         do {
-            try await client.selectModel(modelId)
-            // Poll jusqu'à confirmation réelle (loadedModel === modelId)
-            for _ in 0..<60 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+            let accepted = try await client.selectModel(modelId)
+            if accepted.phase == "ready", accepted.loadedModel == modelId {
+                modelSwitching = false
+                runtimeStatus = "READY"
+                await refreshReasoningCaps()
+                return
+            }
+            // Observer l’état réel jusqu’à READY / ERROR (pas un timeout comme vérité).
+            var sawReady = false
+            var lastPhase: String?
+            for _ in 0..<80 {
+                if Task.isCancelled { break }
                 if let snap = try? await client.runtimeSnapshot() {
-                    runtimeStatus = snap.status
+                    lastPhase = snap.phase
+                    applySnapshotToRuntime(snap)
                     if snap.phase == "ready", snap.loadedModel == modelId {
+                        sawReady = true
                         runtimeStatus = "READY"
+                        modelSwitching = false
                         await refreshReasoningCaps()
                         return
                     }
                     if snap.phase == "error" {
                         selectedModel = previous
                         error = snap.message ?? "Impossible de charger le modèle"
+                        modelSwitching = false
                         runtimeStatus = snap.loadedModel != nil ? "READY" : "ERROR"
                         return
                     }
                     if snap.phase == "loading" || snap.phase == "unloading" {
-                        runtimeStatus = "LOADING_MODEL"
+                        runtimeStatus = "SWITCHING"
                     }
                 }
+                // Intervalle d’observation uniquement — ne décide pas de READY/ERROR.
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
-            error = "Chargement du modèle trop long — vérifie LM Studio."
-            selectedModel = previous
-            runtimeStatus = (try? await client.runtimeStatus()) ?? "ERROR"
+            // Dernière chance : si le modèle est prêt malgré la boucle, ne pas crier timeout.
+            if let snap = try? await client.runtimeSnapshot() {
+                if snap.phase == "ready", snap.loadedModel == modelId {
+                    runtimeStatus = "READY"
+                    modelSwitching = false
+                    await refreshReasoningCaps()
+                    return
+                }
+                if snap.loadedModel == modelId {
+                    runtimeStatus = "READY"
+                    modelSwitching = false
+                    await refreshReasoningCaps()
+                    return
+                }
+                applySnapshotToRuntime(snap)
+            }
+            if !sawReady {
+                error = lastPhase == "error"
+                    ? "Échec du chargement du modèle"
+                    : "Le modèle ne confirme pas encore son chargement — réessaie ou vérifie LM Studio."
+                // Ne pas forcer un rollback UI si le serveur a peut-être avancé : re-sync sélection.
+                if let snap = try? await client.runtimeSnapshot(), let loaded = snap.loadedModel {
+                    selectedModel = loaded
+                    runtimeStatus = snap.phase == "ready" ? "READY" : runtimeStatus
+                } else {
+                    selectedModel = previous
+                }
+            }
+            modelSwitching = false
         } catch {
             selectedModel = previous
+            modelSwitching = false
             self.error = error.localizedDescription
-            runtimeStatus = (try? await client.runtimeStatus()) ?? "ERROR"
+            await refreshRuntimeStatus()
         }
     }
 
-    private func applyReasoning(_ mode: String) async {
-        do {
-            try await client.patchConversation(id: conversation.id, reasoningEffort: mode)
-            reasoningEffort = mode
-        } catch {
-            self.error = error.localizedDescription
+    private func applyReasoning(_ mode: String) {
+        let previous = reasoningEffort
+        guard mode != previous else { return }
+        reasoningEffort = mode
+        Task {
+            do {
+                try await client.patchConversation(id: conversation.id, reasoningEffort: mode)
+            } catch {
+                reasoningEffort = previous
+                self.error = error.localizedDescription
+            }
         }
     }
 

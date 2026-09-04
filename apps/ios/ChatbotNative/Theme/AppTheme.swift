@@ -201,11 +201,12 @@ struct RuntimeStatusPill: View {
 
     private var label: String {
         switch status.uppercased() {
-        case "READY": return "Prêt"
-        case "BUSY": return "Occupé"
-        case "LOADING", "LOADING_MODEL", "SWITCHING": return "Chargement…"
-        case "OFFLINE": return "Aucun modèle"
-        case "ERROR": return "Erreur"
+        case "READY": return "Assistant prêt"
+        case "BUSY": return "Assistant occupé"
+        case "LOADING", "LOADING_MODEL": return "Chargement du modèle…"
+        case "SWITCHING": return "Changement de modèle…"
+        case "OFFLINE": return "Aucun modèle chargé"
+        case "ERROR": return "Modèle indisponible"
         default: return status
         }
     }
@@ -216,11 +217,14 @@ struct RuntimeStatusPill: View {
             Text(label)
                 .font(CNFont.caption2.weight(.semibold))
                 .foregroundStyle(AppTheme.muted)
+                .lineLimit(1)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(AppTheme.surfaceElevated.opacity(0.92))
         .clipShape(Capsule())
         .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 0.5))
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("chat.assistantStatus")
     }
 }

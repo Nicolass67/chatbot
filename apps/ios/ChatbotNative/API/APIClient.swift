@@ -356,13 +356,34 @@ final class APIClient: @unchecked Sendable {
         return (decoded.data ?? []).map { ModelOptionDTO(id: $0.id, name: $0.name ?? $0.id) }
     }
 
-    func selectModel(_ modelKey: String) async throws {
-        if UITestMode.isActive { return }
+    func selectModel(_ modelKey: String) async throws -> RuntimeSnapshotDTO {
+        if UITestMode.isActive {
+            return RuntimeSnapshotDTO(
+                status: "READY",
+                phase: "ready",
+                loadedModel: modelKey,
+                targetModel: nil,
+                preferredModel: modelKey,
+                message: nil,
+                progress: nil
+            )
+        }
         var req = authorizedRequest(path: "api/runtime/model", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["modelKey": modelKey])
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
+        let obj = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return RuntimeSnapshotDTO(
+            status: (obj["status"] as? String)
+                ?? ((obj["phase"] as? String) == "ready" ? "READY" : "LOADING_MODEL"),
+            phase: obj["phase"] as? String,
+            loadedModel: obj["loadedModel"] as? String,
+            targetModel: obj["targetModel"] as? String,
+            preferredModel: obj["preferredModel"] as? String,
+            message: obj["message"] as? String ?? obj["error"] as? String,
+            progress: obj["progress"] as? Double
+        )
     }
 
     struct RuntimeSnapshotDTO {
