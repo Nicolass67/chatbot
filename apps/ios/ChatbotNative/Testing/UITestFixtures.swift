@@ -140,14 +140,47 @@ enum UITestFixtures {
         let html: String?
         let text: String?
         if summary.id == htmlMail.id {
-            html = "<html><body><h1>Newsletter</h1><p>Contenu <b>HTML</b> UITest.</p></body></html>"
-            text = "Newsletter Contenu HTML UITest."
+            // HTML primaire (texte court → pas preferPlain) + styles sombres pour valider sanitize/contraste.
+            html = """
+            <html><body bgcolor="#ffffff" style="color:#111111;background:#ffffff">
+            <h1 style="color:#000000">Newsletter HTML</h1>
+            <p style="color:#222222">Contenu <b>HTML</b> UITest avec contraste forcé.</p>
+            <p style="color:#333333">Ligne longue pour vérifier le wrapping : facturation, abonnement, renouvellement automatique.</p>
+            <a href="https://example.com" style="color:#0000ee">Lien exemple</a>
+            </body></html>
+            """
+            text = "Newsletter HTML"
         } else if summary.id == plainMail.id {
             html = nil
-            text = "Corps texte uniquement, sans HTML. Fixture Simulator."
+            text = """
+            Bonjour,
+
+            Voici un long message texte (fallback) pour valider la lisibilité P1b sur plusieurs paragraphes.
+
+            - Point un : rappel du contexte
+            - Point deux : détails utiles
+            - Point trois : prochaine étape
+
+            Corps texte uniquement, sans HTML. Fixture Simulator.
+
+            Cordialement,
+            Alice
+            """
         } else {
-            html = "<html><body><p>Facture Free <b>29,99 €</b></p></body></html>"
-            text = "Montant TTC 29,99 € — téléchargez votre facture PDF."
+            html = """
+            <html><body style="color:#1a1a1a;background:#fafafa">
+            <p>Facture Free <b>29,99 €</b></p>
+            <p>Téléchargez votre facture PDF en pièce jointe.</p>
+            </body></html>
+            """
+            text = """
+            Montant TTC 29,99 € — téléchargez votre facture PDF.
+
+            Période : janvier 2099
+            Référence : FREE-UI-TEST-001
+
+            Merci de votre confiance.
+            """
         }
         let attachments: [MailAttachmentDTO]? = summary.hasAttachments == true
             ? [MailAttachmentDTO(id: "uitest-att-pdf", filename: "facture-free.pdf", mimeType: "application/pdf", sizeBytes: 12_345)]
@@ -172,6 +205,7 @@ enum UITestFixtures {
     ## Résumé
     - Facture Free du mois : **29,99 €**
     - Pièce jointe PDF disponible
+    - Aucune action urgente
     """
 
     static let mailDraftBody = """

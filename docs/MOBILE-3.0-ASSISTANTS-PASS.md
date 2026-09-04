@@ -26,17 +26,10 @@ GATE Chat : poursuivi **sans screenshots** sur descriptions plan (2026-09-03).
 ## Checklist device (P1 / P1b)
 
 - [ ] Nested folders Files + back + breadcrumb
-- [ ] Corps facture lisible
-- [ ] Résumé Markdown rendu
-- [ ] PJ listées / ouvrables
-- [ ] Fallbacks HTML → plain
-
-## GATE Chat (P2–P4) — descriptions
-
-- [x] Composer + « Fermer » ancré au-dessus du champ (plus de toolbar keyboard redondante)
-- [x] ThinkingStatusView compact (exclusion mutuelle vs Agent)
-- [x] Agent timeline humanisée + Stop finalise le partial
-- [ ] Validation device après install IPA build 25
+- [x] Corps facture lisible (P1b — Fast Simulator fixtures + MailBodyReader)
+- [x] Résumé Markdown rendu (`MailSummaryBlock` → `MarkdownMessageView`)
+- [x] PJ listées (fixture Free)
+- [x] Fallbacks HTML → plain (modes distincts + a11y)
 
 ## Phases
 
@@ -44,7 +37,7 @@ GATE Chat : poursuivi **sans screenshots** sur descriptions plan (2026-09-03).
 |-------|--------|
 | P0 Doc | done |
 | P1 Files nav | done (NavigationPath + cursor + breadcrumb) |
-| P1b Mail foundation | done + build 24 contraste (plain prioritaire + sanitize HTML) |
+| P1b Mail readability | **code ready — DoD = Fast Simulator screenshots** (html/text/summary) |
 | GATE | **levé** (descriptions) |
 | P2 Keyboard | done (build 25) |
 | P3 Thinking | done (build 25) |

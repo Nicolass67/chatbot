@@ -467,7 +467,7 @@ struct MailThreadView: View {
                         Label("Résumer", systemImage: "text.alignleft")
                     }
                     .disabled(aiBusy)
-                    .accessibilityIdentifier(A11yID.Mail.summary)
+                    .accessibilityIdentifier(A11yID.Mail.summaryAction)
                     Button {
                         Task { await runSuggest() }
                     } label: {
@@ -606,18 +606,28 @@ private struct MailThreadMessageCard: View {
     let message: MailThreadMessage
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(message.from?.name ?? message.from?.email ?? "")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.foreground)
-                Spacer()
-                if let date = message.date {
-                    Text(AppDates.short(date))
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(message.from?.name ?? message.from?.email ?? "")
+                        .font(CNFont.callout.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                    Spacer()
+                    if let date = message.date {
+                        Text(AppDates.short(date))
+                            .font(CNFont.caption2)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                    }
+                }
+                if let subject = message.subject, !subject.isEmpty {
+                    Text(subject)
+                        .font(CNFont.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(2)
                 }
             }
+
+            Divider().overlay(AppTheme.borderSubtle)
 
             MailBodyReader(
                 html: message.bodyHtml,
@@ -639,7 +649,11 @@ private struct MailThreadMessageCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.surface.opacity(0.45))
+        .background(AppTheme.surface.opacity(0.55))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
     }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 import UIKit
 
-/// Lecteur mail fondation P1b — HTML contrasté, plain fallback, hauteur dynamique.
+/// Lecteur mail P1b — HTML contrasté, plain fallback, résumé Markdown séparé (pas de conversion mail→MD).
 struct MailBodyReader: View {
     let html: String?
     let text: String?
@@ -21,20 +21,29 @@ struct MailBodyReader: View {
         return (snippet ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Plain lisible prioritaire quand disponible (évite HTML Gmail sombre-sur-sombre).
+    /// Plain lisible prioritaire quand le texte est assez riche (évite HTML Gmail sombre-sur-sombre).
+    /// Les mails HTML-only / quasi-HTML restent en WebView.
     private var preferPlain: Bool {
         trimmedText.count >= 40
     }
 
+    private var showingPlain: Bool {
+        if preferPlain && !showHTML { return true }
+        if trimmedHtml.isEmpty && !trimmedText.isEmpty { return true }
+        return false
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if preferPlain && !showHTML {
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
+            if showingPlain {
+                contentModeCaption("Version texte")
                 Text(trimmedText)
-                    .font(.system(size: 17))
-                    .lineSpacing(5)
+                    .font(CNFont.body)
+                    .lineSpacing(6)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(A11yID.Mail.bodyPlain)
 
                 if !trimmedHtml.isEmpty {
                     Button {
@@ -43,12 +52,16 @@ struct MailBodyReader: View {
                         Text("Afficher la version HTML")
                             .font(CNFont.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
+                            .frame(minHeight: AppTheme.touchMin, alignment: .leading)
                     }
+                    .accessibilityIdentifier(A11yID.Mail.bodyShowHtml)
                 }
             } else if !trimmedHtml.isEmpty {
+                contentModeCaption("Version HTML")
                 MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
                     .frame(height: measuredHeight)
                     .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier(A11yID.Mail.bodyHtml)
 
                 if preferPlain {
                     Button {
@@ -57,21 +70,33 @@ struct MailBodyReader: View {
                         Text("Version texte")
                             .font(CNFont.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
+                            .frame(minHeight: AppTheme.touchMin, alignment: .leading)
                     }
+                    .accessibilityIdentifier(A11yID.Mail.bodyShowPlain)
                 }
             } else if !trimmedText.isEmpty {
+                contentModeCaption("Version texte")
                 Text(trimmedText)
-                    .font(.system(size: 17))
-                    .lineSpacing(5)
+                    .font(CNFont.body)
+                    .lineSpacing(6)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(A11yID.Mail.bodyPlain)
             } else {
                 Text("Contenu non disponible")
-                    .font(.subheadline)
+                    .font(CNFont.callout)
                     .foregroundStyle(AppTheme.muted)
             }
         }
+    }
+
+    private func contentModeCaption(_ title: String) -> some View {
+        Text(title)
+            .font(CNFont.caption2.weight(.semibold))
+            .foregroundStyle(AppTheme.mutedForeground)
+            .textCase(.uppercase)
+            .tracking(0.4)
     }
 }
 
@@ -165,18 +190,26 @@ struct MailAttachmentRow: View {
     }
 }
 
+/// Résumé assistant — MarkdownMessageView uniquement (jamais le corps mail brut).
 struct MailSummaryBlock: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
             Text("Résumé")
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.accent)
             MarkdownMessageView(markdown: text)
+                .foregroundStyle(AppTheme.foreground)
         }
-        .padding(.vertical, 4)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.surfaceElevated.opacity(0.92))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(A11yID.Mail.summary)
     }

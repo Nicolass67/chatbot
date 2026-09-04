@@ -40,16 +40,6 @@ function gitBranch() {
   return (shOk("git", ["rev-parse", "--abbrev-ref", "HEAD"]).stdout || "").trim();
 }
 
-function ensureRemoteSha(sha, branch) {
-  const remote = sh("git", ["ls-remote", "origin", sha]);
-  if ((remote.stdout || "").includes(sha)) return;
-  console.log(`[SIMULATOR] SHA ${sha.slice(0, 7)} not on origin — pushing ${branch}…`);
-  const push = sh("git", ["push", "-u", "origin", `HEAD:${branch}`], { stdio: "inherit" });
-  if (push.status !== 0) {
-    throw new Error("Cannot dispatch Simulator: commit must be on GitHub. Commit+push, then retry.");
-  }
-}
-
 function findRunId(sha) {
   const r = shOk("gh", [
     "run", "list", "--repo", REPO, "--workflow", WORKFLOW, "--limit", "15",
@@ -66,7 +56,17 @@ function downloadArtifact(runId, destDir) {
   const tmp = path.join(destDir, "_download");
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.mkdirSync(tmp, { recursive: true });
-  shOk("gh", ["run", "download", String(runId), "--repo", REPO, "--name", ARTIFACT, "--dir", tmp]);
+  shOk("gh", [
+    "run",
+    "download",
+    String(runId),
+    "--repo",
+    REPO,
+    "--name",
+    ARTIFACT,
+    "--dir",
+    tmp,
+  ]);
   const walk = (dir) => {
     for (const name of fs.readdirSync(dir)) {
       const p = path.join(dir, name);
@@ -104,7 +104,20 @@ function main() {
     console.warn("[SIMULATOR] WARNING: uncommitted changes — GHA runs the pushed commit only.");
   }
 
-  ensureRemoteSha(sha, branch);
+  const allowPush = process.env.IOS_SIM_ALLOW_PUSH === "1";
+  const remote = sh("git", ["ls-remote", "origin", sha]);
+  if (!(remote.stdout || "").includes(sha)) {
+    if (!allowPush) {
+      console.error(`[SIMULATOR] SHA ${short} is not on origin.`);
+      console.error("Commit is local-only. Push manually, or set IOS_SIM_ALLOW_PUSH=1 to allow push.");
+      process.exit(2);
+    }
+    console.log(`[SIMULATOR] SHA ${short} not on origin — pushing ${branch} (IOS_SIM_ALLOW_PUSH=1)…`);
+    const push = sh("git", ["push", "-u", "origin", `HEAD:${branch}`], { stdio: "inherit" });
+    if (push.status !== 0) {
+      throw new Error("Cannot dispatch Simulator: push failed.");
+    }
+  }
 
   console.log("[1/4] Dispatch workflow…");
   shOk("gh", ["workflow", "run", WORKFLOW, "--repo", REPO, "--ref", branch]);
@@ -132,7 +145,14 @@ function main() {
   downloadArtifact(run.databaseId, dest);
   const dlMs = Date.now() - dl0;
 
-  const required = ["chat-empty.png", "mail-inbox.png", "files-root.png"];
+  const required = [
+    "chat-empty.png",
+    "mail-inbox.png",
+    "mail-detail-html.png",
+    "mail-detail-text.png",
+    "mail-summary.png",
+    "files-root.png",
+  ];
   console.log("[4/4] Verify PNG…");
   const missing = [];
   for (const f of required) {

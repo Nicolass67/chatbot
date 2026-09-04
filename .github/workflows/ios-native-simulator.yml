@@ -172,6 +172,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             -only-testing:ChatbotNativeUITests/SimulatorMVPUITests \
+            -only-testing:ChatbotNativeUITests/MailReadabilityUITests \
             2>&1 | tee /tmp/xcodebuild-sim.log
           XC_STATUS=${PIPESTATUS[0]}
           set -e
@@ -208,7 +209,11 @@ jobs:
                 dest=""
                 case "$lower" in
                   *chat-empty*) dest="chat-empty.png" ;;
+                  *mail-inbox-after*) dest="mail-inbox-after-back.png" ;;
                   *mail-inbox*) dest="mail-inbox.png" ;;
+                  *mail-detail-html*) dest="mail-detail-html.png" ;;
+                  *mail-detail-text*) dest="mail-detail-text.png" ;;
+                  *mail-summary*) dest="mail-summary.png" ;;
                   *files-root*) dest="files-root.png" ;;
                 esac
                 if [ -n "$dest" ]; then
@@ -228,7 +233,7 @@ jobs:
           DIR="${{ github.workspace }}/artifacts/simulator"
           echo "## Screenshots" >> "$GITHUB_STEP_SUMMARY"
           ls -la "$DIR" || true
-          REQUIRED=(chat-empty.png mail-inbox.png files-root.png)
+          REQUIRED=(chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png)
           MISSING=0
           for f in "${REQUIRED[@]}"; do
             if [ -f "$DIR/$f" ]; then
