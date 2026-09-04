@@ -70,7 +70,7 @@ struct ThinkingStatusView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, AppTheme.space16)
-        .padding(.vertical, AppTheme.space10)
+        .padding(.vertical, AppTheme.space8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
