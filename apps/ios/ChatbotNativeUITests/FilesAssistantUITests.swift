@@ -1,0 +1,86 @@
+import XCTest
+
+/// P6–P7 / P12 — Files Assistant in-place + context chip + history isolation.
+final class FilesAssistantUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    func testFilesRootAssistantSheetAndHistory() throws {
+        let app = XCUIApplication()
+        app.launchForUITesting()
+        app.assertUITestSession()
+
+        app.tapTab(UITestA11y.tabFiles)
+        XCTAssertTrue(
+            app.element(id: UITestA11y.filesRoot, timeout: 10).exists
+                || app.navigationBars["Files"].waitForExistence(timeout: 4)
+        )
+        saveScreenshot(app, name: "files-assistant-before")
+
+        let fab = app.element(id: UITestA11y.filesAssistant, timeout: 8)
+        XCTAssertTrue(fab.exists, "FAB Files Assistant")
+        fab.tap()
+
+        let sheet = app.element(id: UITestA11y.assistantSheet, timeout: 8)
+        XCTAssertTrue(sheet.exists || app.buttons["Fermer"].waitForExistence(timeout: 4))
+        let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
+        XCTAssertTrue(
+            chip.exists
+                || app.staticTexts["Tous vos fichiers"].waitForExistence(timeout: 3)
+                || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "fichiers")).firstMatch.exists,
+            "Context chip Files global"
+        )
+        saveScreenshot(app, name: "files-assistant")
+
+        let history = app.element(id: UITestA11y.assistantHistory, timeout: 5)
+        if history.exists {
+            history.tap()
+            XCTAssertTrue(
+                app.staticTexts["Conversations Files"].waitForExistence(timeout: 5),
+                "History title Files"
+            )
+            XCTAssertFalse(app.staticTexts["Conversations Mail"].exists)
+            saveScreenshot(app, name: "files-assistant-history")
+            app.swipeDown()
+        }
+
+        let close = app.element(id: UITestA11y.assistantClose, timeout: 4)
+        if close.exists {
+            close.tap()
+        } else if app.buttons["Fermer"].exists {
+            app.buttons["Fermer"].tap()
+        }
+        saveScreenshot(app, name: "files-after-assistant-close")
+    }
+
+    func testFilesFolderContextChip() throws {
+        let app = XCUIApplication()
+        app.launchForUITesting()
+        app.assertUITestSession()
+
+        app.tapTab(UITestA11y.tabFiles)
+        XCTAssertTrue(app.staticTexts["Documents"].waitForExistence(timeout: 8))
+        app.staticTexts["Documents"].tap()
+
+        let fab = app.element(id: UITestA11y.filesAssistant, timeout: 8)
+        XCTAssertTrue(fab.exists)
+        fab.tap()
+
+        let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
+        XCTAssertTrue(
+            chip.exists
+                || app.staticTexts["Documents"].waitForExistence(timeout: 3)
+                || app.navigationBars.matching(NSPredicate(format: "label CONTAINS[c] %@", "Documents")).firstMatch
+                    .waitForExistence(timeout: 3),
+            "Folder context expected"
+        )
+        saveScreenshot(app, name: "files-assistant-folder-context")
+
+        if app.buttons["Fermer"].exists {
+            app.buttons["Fermer"].tap()
+        } else {
+            app.swipeDown()
+        }
+    }
+}

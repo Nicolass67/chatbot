@@ -279,9 +279,11 @@ struct MailDraftProposal: View {
             HStack(spacing: 10) {
                 Button(isEditing ? "OK" : "Modifier") { onEditToggle() }
                     .buttonStyle(.bordered)
+                    .accessibilityIdentifier(A11yID.Mail.draftEdit)
                 Button("Réessayer") { onRetry() }
                     .buttonStyle(.bordered)
                     .disabled(busy)
+                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
                 Spacer()
                 Button("Envoyer") { onSend() }
                     .buttonStyle(.borderedProminent)

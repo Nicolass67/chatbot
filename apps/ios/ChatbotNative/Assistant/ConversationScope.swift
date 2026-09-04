@@ -110,6 +110,8 @@ enum MailAssistantContext: Equatable {
 
 /// Bouton signature Assistant contextuel (FAB).
 struct ContextualAssistantButton: View {
+    var accessibilityId: String = A11yID.Assistant.open
+    var accessibilityLabelText: String = "Ouvrir l’assistant"
     var action: () -> Void
 
     var body: some View {
@@ -129,8 +131,8 @@ struct ContextualAssistantButton: View {
                         .clipShape(Circle())
                         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
                 }
-                .accessibilityLabel("Ouvrir l’assistant")
-                .accessibilityIdentifier(A11yID.Assistant.open)
+                .accessibilityLabel(accessibilityLabelText)
+                .accessibilityIdentifier(accessibilityId)
                 .padding(.trailing, 18)
                 .padding(.bottom, 18)
             }

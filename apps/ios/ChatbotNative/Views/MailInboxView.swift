@@ -38,11 +38,13 @@ struct MailInboxView: View {
                     mailChrome
                     content
                 }
-                ContextualAssistantButton {
+                ContextualAssistantButton(
+                    accessibilityId: A11yID.Mail.assistant,
+                    accessibilityLabelText: "Assistant Mail"
+                ) {
                     showAssistant = true
                     assistantContext = .global
                 }
-                .accessibilityIdentifier(A11yID.Mail.assistant)
             }
             .navigationTitle("Mail")
             .accessibilityIdentifier(A11yID.Mail.root)
@@ -449,10 +451,12 @@ struct MailThreadView: View {
                     }
                 }
             }
-            ContextualAssistantButton {
+            ContextualAssistantButton(
+                accessibilityId: A11yID.Mail.assistant,
+                accessibilityLabelText: "Assistant Mail"
+            ) {
                 showAssistant = true
             }
-            .accessibilityIdentifier(A11yID.Mail.assistant)
         }
         .navigationTitle(summary.subject ?? "Fil")
         .navigationBarTitleDisplayMode(.inline)
@@ -492,6 +496,7 @@ struct MailThreadView: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .accessibilityLabel("Actions du mail")
+                .accessibilityIdentifier(A11yID.Mail.overflow)
             }
         }
         .sheet(isPresented: $showAssistant) {

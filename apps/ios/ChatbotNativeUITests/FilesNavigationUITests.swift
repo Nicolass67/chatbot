@@ -45,31 +45,50 @@ final class FilesNavigationUITests: XCTestCase {
 
         // Nested folder (P1 / Files nav DoD)
         let projects = app.staticTexts["Projets"]
-        if projects.waitForExistence(timeout: 6) {
-            projects.tap()
-            saveScreenshot(app, name: "files-nested")
-            XCTAssertTrue(
-                app.staticTexts["spec.md"].waitForExistence(timeout: 6)
-                    || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "spec")).firstMatch
-                        .waitForExistence(timeout: 3),
-                "Nested file fixture expected"
-            )
-            // Back nested → Documents
+        XCTAssertTrue(projects.waitForExistence(timeout: 6), "Projets nested folder")
+        projects.tap()
+        saveScreenshot(app, name: "files-nested")
+        let spec = app.staticTexts["spec.md"]
+        XCTAssertTrue(
+            spec.waitForExistence(timeout: 6)
+                || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "spec")).firstMatch
+                    .waitForExistence(timeout: 3),
+            "Nested file fixture expected"
+        )
+
+        // P11 — preview fichier
+        if spec.exists {
+            spec.tap()
+        } else {
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "spec")).firstMatch.tap()
+        }
+        let preview = app.element(id: "files.preview", timeout: 8)
+        XCTAssertTrue(
+            preview.exists
+                || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "UITest fixture")).firstMatch
+                    .waitForExistence(timeout: 4)
+                || app.navigationBars["spec.md"].waitForExistence(timeout: 3),
+            "Files preview (P11)"
+        )
+        saveScreenshot(app, name: "files-preview")
+
+        // Back preview → nested → Documents → root
+        for _ in 0..<4 {
+            if app.navigationBars["Files"].waitForExistence(timeout: 1)
+                || app.element(id: UITestA11y.filesRoot, timeout: 1).exists {
+                break
+            }
             if app.navigationBars.buttons.count > 0 {
                 app.navigationBars.buttons.element(boundBy: 0).tap()
+            } else {
+                break
             }
         }
-
-        // Back Documents → root
-        if app.navigationBars.buttons.count > 0 {
-            let back = app.navigationBars.buttons.element(boundBy: 0)
-            if back.exists { back.tap() }
-            saveScreenshot(app, name: "files-back-to-root")
-            XCTAssertTrue(
-                app.navigationBars["Files"].waitForExistence(timeout: 5)
-                    || app.element(id: UITestA11y.filesRoot, timeout: 5).exists,
-                "Retour root Files attendu (régression navigation)"
-            )
-        }
+        saveScreenshot(app, name: "files-back-to-root")
+        XCTAssertTrue(
+            app.navigationBars["Files"].waitForExistence(timeout: 5)
+                || app.element(id: UITestA11y.filesRoot, timeout: 5).exists,
+            "Retour root Files attendu (régression navigation)"
+        )
     }
 }

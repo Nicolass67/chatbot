@@ -50,11 +50,13 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 content
-                ContextualAssistantButton {
+                ContextualAssistantButton(
+                    accessibilityId: A11yID.Files.assistant,
+                    accessibilityLabelText: "Assistant Files"
+                ) {
                     assistantContext = .global
                     showAssistant = true
                 }
-                .accessibilityIdentifier(A11yID.Files.assistant)
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
@@ -426,13 +428,11 @@ struct FileFolderView: View {
                     list
                 }
             }
-            ContextualAssistantButton(action: onAskAssistant)
-        }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
+            ContextualAssistantButton(
+                accessibilityId: A11yID.Files.assistant,
+                accessibilityLabelText: "Assistant Files",
+                action: onAskAssistant
+            )
                 VStack(spacing: 2) {
                     Text(title).font(.headline)
                     Text(breadcrumb)
@@ -799,11 +799,16 @@ struct FilePreviewView: View {
                 }
             }
             if let onAskAssistant {
-                ContextualAssistantButton(action: onAskAssistant)
+                ContextualAssistantButton(
+                    accessibilityId: A11yID.Files.assistant,
+                    accessibilityLabelText: "Assistant Files",
+                    action: onAskAssistant
+                )
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier(A11yID.Files.preview)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {

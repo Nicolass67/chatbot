@@ -46,6 +46,7 @@
     "ios:sim:chat": "node scripts/ios/sim.mjs --plan=chat",
     "ios:sim:files": "node scripts/ios/sim.mjs --plan=files",
     "ios:sim:gate": "node scripts/ios/sim.mjs --plan=gate",
+    "ios:sim:assistants": "node scripts/ios/sim.mjs --plan=assistants",
     "ios:qa": "node scripts/ios/qa.mjs",
     "ios:devices": "node scripts/ios/qa.mjs devices",
     "ios:device-info": "node scripts/ios/qa.mjs device-info",

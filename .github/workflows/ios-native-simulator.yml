@@ -2,13 +2,13 @@ name: iOS Native Fast Simulator
 
 # Fast Simulator QA — UI tests + PNG (no IPA).
 # Orchestrated by: npm.cmd run ios:sim
-# TEST_PLAN: all | mail | chat | files | gate
+# TEST_PLAN: all | mail | chat | files | gate | assistants
 
 on:
   workflow_dispatch:
     inputs:
       test_plan:
-        description: "Suite ciblée (all|mail|chat|files|gate)"
+        description: "Suite ciblée (all|mail|chat|files|gate|assistants)"
         required: false
         default: "all"
         type: choice
@@ -18,10 +18,11 @@ on:
           - chat
           - files
           - gate
+          - assistants
   workflow_call:
     inputs:
       test_plan:
-        description: "Suite ciblée (all|mail|chat|files|gate)"
+        description: "Suite ciblée (all|mail|chat|files|gate|assistants)"
         required: false
         default: "all"
         type: string
@@ -171,27 +172,50 @@ jobs:
             mail)
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
-              REQUIRED="mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png mail-draft.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailAssistantUITests")
+              REQUIRED="mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png mail-draft.png mail-assistant.png"
               ;;
             chat)
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatEmptyAndKeyboardScreenshots")
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatThinkingAndAgentScreenshots")
-              REQUIRED="chat-empty.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
+              REQUIRED="chat-empty.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png chat-handoff-mail.png chat-handoff-files.png"
               ;;
             files)
               ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
-              REQUIRED="files-root.png files-folder-documents.png files-nested.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesAssistantUITests")
+              REQUIRED="files-root.png files-folder-documents.png files-nested.png files-preview.png files-assistant.png"
+              ;;
+            assistants)
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailAssistantUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesAssistantUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/HistoryIsolationUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
+              REQUIRED="mail-assistant.png files-assistant.png history-mail-scope.png history-files-scope.png mail-draft.png chat-handoff-mail.png chat-handoff-files.png files-nested.png files-preview.png"
               ;;
             gate)
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
-              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailAssistantUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesAssistantUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/HistoryIsolationUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
+              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png mail-draft.png mail-assistant.png files-assistant.png files-nested.png files-preview.png chat-handoff-mail.png chat-handoff-files.png"
               ;;
             all|*)
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailAssistantUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesAssistantUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
-              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png files-folder-documents.png files-nested.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/HistoryIsolationUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
+              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png files-folder-documents.png files-nested.png files-preview.png mail-draft.png mail-assistant.png files-assistant.png history-mail-scope.png history-files-scope.png chat-handoff-mail.png chat-handoff-files.png"
               ;;
           esac
           # shell array → env (newline-separated)

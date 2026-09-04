@@ -51,8 +51,11 @@ enum A11yID {
         static let bodyShowPlain = "mail.body.showPlain"
         static let draft = "mail.draft"
         static let draftEditor = "mail.draft.editor"
+        static let draftEdit = "mail.draft.edit"
+        static let draftRetry = "mail.draft.retry"
         static let send = "mail.send"
         static let history = "mail.history"
+        static let overflow = "mail.overflow"
     }
 
     enum Files {
@@ -82,6 +85,8 @@ enum A11yID {
         static let scopeMail = "assistant.scope.mail"
         static let scopeFiles = "assistant.scope.files"
         static let scopeGeneral = "assistant.scope.general"
+        static let handoffMail = "assistant.handoff.mail"
+        static let handoffFiles = "assistant.handoff.files"
     }
 
     enum Agent {

@@ -57,7 +57,7 @@ enum UITestFixtures {
     }
 
     static func messages(conversationId: String) -> [MessageDTO] {
-        if conversationId == sampleConversation.id {
+        if conversationId == sampleConversation.id || conversationId == emptyConversation.id {
             return [
                 MessageDTO(
                     id: "uitest-msg-user",
@@ -71,6 +71,42 @@ enum UITestFixtures {
                     role: "assistant",
                     content: "Réponse déterministe Simulator.",
                     createdAt: "2099-01-01T11:00:01Z",
+                    attachments: nil
+                ),
+            ]
+        }
+        if conversationId == mailScopedConversation.id || conversationId.hasPrefix("uitest-conv-mail") {
+            return [
+                MessageDTO(
+                    id: "uitest-mail-user",
+                    role: "user",
+                    content: "Résume ce mail",
+                    createdAt: "2099-01-01T10:00:00Z",
+                    attachments: nil
+                ),
+                MessageDTO(
+                    id: "uitest-mail-assistant",
+                    role: "assistant",
+                    content: "Facture Free 29,99 € — pièce jointe PDF. Aucune action urgente.",
+                    createdAt: "2099-01-01T10:00:01Z",
+                    attachments: nil
+                ),
+            ]
+        }
+        if conversationId == filesScopedConversation.id || conversationId.hasPrefix("uitest-conv-files") {
+            return [
+                MessageDTO(
+                    id: "uitest-files-user",
+                    role: "user",
+                    content: "Où est notes.txt ?",
+                    createdAt: "2099-01-01T09:00:00Z",
+                    attachments: nil
+                ),
+                MessageDTO(
+                    id: "uitest-files-assistant",
+                    role: "assistant",
+                    content: "notes.txt est dans Documents. Tu peux aussi ouvrir Projets/spec.md.",
+                    createdAt: "2099-01-01T09:00:01Z",
                     attachments: nil
                 ),
             ]

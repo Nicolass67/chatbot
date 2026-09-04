@@ -15,7 +15,7 @@ enum UITestMode {
     static let fakeUserId = "uitest-user"
     static let fakeExpiresAt = "2099-01-01T00:00:00Z"
 
-    /// Scénario SSE déterministe : `chat` | `thinking` | `agent` | `agent-error`.
+        /// Scénario SSE déterministe : `chat` | `thinking` | `agent` | `agent-error` | `handoff`.
     static var sseScenario: String {
         let env = ProcessInfo.processInfo.environment["CHATBOT_UI_SSE_SCENARIO"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)

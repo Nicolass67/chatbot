@@ -61,7 +61,8 @@ struct MessageBubble: View {
                 HandoffBanner(
                     title: "Ouvrir dans Mail",
                     subtitle: mailHandoff.reason ?? mailHandoff.query ?? "Handoff mail",
-                    systemImage: "envelope.open"
+                    systemImage: "envelope.open",
+                    accessibilityId: A11yID.Assistant.handoffMail
                 ) { onMailHandoff?() }
             }
 
@@ -69,7 +70,8 @@ struct MessageBubble: View {
                 HandoffBanner(
                     title: "Ouvrir dans Files",
                     subtitle: filesHandoff.reason ?? filesHandoff.query ?? "Handoff fichiers",
-                    systemImage: "folder"
+                    systemImage: "folder",
+                    accessibilityId: A11yID.Assistant.handoffFiles
                 ) { onFilesHandoff?() }
             }
         }
@@ -152,6 +154,7 @@ struct HandoffBanner: View {
     let title: String
     let subtitle: String
     let systemImage: String
+    var accessibilityId: String
     let action: () -> Void
 
     var body: some View {
@@ -182,6 +185,8 @@ struct HandoffBanner: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityId)
+        .accessibilityLabel("\(title). \(subtitle)")
     }
 }
 

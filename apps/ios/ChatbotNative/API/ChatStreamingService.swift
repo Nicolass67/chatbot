@@ -170,6 +170,25 @@ actor ChatStreamingService {
             "type": "token",
             "content": "Réponse UITest déterministe. ",
         ]))
+        if scenario == "handoff" {
+            onEvent(ChatSSEParser.Event(type: "mail_handoff", payload: [
+                "type": "mail_handoff",
+                "threadId": "uitest-thread-free",
+                "query": "facture Free",
+                "label": "Votre facture Free du mois",
+                "reason": "Ouvrir le fil Free",
+            ] as [String: Any]))
+            try await Task.sleep(nanoseconds: 400_000_000)
+            guard myGeneration == generation else { return }
+            onEvent(ChatSSEParser.Event(type: "files_handoff", payload: [
+                "type": "files_handoff",
+                "rootId": "uitest-root-documents",
+                "query": "notes.txt",
+                "reason": "Ouvrir Documents",
+            ] as [String: Any]))
+            try await Task.sleep(nanoseconds: 600_000_000)
+            guard myGeneration == generation else { return }
+        }
         onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
     }
 }

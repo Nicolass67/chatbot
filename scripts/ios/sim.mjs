@@ -4,7 +4,7 @@
  * Usage:
  *   npm.cmd run ios:sim
  *   IOS_SIM_TEST_PLAN=mail npm.cmd run ios:sim
- *   IOS_SIM_TEST_PLAN=chat|files|gate|all
+ *   IOS_SIM_TEST_PLAN=chat|files|gate|assistants|all
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -31,6 +31,7 @@ const REQUIRED_BY_PLAN = {
     "mail-detail-text.png",
     "mail-summary.png",
     "mail-draft.png",
+    "mail-assistant.png",
   ],
   chat: [
     "chat-empty.png",
@@ -38,8 +39,27 @@ const REQUIRED_BY_PLAN = {
     "chat-keyboard-dismissed.png",
     "chat-thinking.png",
     "chat-agent.png",
+    "chat-handoff-mail.png",
+    "chat-handoff-files.png",
   ],
-  files: ["files-root.png", "files-folder-documents.png", "files-nested.png"],
+  files: [
+    "files-root.png",
+    "files-folder-documents.png",
+    "files-nested.png",
+    "files-preview.png",
+    "files-assistant.png",
+  ],
+  assistants: [
+    "mail-assistant.png",
+    "files-assistant.png",
+    "history-mail-scope.png",
+    "history-files-scope.png",
+    "mail-draft.png",
+    "chat-handoff-mail.png",
+    "chat-handoff-files.png",
+    "files-nested.png",
+    "files-preview.png",
+  ],
   gate: [
     "chat-empty.png",
     "mail-inbox.png",
@@ -51,6 +71,13 @@ const REQUIRED_BY_PLAN = {
     "chat-keyboard-dismissed.png",
     "chat-thinking.png",
     "chat-agent.png",
+    "mail-draft.png",
+    "mail-assistant.png",
+    "files-assistant.png",
+    "files-nested.png",
+    "files-preview.png",
+    "chat-handoff-mail.png",
+    "chat-handoff-files.png",
   ],
   all: [
     "chat-empty.png",
@@ -65,6 +92,14 @@ const REQUIRED_BY_PLAN = {
     "chat-agent.png",
     "files-folder-documents.png",
     "files-nested.png",
+    "files-preview.png",
+    "mail-draft.png",
+    "mail-assistant.png",
+    "files-assistant.png",
+    "history-mail-scope.png",
+    "history-files-scope.png",
+    "chat-handoff-mail.png",
+    "chat-handoff-files.png",
   ],
 };
 

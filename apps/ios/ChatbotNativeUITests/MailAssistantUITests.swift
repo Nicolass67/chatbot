@@ -1,6 +1,6 @@
 import XCTest
 
-/// Mail Assistant : doit rester in-place (sheet), jamais basculer vers Chat général.
+/// P6 — Mail Assistant in-place (sheet) + context chip + history isolation.
 final class MailAssistantUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -21,36 +21,74 @@ final class MailAssistantUITests: XCTestCase {
         )
 
         let assistant = app.element(id: UITestA11y.mailAssistant, timeout: 8)
-        if assistant.exists {
-            assistant.tap()
-        } else {
-            let fab = app.element(id: "assistant.open", timeout: 4)
-            XCTAssertTrue(fab.exists, "Bouton Assistant Mail introuvable")
-            fab.tap()
-        }
+        XCTAssertTrue(assistant.exists, "FAB mail.assistant")
+        assistant.tap()
 
         let sheet = app.element(id: UITestA11y.assistantSheet, timeout: 8)
         XCTAssertTrue(
-            sheet.exists || app.navigationBars.matching(NSPredicate(format: "identifier CONTAINS[c] 'Mail' OR label CONTAINS[c] 'Assistant'")).firstMatch.exists,
+            sheet.exists
+                || app.navigationBars["Mail Assistant"].waitForExistence(timeout: 4)
+                || app.buttons["Fermer"].waitForExistence(timeout: 3),
             "Sheet Assistant Mail attendue"
+        )
+
+        let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
+        XCTAssertTrue(
+            chip.exists || app.staticTexts["Boîte mail"].waitForExistence(timeout: 3),
+            "Context chip Mail global (Boîte mail)"
         )
         saveScreenshot(app, name: "mail-assistant")
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 4)
         if history.exists {
             history.tap()
+            XCTAssertTrue(
+                app.staticTexts["Conversations Mail"].waitForExistence(timeout: 5),
+                "History title Mail"
+            )
+            XCTAssertFalse(app.staticTexts["Conversations Files"].exists)
             saveScreenshot(app, name: "mail-assistant-history")
-            let mailHistoryTitle = app.staticTexts["Conversations Mail"]
-            if mailHistoryTitle.waitForExistence(timeout: 3) {
-                XCTAssertFalse(
-                    app.staticTexts["Conversations Files"].exists,
-                    "Historique Mail ne doit pas afficher Files"
-                )
-            }
+            app.swipeDown()
         }
 
         let close = app.element(id: UITestA11y.assistantClose, timeout: 4)
-        if close.exists { close.tap() }
+        if close.exists {
+            close.tap()
+        } else if app.buttons["Fermer"].exists {
+            app.buttons["Fermer"].tap()
+        }
         saveScreenshot(app, name: "mail-after-assistant-close")
+    }
+
+    func testMailThreadAssistantContext() throws {
+        let app = XCUIApplication()
+        app.launchForUITesting()
+        app.assertUITestSession()
+
+        app.tapTab(UITestA11y.tabMail)
+        XCTAssertTrue(app.staticTexts["Votre facture Free du mois"].waitForExistence(timeout: 8))
+        app.staticTexts["Votre facture Free du mois"].tap()
+        XCTAssertTrue(app.element(id: "mail.detail", timeout: 8).exists)
+
+        let fab = app.element(id: UITestA11y.mailAssistant, timeout: 8)
+        XCTAssertTrue(fab.exists, "FAB on mail detail")
+        fab.tap()
+
+        let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
+        XCTAssertTrue(
+            chip.exists
+                || app.staticTexts["Votre facture Free du mois"].waitForExistence(timeout: 3)
+                || app.navigationBars.matching(
+                    NSPredicate(format: "label CONTAINS[c] %@", "Assistant")
+                ).firstMatch.waitForExistence(timeout: 3),
+            "Thread context chip expected"
+        )
+        saveScreenshot(app, name: "mail-assistant-thread-context")
+
+        if app.buttons["Fermer"].exists {
+            app.buttons["Fermer"].tap()
+        } else {
+            app.swipeDown()
+        }
     }
 }

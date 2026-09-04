@@ -16,11 +16,16 @@ final class MailDraftUITests: XCTestCase {
         app.staticTexts["Votre facture Free du mois"].tap()
         XCTAssertTrue(app.element(id: "mail.detail", timeout: 10).exists)
 
-        let overflow = app.navigationBars.buttons["Actions du mail"]
-        if overflow.waitForExistence(timeout: 4) {
-            overflow.tap()
-        } else if app.navigationBars.buttons.count > 0 {
-            app.navigationBars.buttons.element(boundBy: app.navigationBars.buttons.count - 1).tap()
+        let overflowById = app.element(id: "mail.overflow", timeout: 4)
+        if overflowById.exists {
+            overflowById.tap()
+        } else {
+            let overflow = app.navigationBars.buttons["Actions du mail"]
+            if overflow.waitForExistence(timeout: 3) {
+                overflow.tap()
+            } else if app.navigationBars.buttons.count > 0 {
+                app.navigationBars.buttons.element(boundBy: app.navigationBars.buttons.count - 1).tap()
+            }
         }
 
         let suggest = app.buttons["Préparer une réponse"]

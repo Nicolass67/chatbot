@@ -165,8 +165,15 @@ final class APIClient: @unchecked Sendable {
         if UITestMode.isActive {
             switch scope {
             case .mail:
+                // ID stable par contextKey → réouverture assistant = même conversation.
+                let key = contextKey ?? "global"
+                let freeKey = UITestFixtures.mailScopedConversation.contextKey ?? ""
+                let stableId = key == freeKey
+                    || key.contains("uitest-thread-free")
+                    ? UITestFixtures.mailScopedConversation.id
+                    : "uitest-conv-mail-\(abs(key.hashValue) % 100_000)"
                 return ConversationDTO(
-                    id: "uitest-conv-mail-\(UUID().uuidString.prefix(8))",
+                    id: stableId,
                     title: title ?? "Assistant Mail",
                     updatedAt: "2099-01-01T12:00:00Z",
                     chatMode: "chat",
@@ -176,8 +183,15 @@ final class APIClient: @unchecked Sendable {
                     contextLabel: contextLabel
                 )
             case .files:
+                let key = contextKey ?? "global"
+                let notesKey = UITestFixtures.filesScopedConversation.contextKey ?? ""
+                let stableId = key == notesKey
+                    || key.contains("notes")
+                    || key.contains("uitest-file")
+                    ? UITestFixtures.filesScopedConversation.id
+                    : "uitest-conv-files-\(abs(key.hashValue) % 100_000)"
                 return ConversationDTO(
-                    id: "uitest-conv-files-\(UUID().uuidString.prefix(8))",
+                    id: stableId,
                     title: title ?? "Assistant Files",
                     updatedAt: "2099-01-01T12:00:00Z",
                     chatMode: "chat",
