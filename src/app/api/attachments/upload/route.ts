@@ -86,13 +86,21 @@ export async function POST(request: Request) {
 
   let extractedCharCount = 0;
   if (validation.type === "document") {
-    extractedCharCount = await indexDocumentAttachment(
-      id,
-      conversationId,
-      localPath,
-      file.type || "application/octet-stream",
-      file.name
-    );
+    try {
+      extractedCharCount = await indexDocumentAttachment(
+        id,
+        conversationId,
+        localPath,
+        file.type || "application/octet-stream",
+        file.name
+      );
+    } catch (err) {
+      // L’upload doit réussir même si l’extraction texte échoue (ex. PDF).
+      console.warn(
+        "[attachments/upload] indexation ignorée:",
+        err instanceof Error ? err.message : err
+      );
+    }
   }
 
   const [row] = await db

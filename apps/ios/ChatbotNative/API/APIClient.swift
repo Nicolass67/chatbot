@@ -744,6 +744,31 @@ final class APIClient: @unchecked Sendable {
         try throwIfNeeded(resp, data)
     }
 
+    func attachFilesToEmailDraft(id: String, attachmentIds: [String]) async throws {
+        if UITestMode.isActive { return }
+        guard !attachmentIds.isEmpty else { return }
+        // GET pour fusionner avec les PJ déjà présentes.
+        let getReq = authorizedRequest(path: "api/email/drafts/\(id)")
+        let (getData, getResp) = try await URLSession.shared.data(for: getReq)
+        try throwIfNeeded(getResp, getData)
+        var existingIds: [String] = []
+        if let obj = try? JSONSerialization.jsonObject(with: getData) as? [String: Any] {
+            if let atts = obj["attachments"] as? [[String: Any]] {
+                existingIds = atts.compactMap { $0["id"] as? String }
+            } else if let ids = obj["attachmentIds"] as? [String] {
+                existingIds = ids
+            }
+        }
+        let merged = Array(Set(existingIds + attachmentIds))
+        var req = authorizedRequest(path: "api/email/drafts/\(id)", method: "PATCH")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "attachmentIds": merged,
+        ] as [String: Any])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+    }
+
     func validateEmailDraft(id: String) async throws {
         if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/email/drafts/\(id)/validate", method: "POST")

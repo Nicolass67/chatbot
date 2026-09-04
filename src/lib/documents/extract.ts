@@ -103,14 +103,11 @@ export async function extractTextFromFile(
     }
   }
   if (mimeType === "application/pdf" || ext === ".pdf") {
-    const pdfParseModule = await import("pdf-parse");
-    const pdfParse =
-      "default" in pdfParseModule
-        ? (pdfParseModule.default as (buf: Buffer) => Promise<{ text?: string }>)
-        : (pdfParseModule as unknown as (buf: Buffer) => Promise<{ text?: string }>);
+    const { PDFParse } = await import("pdf-parse");
     const buffer = fs.readFileSync(filePath);
-    const result = await pdfParse(buffer);
-    return result.text ?? "";
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    return result?.text ?? "";
   }
   if (
     mimeType ===

@@ -1600,6 +1600,19 @@ struct ChatScreen: View {
                         isUploading: false
                     )
                 }
+                // Brouillon mail ouvert : rattacher la PJ au brouillon Gmail (pas seulement au chat).
+                if let draftId = draftCardId, !draftId.isEmpty {
+                    do {
+                        try await client.attachFilesToEmailDraft(
+                            id: draftId,
+                            attachmentIds: [uploaded.id]
+                        )
+                        AppHaptics.success()
+                    } catch {
+                        self.error = error.localizedDescription
+                        AppHaptics.warning()
+                    }
+                }
             } catch {
                 pendingAttachments.removeAll { $0.id == tempId }
                 self.error = error.localizedDescription
