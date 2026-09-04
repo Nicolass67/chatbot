@@ -27,9 +27,13 @@ enum WebSearchPhase: Equatable {
 enum AgentToolLabels {
     static func humanize(_ raw: String) -> String {
         let t = raw.lowercased()
-        if t.contains("web") || t.contains("search") { return "Recherche web" }
+        // Motifs anglais / tool ids — pas de sous-chaîne dans « fichier » (« file »).
+        if t.contains("web") || t.contains("search") || t.contains("searx") { return "Recherche web" }
         if t.contains("mail") || t.contains("gmail") || t.contains("email") { return "Mail" }
-        if t.contains("file") || t.contains("path") { return "Fichiers" }
+        if t.hasPrefix("file_") || t.contains("filesystem") || t.contains("list_files")
+            || t.contains("read_file") || t == "files" || t == "file" || t.contains(" path") {
+            return "Fichiers"
+        }
         if t.contains("memory") || t.contains("souvenir") { return "Mémoire" }
         if t.contains("http") || t.contains("fetch") { return "Consultation" }
         if t.contains("code") || t.contains("shell") { return "Exécution" }
@@ -58,6 +62,13 @@ enum AgentToolLabels {
         }
         if lower.hasPrefix("répondre :") || lower.hasPrefix("repondre :") {
             return "Rédiger la réponse"
+        }
+        // Titres déjà en français naturel : ne pas passer par humanize (évite « fichier » → « Fichiers »).
+        if lower.contains(" ") || lower.contains("é") || lower.contains("è") || lower.contains("à") {
+            if t.count > 48 {
+                t = String(t.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+            }
+            return t
         }
         if t.count > 48 {
             t = String(t.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"

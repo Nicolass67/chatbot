@@ -1560,16 +1560,25 @@ struct ChatScreen: View {
 
         var immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
         let lower = rawText.lowercased()
+        // Statuts Mail uniquement si on est vraiment dans un flux mail (brouillon / contexte mail).
+        // Ne pas matcher « à moins » comme « à moi ».
+        let inMailFlow = draftCardId != nil
+            || forcedActiveContext?.mailThreadId != nil
+            || (forcedActiveContext?.label?.localizedCaseInsensitiveContains("mail") == true)
         if draftCardId != nil, forcedText == nil {
             immediateThinking = .custom("Amélioration du brouillon…")
-        } else if lower.contains("moi-même") || lower.contains("moi meme") || lower.contains("à moi") || lower.contains("a moi") {
+        } else if inMailFlow, Self.containsMailRecipientPhrase(lower) {
             immediateThinking = .custom("Recherche du destinataire…")
-        } else if lower.contains("mail") || lower.contains("email") || lower.contains("brouillon") || lower.contains("écris") || lower.contains("ecris") {
+        } else if inMailFlow,
+                  lower.contains("mail") || lower.contains("email") || lower.contains("brouillon")
+                    || lower.contains("écris") || lower.contains("ecris") {
             immediateThinking = .custom("Préparation du brouillon…")
-        } else if lower.contains("résum") || lower.contains("resum") {
+        } else if inMailFlow, lower.contains("résum") || lower.contains("resum") {
             immediateThinking = .custom("Analyse du message…")
-        } else if lower.contains("répond") || lower.contains("repond") {
+        } else if inMailFlow, lower.contains("répond") || lower.contains("repond") {
             immediateThinking = .custom("Préparation de la réponse…")
+        } else if chatMode == "agent" {
+            immediateThinking = .custom("Planification de l’agent…")
         }
         thinkingKind = immediateThinking
 
@@ -1757,6 +1766,22 @@ struct ChatScreen: View {
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return true }
         let msg = error.localizedDescription.lowercased()
         return msg == "cancelled" || msg == "canceled" || msg.contains("annul")
+    }
+
+    /// « à moi » / « a moi » en frontières de mots — évite « à moins ».
+    private static func containsMailRecipientPhrase(_ haystack: String) -> Bool {
+        let phrases = ["moi-même", "moi meme", "à moi", "a moi", "destinataire"]
+        for phrase in phrases {
+            let pattern = "(?<![\\p{L}\\p{N}])\(NSRegularExpression.escapedPattern(for: phrase))(?![\\p{L}\\p{N}])"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                continue
+            }
+            let range = NSRange(haystack.startIndex..., in: haystack)
+            if regex.firstMatch(in: haystack, options: [], range: range) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     private func resolveFileAction(confirm: Bool) async {

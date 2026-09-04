@@ -40,7 +40,10 @@ Règles :
 - IDs uniques : step-1, step-2, etc.
 - Titres concis en français
 - Couvrir : collecte Web si nécessaire, analyse, synthèse
-- Adapte le plan à la complexité de la tâche`;
+- Adapte le plan à la complexité de la tâche
+- INTERDIT : étapes « fichier / dossier / chemin / document » sauf si l’objectif parle explicitement de fichiers, PDF, CI ou documents personnels
+- INTERDIT : étapes mail / destinataire / brouillon sauf si l’objectif parle de mail / email
+- Pour une question produit, prix, GPU, comparaison ou info actuelle : plan recherche web → comparaison → recommandation`;
 }
 
 export function buildPlannerUserPrompt(
