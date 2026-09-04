@@ -1,48 +1,48 @@
 import SwiftUI
 import UIKit
 
-/// Soft Graphite / Ice Blue — identité premium froide.
-/// Dark mode : accent light-blue moderne. Jamais de jaune / ambre d’identité.
+/// Soft Graphite / Ice Blue — identité premium froide (défaut).
+/// Les couleurs sémantiques suivent `ThemePaletteBridge` (réglages utilisateur).
 enum AppTheme {
-    // MARK: - Semantic colors (Light + Dark)
+    // MARK: - Semantic colors (Light + Dark) — dynamiques
 
-    static let background = Color.cn(light: 0xF3F5F9, dark: 0x0B0F14)
-    static let sidebar = Color.cn(light: 0xE8ECF3, dark: 0x121820)
-    static let foreground = Color.cn(light: 0x12161E, dark: 0xE8EEF6)
-    static let surface = Color.cn(light: 0xFFFFFF, dark: 0x161C26)
-    static let surfaceElevated = Color.cn(light: 0xFFFFFF, dark: 0x1E2633)
-    static let surfaceHover = Color.cn(light: 0xE2E8F2, dark: 0x273142)
-    static let surfaceActive = Color.cn(light: 0xD5DDEA, dark: 0x314054)
+    private static var p: ResolvedThemePalette { ThemePaletteBridge.current }
 
-    /// Accent light-blue moderne (clair + sombre) — remplace indigo/jaune parasite.
-    static let accent = Color.cn(light: 0x3B82F6, dark: 0x7DD3FC)
-    static let accentHover = Color.cn(light: 0x2563EB, dark: 0xA5E4FF)
-    static let accentForeground = Color.cn(light: 0xFFFFFF, dark: 0x0B0F14)
-    static let accentSubtle = accent.opacity(0.14)
+    static var background: Color { Color.cn(light: p.bgLight, dark: p.bgDark) }
+    static var sidebar: Color { Color.cn(light: p.sidebarLight, dark: p.sidebarDark) }
+    static var foreground: Color { Color.cn(light: p.fgLight, dark: p.fgDark) }
+    static var surface: Color { Color.cn(light: p.surfaceLight, dark: p.surfaceDark) }
+    static var surfaceElevated: Color { Color.cn(light: p.surfaceElevatedLight, dark: p.surfaceElevatedDark) }
+    static var surfaceHover: Color { Color.cn(light: p.surfaceHoverLight, dark: p.surfaceHoverDark) }
+    static var surfaceActive: Color { Color.cn(light: p.surfaceActiveLight, dark: p.surfaceActiveDark) }
 
-    static let muted = Color.cn(light: 0x5A6478, dark: 0x9AA8BC)
-    static let mutedForeground = Color.cn(light: 0x8490A4, dark: 0x6B7A90)
+    static var accent: Color { Color.cn(light: p.primaryLight, dark: p.primaryDark) }
+    static var accentHover: Color { Color.cn(light: p.primaryHoverLight, dark: p.primaryHoverDark) }
+    static var accentForeground: Color { Color.cn(light: p.primaryInkLight, dark: p.primaryInkDark) }
+    static var accentSubtle: Color { accent.opacity(0.14) }
 
-    static let userMessage = Color.cn(light: 0xE8F1FE, dark: 0x1A2838)
+    static var muted: Color { Color.cn(light: p.mutedLight, dark: p.mutedDark) }
+    static var mutedForeground: Color { Color.cn(light: p.mutedFgLight, dark: p.mutedFgDark) }
+
+    static var userMessage: Color { Color.cn(light: p.userMessageLight, dark: p.userMessageDark) }
     static let danger = Color.cn(light: 0xB85C58, dark: 0xC97D79)
-    /// Succès sémantique uniquement (pas identité).
     static let success = Color.cn(light: 0x4F7A72, dark: 0x7FA89E)
-    /// Alerte froide — jamais jaune / ambre d’identité.
     static let warning = Color.cn(light: 0x64748B, dark: 0x94A3B8)
 
-    static let border = Color.cn(light: 0xCDD5E3, dark: 0x2A3545)
-    /// 0xRRGGBBAA — alpha dans l’octet bas (Color.cn le parse correctement).
+    static var border: Color { Color.cn(light: p.borderLight, dark: p.borderDark) }
     static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF14)
-    static let glassBorder = Color.cn(light: 0x00000018, dark: 0x7DD3FC33)
-    static let codeBg = Color.cn(light: 0xEBF0F7, dark: 0x0F141C)
-    static let assistantBar = accent
-    static let ambientCool = Color.cn(light: 0x7EB6FF, dark: 0x1E3A5F)
-    /// Chaleur secondaire très désaturée — pas jaune.
+    static var glassBorder: Color {
+        Color.cn(light: 0x00000018, dark: 0xFFFFFF22)
+    }
+    static var codeBg: Color { Color.cn(light: p.codeBgLight, dark: p.codeBgDark) }
+    static var assistantBar: Color { accent }
+    static var ambientCool: Color { Color.cn(light: p.ambientCoolLight, dark: p.ambientCoolDark) }
     static let ambientWarm = Color.cn(light: 0xA8B0BC, dark: 0x1A222C)
 
-    /// Scopes
-    static let mailAccent = Color.cn(light: 0x3B82F6, dark: 0x7DD3FC)
-    static let filesAccent = Color.cn(light: 0x0EA5E9, dark: 0x67E8F9)
+    /// Principale (mail / actions).
+    static var mailAccent: Color { accent }
+    /// Secondaire (files / accents annexes).
+    static var filesAccent: Color { Color.cn(light: p.secondaryLight, dark: p.secondaryDark) }
 
     // MARK: - Spacing (4-pt)
 

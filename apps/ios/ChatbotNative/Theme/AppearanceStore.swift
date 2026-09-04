@@ -108,21 +108,106 @@ extension View {
 
 @MainActor
 final class AppearanceStore: ObservableObject {
-    private static let defaultsKey = "appAppearanceMode"
+    private static let modeKey = "appAppearanceMode"
+    private static let primaryKey = "themePrimaryId"
+    private static let secondaryKey = "themeSecondaryId"
+    private static let backgroundKey = "themeBackgroundId"
 
     @Published var mode: AppAppearanceMode {
         didSet {
-            UserDefaults.standard.set(mode.rawValue, forKey: Self.defaultsKey)
+            UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey)
         }
     }
 
+    @Published var primaryId: String {
+        didSet { persistPalette() }
+    }
+
+    @Published var secondaryId: String {
+        didSet { persistPalette() }
+    }
+
+    @Published var backgroundId: String {
+        didSet { persistPalette() }
+    }
+
+    /// Incrémenté à chaque changement de palette → force le refresh UI (`.id`).
+    @Published private(set) var themeRevision: Int = 0
+
+    private var isHydrating = true
+
     init() {
-        if let raw = UserDefaults.standard.string(forKey: Self.defaultsKey),
+        if let raw = UserDefaults.standard.string(forKey: Self.modeKey),
            let parsed = AppAppearanceMode(rawValue: raw)
         {
             mode = parsed
         } else {
             mode = .system
+        }
+
+        let primary = UserDefaults.standard.string(forKey: Self.primaryKey)
+            ?? ThemePaletteCatalog.defaultPrimaryId
+        let secondary = UserDefaults.standard.string(forKey: Self.secondaryKey)
+            ?? ThemePaletteCatalog.defaultSecondaryId
+        let background = UserDefaults.standard.string(forKey: Self.backgroundKey)
+            ?? ThemePaletteCatalog.defaultBackgroundId
+
+        primaryId = ThemePaletteCatalog.primaries.contains(where: { $0.id == primary })
+            ? primary : ThemePaletteCatalog.defaultPrimaryId
+        secondaryId = ThemePaletteCatalog.secondaries.contains(where: { $0.id == secondary })
+            ? secondary : ThemePaletteCatalog.defaultSecondaryId
+        backgroundId = ThemePaletteCatalog.backgrounds.contains(where: { $0.id == background })
+            ? background : ThemePaletteCatalog.defaultBackgroundId
+
+        isHydrating = false
+        applyPaletteToBridge(bumpRevision: false)
+    }
+
+    var primarySwatch: ThemeColorSwatch { ThemePaletteCatalog.primary(id: primaryId) }
+    var secondarySwatch: ThemeColorSwatch { ThemePaletteCatalog.secondary(id: secondaryId) }
+    var backgroundSwatch: ThemeColorSwatch { ThemePaletteCatalog.background(id: backgroundId) }
+
+    func selectPrimary(_ id: String) {
+        guard primaryId != id else { return }
+        primaryId = id
+        AppHaptics.light()
+    }
+
+    func selectSecondary(_ id: String) {
+        guard secondaryId != id else { return }
+        secondaryId = id
+        AppHaptics.light()
+    }
+
+    func selectBackground(_ id: String) {
+        guard backgroundId != id else { return }
+        backgroundId = id
+        AppHaptics.light()
+    }
+
+    func resetThemeColors() {
+        primaryId = ThemePaletteCatalog.defaultPrimaryId
+        secondaryId = ThemePaletteCatalog.defaultSecondaryId
+        backgroundId = ThemePaletteCatalog.defaultBackgroundId
+        AppHaptics.success()
+    }
+
+    private func persistPalette() {
+        guard !isHydrating else { return }
+        UserDefaults.standard.set(primaryId, forKey: Self.primaryKey)
+        UserDefaults.standard.set(secondaryId, forKey: Self.secondaryKey)
+        UserDefaults.standard.set(backgroundId, forKey: Self.backgroundKey)
+        applyPaletteToBridge(bumpRevision: true)
+    }
+
+    private func applyPaletteToBridge(bumpRevision: Bool) {
+        ThemePaletteBridge.current = .resolve(
+            primaryId: primaryId,
+            secondaryId: secondaryId,
+            backgroundId: backgroundId
+        )
+        if bumpRevision {
+            themeRevision &+= 1
         }
     }
 }

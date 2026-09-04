@@ -14,6 +14,7 @@ struct ChatbotNativeApp: App {
                 .environment(nav)
                 .tint(AppTheme.accent)
                 .preferredColorScheme(appearance.mode.preferredColorScheme)
+                .id("theme-\(appearance.themeRevision)-\(appearance.mode.rawValue)")
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }

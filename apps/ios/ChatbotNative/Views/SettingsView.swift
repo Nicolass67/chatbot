@@ -109,6 +109,8 @@ struct SettingsView: View {
                 }
                 .listRowBackground(AppTheme.surface)
 
+                ThemeColorSettingsSection()
+
                 Section {
                     Toggle("Verrouillage Face ID", isOn: Binding(
                         get: { session.biometricLockEnabled },
