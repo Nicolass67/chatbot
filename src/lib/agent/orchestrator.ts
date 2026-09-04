@@ -946,7 +946,19 @@ async function runChatMode(params: {
   const toolCallCounts = new Map<string, number>();
   let totalToolCalls = 0;
 
-  if (imageCount === 0) {
+  // Les images coupaient tout tool-calling → l'assistant mail inventait un refus
+  // (« je ne peux pas envoyer de fichiers ») alors que email_create_draft existe.
+  // En mode mail on garde les outils ; on rétrograde la vision en texte pour que
+  // les modèles locaux puissent encore appeler l'outil.
+  const allowToolLoop =
+    imageCount === 0 ||
+    (emailEnabled && emailToolCandidates.length > 0);
+
+  if (allowToolLoop && imageCount > 0 && emailEnabled) {
+    demoteVisionImagesForToolCalling(contextMessages, pendingAttachments);
+  }
+
+  if (allowToolLoop) {
     while (totalToolCalls < MAX_TOOL_CALLS) {
       if (input.signal?.aborted) return;
 
@@ -1341,4 +1353,48 @@ async function streamFinalResponse(params: {
           : "Erreur de sauvegarde",
     });
   });
+}
+
+/**
+ * Remplace les parts vision (image_url) par du texte listant les PJ.
+ * Les modèles locaux gèrent mal tools + vision dans le même tour ; pour le mail
+ * la PJ n'a pas besoin d'être « vue » — elle est auto-attachée via pendingAttachmentIds.
+ */
+function demoteVisionImagesForToolCalling(
+  contextMessages: Array<{
+    role: string;
+    content:
+      | string
+      | Array<{ type: string; text?: string; image_url?: { url: string } }>
+      | null;
+  }>,
+  pendingAttachments: Array<{ id: string; filename: string; type: string }>
+): void {
+  const imageList = pendingAttachments
+    .filter((a) => a.type === "image")
+    .map((a) => `${a.filename} (id=${a.id})`);
+  const fallbackNotice =
+    imageList.length > 0
+      ? `[Pièces jointes images déjà fournies — à attacher via email_create_draft : ${imageList.join(", ")}]`
+      : `[Pièces jointes images déjà fournies — à attacher via email_create_draft]`;
+
+  for (const msg of contextMessages) {
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+    const texts: string[] = [];
+    let imageParts = 0;
+    for (const part of msg.content) {
+      if (part.type === "text" && part.text?.trim()) {
+        texts.push(part.text.trim());
+      } else if (part.type === "image_url") {
+        imageParts += 1;
+      }
+    }
+    if (imageParts === 0) continue;
+    const base = texts.join("\n\n").trim();
+    msg.content = base.includes("[Pièces jointes")
+      ? base
+      : base
+        ? `${base}\n\n${fallbackNotice}`
+        : fallbackNotice;
+  }
 }

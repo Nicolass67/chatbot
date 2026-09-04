@@ -44,12 +44,12 @@ export async function dbMessageToChatMessage(
   }
 
   const images = msgAttachments.filter((a) => a.type === "image");
-  const documents = msgAttachments.filter((a) => a.type !== "image");
-  // Les documents ne sont pas multimodaux : sans ce rappel, le LLM « ne voit » pas la PJ.
+  // Toujours lister les PJ (y compris images) en texte : le mode mail coupe souvent
+  // la vision pour garder le tool-calling, et les docs ne sont pas multimodaux.
   const attachmentNotice =
-    documents.length > 0
-      ? `\n\n[Pièces jointes du message : ${documents
-          .map((a) => `${a.filename} (id=${a.id})`)
+    msgAttachments.length > 0
+      ? `\n\n[Pièces jointes du message : ${msgAttachments
+          .map((a) => `${a.filename} (id=${a.id}, type=${a.type})`)
           .join(", ")}]`
       : "";
   const textWithAttachments = `${text || ""}${attachmentNotice}`.trim();
