@@ -1129,7 +1129,7 @@ private struct MkdirConfirmSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Confirmer la création")
-                    .font(CNFont.title3)
+                    .font(CNFont.title)
                 Text(detail)
                     .font(CNFont.body)
                     .foregroundStyle(AppTheme.muted)
