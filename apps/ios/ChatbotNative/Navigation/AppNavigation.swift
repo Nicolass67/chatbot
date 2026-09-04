@@ -128,13 +128,18 @@ final class AppNavigation {
     /// Navigue vers le dossier parent exact du fichier.
     func openFileFolder(rootId: String?, folderPath: String, title: String? = nil) {
         dismissAssistantSheets()
+        // Poser le deep-link puis switcher d’onglet au tick suivant :
+        // évite les courses sheet Mail/Files encore en fermeture.
         filesDeepLink = FilesDeepLink(
             rootId: rootId,
             fileName: title,
             folderPath: folderPath,
             intent: .folder
         )
-        selectedTab = .files
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            selectedTab = .files
+        }
     }
 
     /// Déclenche téléchargement + navigation preview (share depuis FilePreview).

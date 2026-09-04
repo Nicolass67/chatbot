@@ -277,12 +277,20 @@ struct MailAttachmentRow: View {
             Button("OK", role: .cancel) { savedDestination = nil }
             Button("Ouvrir le dossier") {
                 guard let dest = savedDestination else { return }
+                let target = dest
                 savedDestination = nil
-                nav.openFileFolder(
-                    rootId: dest.rootId,
-                    folderPath: dest.path,
-                    title: dest.path.split(separator: "/").last.map(String.init) ?? dest.rootLabel
-                )
+                // Fermer preview / picker AVANT le switch d’onglet — sinon crash SwiftUI
+                // (sheet Mail encore présentée + TabView Files).
+                previewItem = nil
+                showFilesPicker = false
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    nav.openFileFolder(
+                        rootId: target.rootId,
+                        folderPath: target.path,
+                        title: target.path.split(separator: "/").last.map(String.init) ?? target.rootLabel
+                    )
+                }
             }
         } message: {
             Text(savedDestination.map { "Fichier enregistré dans\n\($0.displayPath)" } ?? "")

@@ -162,7 +162,7 @@ struct FilesBrowserView: View {
                     pendingDeepLink = link
                 } else {
                     if rootsById.isEmpty {
-                        rootsById = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
+                        rootsById = Dictionary(roots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                     }
                     applyFilesDeepLink(link)
                 }
@@ -204,7 +204,7 @@ struct FilesBrowserView: View {
             .task {
                 if roots.isEmpty, let cached = TabMemoryCache.fileRoots, !cached.isEmpty {
                     roots = cached
-                    rootsById = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
+                    rootsById = Dictionary(cached.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                 }
                 if roots.isEmpty {
                     await loadRoots()
@@ -213,7 +213,7 @@ struct FilesBrowserView: View {
                 consumePendingFilesDeepLink()
             }
             .onChange(of: roots) { _, newRoots in
-                rootsById = Dictionary(uniqueKeysWithValues: newRoots.map { ($0.id, $0) })
+                rootsById = Dictionary(newRoots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                 if !newRoots.isEmpty {
                     TabMemoryCache.fileRoots = newRoots
                 }
@@ -353,13 +353,14 @@ struct FilesBrowserView: View {
     }
 
     private func navigateToFolder(rootId: String?, folderPath: String) {
-        path = NavigationPath()
-        let resolvedRootId = rootId
-            ?? roots.first?.id
-        guard let resolvedRootId, let root = rootsById[resolvedRootId] ?? roots.first else { return }
+        let resolvedRootId = rootId ?? roots.first?.id
+        guard let resolvedRootId,
+              let root = rootsById[resolvedRootId] ?? roots.first(where: { $0.id == resolvedRootId }) ?? roots.first
+        else { return }
         let rootKey = root.id
-        // Toujours pousser la racine, puis chaque segment du chemin parent.
-        path.append(
+        // Une seule assignation de path (évite crash SwiftUI sur appends enchaînés).
+        var next = NavigationPath()
+        next.append(
             FilesDestination.folder(
                 rootId: rootKey,
                 path: "",
@@ -368,18 +369,20 @@ struct FilesBrowserView: View {
         )
         let normalized = folderPath.replacingOccurrences(of: "\\", with: "/")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !normalized.isEmpty else { return }
-        var cumulative = ""
-        for segment in normalized.split(separator: "/") {
-            cumulative = cumulative.isEmpty ? String(segment) : "\(cumulative)/\(segment)"
-            path.append(
-                FilesDestination.folder(
-                    rootId: rootKey,
-                    path: cumulative,
-                    title: String(segment)
+        if !normalized.isEmpty {
+            var cumulative = ""
+            for segment in normalized.split(separator: "/") {
+                cumulative = cumulative.isEmpty ? String(segment) : "\(cumulative)/\(segment)"
+                next.append(
+                    FilesDestination.folder(
+                        rootId: rootKey,
+                        path: cumulative,
+                        title: String(segment)
+                    )
                 )
-            )
+            }
         }
+        path = next
     }
 
     @ViewBuilder
@@ -635,7 +638,7 @@ struct FilesBrowserView: View {
         defer { loading = false }
         do {
             roots = try await client.listFileRoots()
-            rootsById = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
+            rootsById = Dictionary(roots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             error = nil
             consumePendingFilesDeepLink()
         } catch {
