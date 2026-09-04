@@ -48,6 +48,7 @@ struct ContextualAssistantSheet: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Fermer") { dismiss() }
                         .accessibilityIdentifier(A11yID.Assistant.close)
+                        .accessibilityAddTraits(.isButton)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {

@@ -52,11 +52,13 @@ final class MailAssistantUITests: XCTestCase {
             app.swipeDown()
         }
 
-        let close = app.element(id: UITestA11y.assistantClose, timeout: 4)
-        if close.exists {
-            close.tap()
-        } else if app.buttons["Fermer"].exists {
-            app.buttons["Fermer"].tap()
+        // tapFirst — iOS 26 peut exposer plusieurs nœuds pour le même identifier toolbar.
+        if !app.tapFirst(id: UITestA11y.assistantClose, timeout: 4) {
+            if app.buttons["Fermer"].exists {
+                app.buttons["Fermer"].firstMatch.tap()
+            } else {
+                app.swipeDown()
+            }
         }
         saveScreenshot(app, name: "mail-after-assistant-close")
     }

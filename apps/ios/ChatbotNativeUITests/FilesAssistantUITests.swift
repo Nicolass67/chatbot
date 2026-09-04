@@ -46,16 +46,18 @@ final class FilesAssistantUITests: XCTestCase {
             app.swipeDown()
         }
 
-        let close = app.element(id: UITestA11y.assistantClose, timeout: 4)
-        if close.exists {
-            close.tap()
-        } else if app.buttons["Fermer"].exists {
-            app.buttons["Fermer"].tap()
+        if !app.tapFirst(id: UITestA11y.assistantClose, timeout: 4) {
+            if app.buttons["Fermer"].exists {
+                app.buttons["Fermer"].firstMatch.tap()
+            } else {
+                app.swipeDown()
+            }
         }
         saveScreenshot(app, name: "files-after-assistant-close")
     }
 
-    func testFilesFolderContextChip() throws {
+    /// Après le root assistant (ordre alphabétique) pour limiter les flakes de cold launch.
+    func testFilesNestedFolderContextChip() throws {
         let app = XCUIApplication()
         app.launchForUITesting()
         app.assertUITestSession()
@@ -77,10 +79,12 @@ final class FilesAssistantUITests: XCTestCase {
         )
         saveScreenshot(app, name: "files-assistant-folder-context")
 
-        if app.buttons["Fermer"].exists {
-            app.buttons["Fermer"].tap()
-        } else {
-            app.swipeDown()
+        if !app.tapFirst(id: UITestA11y.assistantClose, timeout: 3) {
+            if app.buttons["Fermer"].exists {
+                app.buttons["Fermer"].firstMatch.tap()
+            } else {
+                app.swipeDown()
+            }
         }
     }
 }
