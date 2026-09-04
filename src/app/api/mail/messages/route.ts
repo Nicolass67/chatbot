@@ -3,7 +3,10 @@ export const runtime = "nodejs";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/types";
 import { apiAuthGuard } from "@/lib/auth/api-auth";
-import { listMailMessages, toPublicMessageSummary } from "@/lib/mail/service";
+import {
+  listMailMessagesPage,
+  toPublicMessageSummary,
+} from "@/lib/mail/service";
 import { resolveCategoryParams, parseMailCategory } from "@/lib/mail/categories";
 import { isEmailFeatureEnabled } from "@/lib/integrations/oauth";
 import { EmailNotConnectedError } from "@/lib/integrations/email/types";
@@ -14,6 +17,7 @@ const querySchema = z.object({
   label: z.string().optional(),
   category: z.string().optional(),
   maxResults: z.coerce.number().min(1).max(50).optional(),
+  pageToken: z.string().optional(),
 });
 
 export const GET = withAuth(apiAuthGuard, async (request, auth) => {
@@ -29,6 +33,7 @@ export const GET = withAuth(apiAuthGuard, async (request, auth) => {
     label: url.searchParams.get("label") ?? undefined,
     category: url.searchParams.get("category") ?? undefined,
     maxResults: url.searchParams.get("maxResults") ?? undefined,
+    pageToken: url.searchParams.get("pageToken") ?? undefined,
   });
 
   const category = params.category
@@ -38,18 +43,21 @@ export const GET = withAuth(apiAuthGuard, async (request, auth) => {
 
   try {
     const gmailStart = performance.now();
-    const messages = await listMailMessages({
+    const page = await listMailMessagesPage({
       userId,
       query: params.q,
       label: params.label ?? categoryParams?.label,
       categoryQuery: categoryParams?.query,
-      maxResults: params.maxResults,
+      maxResults: params.maxResults ?? 50,
+      pageToken: params.pageToken,
     });
     const gmailMs = performance.now() - gmailStart;
     const totalMs = performance.now() - t0;
     return Response.json(
       {
-        messages: messages.map(toPublicMessageSummary),
+        messages: page.messages.map(toPublicMessageSummary),
+        nextPageToken: page.nextPageToken,
+        resultSizeEstimate: page.resultSizeEstimate,
       },
       {
         headers: {

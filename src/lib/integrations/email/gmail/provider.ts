@@ -55,9 +55,9 @@ export class GmailProvider implements EmailProvider {
     return messages;
   }
 
-  async listMessages(
+  async listMessagesPage(
     params: ListMessagesParams
-  ): Promise<NormalizedEmailMessage[]> {
+  ): Promise<import("../types").MailMessagesPage> {
     const q = buildGmailListQuery({
       query: params.query,
       after: params.after,
@@ -68,9 +68,24 @@ export class GmailProvider implements EmailProvider {
       q,
       maxResults: params.maxResults ?? 20,
       labelIds: params.labelIds,
+      pageToken: params.pageToken,
     });
 
-    return this.fetchMessageSummaries(response.data);
+    return {
+      messages: await this.fetchMessageSummaries(response.data),
+      nextPageToken: response.data.nextPageToken ?? null,
+      resultSizeEstimate:
+        typeof response.data.resultSizeEstimate === "number"
+          ? response.data.resultSizeEstimate
+          : null,
+    };
+  }
+
+  async listMessages(
+    params: ListMessagesParams
+  ): Promise<NormalizedEmailMessage[]> {
+    const page = await this.listMessagesPage(params);
+    return page.messages;
   }
 
   async getMessage(messageId: string): Promise<NormalizedEmailMessage> {
@@ -116,9 +131,17 @@ export class GmailProvider implements EmailProvider {
   async search(
     params: SearchMessagesParams
   ): Promise<NormalizedEmailMessage[]> {
-    return this.listMessages({
+    const page = await this.searchPage(params);
+    return page.messages;
+  }
+
+  async searchPage(
+    params: SearchMessagesParams
+  ): Promise<import("../types").MailMessagesPage> {
+    return this.listMessagesPage({
       query: params.query,
       maxResults: params.maxResults ?? 20,
+      pageToken: params.pageToken,
     });
   }
 

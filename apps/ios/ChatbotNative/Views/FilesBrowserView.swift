@@ -27,6 +27,18 @@ enum FilesDestination: Hashable {
     case file(fileId: String, title: String, rootId: String, folderPath: String)
 }
 
+enum FilesIndexStatus: Equatable {
+    case idle
+    case indexing(rootLabel: String)
+    case done(indexed: Int, skipped: Int, rootLabel: String)
+    case failed(String)
+
+    var isIndexing: Bool {
+        if case .indexing = self { return true }
+        return false
+    }
+}
+
 struct FilesBrowserView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
@@ -39,6 +51,7 @@ struct FilesBrowserView: View {
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
     @State private var pendingDeepLink: FilesDeepLink?
+    @State private var indexStatus: FilesIndexStatus = .idle
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -48,19 +61,32 @@ struct FilesBrowserView: View {
         NavigationStack(path: $path) {
             ZStack {
                 AmbientBackground()
-                content
+                VStack(spacing: 0) {
+                    filesIndexBanner
+                    content
+                }
             }
             .navigationTitle("Files")
             .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Files.root)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        nav.openSettings()
+                    Menu {
+                        Button {
+                            Task { await reindexAllRoots() }
+                        } label: {
+                            Label("Réindexer tous les disques", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(indexStatus.isIndexing || roots.isEmpty)
+                        Button {
+                            nav.openSettings()
+                        } label: {
+                            Label("Réglages", systemImage: "person.crop.circle")
+                        }
                     } label: {
-                        Image(systemName: "person.crop.circle")
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .accessibilityLabel("Réglages")
+                    .accessibilityLabel("Actions Files")
                     .accessibilityIdentifier(A11yID.Files.settings)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
@@ -220,7 +246,11 @@ struct FilesBrowserView: View {
                                 folderPath: folderPath
                             )
                         )
-                    }
+                    },
+                    onReindex: {
+                        Task { await reindexRoot(root) }
+                    },
+                    isReindexing: indexStatus.isIndexing
                 )
             } else {
                 SoftEmptyState(
@@ -293,11 +323,95 @@ struct FilesBrowserView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(A11yID.Files.folder)
+                        .contextMenu {
+                            Button {
+                                Task { await reindexRoot(root) }
+                            } label: {
+                                Label("Réindexer", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(indexStatus.isIndexing)
+                        }
                         Divider().overlay(AppTheme.borderSubtle).padding(.leading, 54)
                     }
                 }
                 .padding(.bottom, AppTheme.space24)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var filesIndexBanner: some View {
+        switch indexStatus {
+        case .idle:
+            EmptyView()
+        case .indexing(let label):
+            HStack(spacing: AppTheme.space8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Indexation de « \(label) »…")
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.muted)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, AppTheme.space16)
+            .padding(.vertical, AppTheme.space8)
+            .background(AppTheme.surfaceElevated.opacity(0.95))
+            .accessibilityIdentifier(A11yID.Files.reindex)
+        case .done(let indexed, let skipped, let label):
+            HStack(spacing: AppTheme.space8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(AppTheme.success)
+                Text("« \(label) » · \(indexed) indexés, \(skipped) ignorés")
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.foreground)
+                Spacer(minLength: 0)
+                Button("OK") { indexStatus = .idle }
+                    .font(CNFont.caption.weight(.semibold))
+            }
+            .padding(.horizontal, AppTheme.space16)
+            .padding(.vertical, AppTheme.space8)
+            .background(AppTheme.surfaceElevated.opacity(0.95))
+        case .failed(let message):
+            HStack(spacing: AppTheme.space8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(AppTheme.danger)
+                Text(message)
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Button("OK") { indexStatus = .idle }
+                    .font(CNFont.caption.weight(.semibold))
+            }
+            .padding(.horizontal, AppTheme.space16)
+            .padding(.vertical, AppTheme.space8)
+            .background(AppTheme.surfaceElevated.opacity(0.95))
+        }
+    }
+
+    private func reindexRoot(_ root: FileRootDTO) async {
+        let label = root.label?.isEmpty == false ? root.label! : "Racine"
+        indexStatus = .indexing(rootLabel: label)
+        do {
+            let result = try await client.indexFileRoot(rootId: root.id)
+            indexStatus = .done(
+                indexed: result.indexed ?? 0,
+                skipped: result.skipped ?? 0,
+                rootLabel: label
+            )
+            AppHaptics.success()
+        } catch {
+            indexStatus = .failed(error.localizedDescription)
+            AppHaptics.error()
+        }
+    }
+
+    private func reindexAllRoots() async {
+        let enabled = roots.filter { $0.enabled != false }
+        guard !enabled.isEmpty else { return }
+        for root in enabled {
+            await reindexRoot(root)
+            if case .failed = indexStatus { break }
         }
     }
 
@@ -392,6 +506,8 @@ struct FileFolderView: View {
     let title: String
     var onOpenFolder: (FileEntryDTO) -> Void
     var onOpenFile: (FileEntryDTO) -> Void
+    var onReindex: (() -> Void)? = nil
+    var isReindexing: Bool = false
 
     @State private var entries: [FileEntryDTO] = []
     @State private var loading = true
@@ -481,6 +597,16 @@ struct FileFolderView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if let onReindex {
+                        Button {
+                            onReindex()
+                        } label: {
+                            Label("Réindexer ce disque", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(isReindexing)
+                        .accessibilityIdentifier(A11yID.Files.reindex)
+                        Divider()
+                    }
                     Button { showMkdir = true } label: { Label("Nouveau dossier", systemImage: "folder.badge.plus") }
                     Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
                         .disabled(uploading)

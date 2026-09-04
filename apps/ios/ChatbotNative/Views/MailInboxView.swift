@@ -1,12 +1,28 @@
 import SwiftUI
 import UIKit
 
+enum MailSortOption: String, CaseIterable, Identifiable {
+    case newest
+    case oldest
+    case from
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .newest: return "Plus récents"
+        case .oldest: return "Plus anciens"
+        case .from: return "Expéditeur"
+        }
+    }
+}
+
 struct MailInboxView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
     @State private var messages: [MailMessageSummary] = []
     @State private var loading = false
-    /// Barre inline (liste déjà peuplée) — révélée après un court délai anti-flash.
+    /// Barre inline (liste déjà peuplée).
     @State private var showInlineProgress = false
     @State private var loadGeneration = 0
     @State private var loadTask: Task<Void, Never>?
@@ -14,6 +30,7 @@ struct MailInboxView: View {
     @State private var path = NavigationPath()
     @State private var category: String = "primary"
     @State private var unreadOnly = false
+    @State private var sort: MailSortOption = .newest
     @State private var search = ""
     @State private var oauthEmails: [String] = []
     @State private var oauthConfigured = true
@@ -22,6 +39,19 @@ struct MailInboxView: View {
     @State private var assistantContext: MailAssistantContext = .global
     @State private var sheetContext: MailAssistantContext = .global
     @State private var assistantDetent: PresentationDetent = .large
+
+    /// Pagination Gmail (tri « plus récents »).
+    @State private var nextPageToken: String?
+    @State private var pageTokenStack: [String?] = [nil]
+    @State private var resultSizeEstimate: Int?
+    /// Fenêtre triée localement (oldest / from) — tri avant pagination.
+    @State private var sortedWindow: [MailMessageSummary] = []
+    @State private var localPageIndex = 0
+    @State private var windowExhausted = false
+
+    private let pageSize = 50
+    /// Fenêtre max pour tris non-Gmail (oldest / from).
+    private let sortWindowMax = 150
 
     private let categories: [(id: String, label: String)] = [
         ("primary", "Principal"),
@@ -34,6 +64,36 @@ struct MailInboxView: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var rangeLabel: String {
+        let count = messages.count
+        guard count > 0 else { return "Aucun mail" }
+        if sort == .newest {
+            let start = max(1, (pageTokenStack.count - 1) * pageSize + 1)
+            let end = start + count - 1
+            if let estimate = resultSizeEstimate, estimate > 0 {
+                return "\(start)–\(end) sur ~\(estimate)"
+            }
+            let more = nextPageToken != nil ? "+" : ""
+            return "\(start)–\(end)\(more)"
+        }
+        let start = localPageIndex * pageSize + 1
+        let end = start + count - 1
+        let total = sortedWindow.count
+        if let estimate = resultSizeEstimate, estimate > total {
+            return "\(start)–\(end) sur \(total) (~\(estimate))"
+        }
+        return "\(start)–\(end) sur \(total)"
+    }
+
+    private var canGoPrevious: Bool {
+        sort == .newest ? pageTokenStack.count > 1 : localPageIndex > 0
+    }
+
+    private var canGoNext: Bool {
+        if sort == .newest { return nextPageToken != nil }
+        return (localPageIndex + 1) * pageSize < sortedWindow.count
     }
 
     private func openMailAssistant(_ context: MailAssistantContext) {
@@ -80,9 +140,53 @@ struct MailInboxView: View {
     }
 
     /// Lance un chargement (latest-wins) — annule la requête précédente.
-    private func scheduleLoad() {
+    private func scheduleLoad(resetPagination: Bool = true) {
         loadTask?.cancel()
-        loadTask = Task { await load() }
+        if resetPagination {
+            pageTokenStack = [nil]
+            nextPageToken = nil
+            localPageIndex = 0
+            sortedWindow = []
+            windowExhausted = false
+            resultSizeEstimate = nil
+        }
+        loadTask = Task { await load(pageToken: nil) }
+    }
+
+    private func goPreviousPage() {
+        loadTask?.cancel()
+        loadTask = Task {
+            if sort == .newest {
+                guard pageTokenStack.count > 1 else { return }
+                let previous = Array(pageTokenStack.dropLast())
+                await load(pageToken: previous.last ?? nil)
+                if !Task.isCancelled {
+                    pageTokenStack = previous
+                }
+            } else {
+                guard localPageIndex > 0 else { return }
+                localPageIndex -= 1
+                applyLocalPage()
+            }
+        }
+    }
+
+    private func goNextPage() {
+        loadTask?.cancel()
+        loadTask = Task {
+            if sort == .newest {
+                guard let token = nextPageToken else { return }
+                await load(pageToken: token)
+                if !Task.isCancelled, error == nil {
+                    pageTokenStack.append(token)
+                }
+            } else {
+                let next = localPageIndex + 1
+                guard next * pageSize < sortedWindow.count else { return }
+                localPageIndex = next
+                applyLocalPage()
+            }
+        }
     }
 
     var body: some View {
@@ -118,10 +222,10 @@ struct MailInboxView: View {
             .onChange(of: search) { _, q in
                 if q.isEmpty { scheduleLoad() }
             }
-            .refreshable { await load() }
+            .refreshable { scheduleLoad() }
             .task {
                 await loadOAuth()
-                await load()
+                scheduleLoad()
             }
             .onChange(of: nav.mailDeepLink) { _, link in
                 handleMailDeepLink(link)
@@ -236,23 +340,68 @@ struct MailInboxView: View {
                             Text(cat.label).tag(cat.id)
                         }
                     }
+                    Divider()
+                    Picker("Tri", selection: $sort) {
+                        ForEach(MailSortOption.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
                 } label: {
                     Label(
-                        categories.first(where: { $0.id == category })?.label ?? "Filtrer",
+                        "\(categories.first(where: { $0.id == category })?.label ?? "Filtrer") · \(sort.title)",
                         systemImage: "line.3.horizontal.decrease"
                     )
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                     .padding(.horizontal, 12)
                     .frame(minHeight: 34)
                     .background(AppTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                 }
                 .onChange(of: category) { _, _ in scheduleLoad() }
+                .onChange(of: sort) { _, _ in scheduleLoad() }
             }
             .padding(.horizontal, 14)
+
+            if !messages.isEmpty || resultSizeEstimate != nil {
+                mailPaginationBar
+            }
         }
         .padding(.top, 6)
         .padding(.bottom, 8)
         .background(AppTheme.sidebar.opacity(0.7))
+    }
+
+    private var mailPaginationBar: some View {
+        HStack(spacing: AppTheme.space8) {
+            Button {
+                goPreviousPage()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 32, height: 32)
+            }
+            .disabled(!canGoPrevious || loading)
+            .accessibilityLabel("Page précédente")
+
+            Text(rangeLabel)
+                .font(CNFont.caption2.weight(.medium))
+                .foregroundStyle(AppTheme.muted)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel(rangeLabel)
+
+            Button {
+                goNextPage()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 32, height: 32)
+            }
+            .disabled(!canGoNext || loading)
+            .accessibilityLabel("Page suivante")
+        }
+        .padding(.horizontal, 10)
+        .foregroundStyle(AppTheme.foreground)
     }
 
     @ViewBuilder
@@ -316,12 +465,48 @@ struct MailInboxView: View {
         }
     }
 
-    private func load() async {
+    private func parseMailDate(_ iso: String?) -> Date {
+        guard let iso, !iso.isEmpty else { return .distantPast }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: iso) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: iso) ?? .distantPast
+    }
+
+    private func sortedMessages(_ items: [MailMessageSummary], by option: MailSortOption) -> [MailMessageSummary] {
+        switch option {
+        case .newest:
+            return items.sorted { parseMailDate($0.date) > parseMailDate($1.date) }
+        case .oldest:
+            return items.sorted { parseMailDate($0.date) < parseMailDate($1.date) }
+        case .from:
+            return items.sorted {
+                let a = ($0.from?.name ?? $0.from?.email ?? "").localizedCaseInsensitiveCompare(
+                    $1.from?.name ?? $1.from?.email ?? ""
+                )
+                if a != .orderedSame { return a == .orderedAscending }
+                return parseMailDate($0.date) > parseMailDate($1.date)
+            }
+        }
+    }
+
+    private func applyLocalPage() {
+        let start = localPageIndex * pageSize
+        guard start < sortedWindow.count else {
+            messages = []
+            return
+        }
+        let end = min(start + pageSize, sortedWindow.count)
+        messages = Array(sortedWindow[start..<end])
+    }
+
+    private func load(pageToken: String?) async {
         loadGeneration += 1
         let gen = loadGeneration
+        let activeSort = sort
         loading = true
         error = nil
-        // Feedback immédiat si la liste est déjà à l’écran (pas d’overlay, hauteur fixe).
         if !messages.isEmpty {
             showInlineProgress = true
         }
@@ -336,13 +521,63 @@ struct MailInboxView: View {
         do {
             let cat = unreadOnly ? "unread" : category
             let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
-            let result = try await client.listMailMessages(
-                category: cat,
-                query: q.isEmpty ? nil : q
-            )
-            guard gen == loadGeneration, !Task.isCancelled else { return }
-            messages = result
-            error = nil
+
+            if activeSort == .newest {
+                let page = try await client.listMailMessages(
+                    maxResults: pageSize,
+                    category: cat,
+                    query: q.isEmpty ? nil : q,
+                    pageToken: pageToken
+                )
+                guard gen == loadGeneration, !Task.isCancelled else { return }
+                // Gmail renvoie déjà du plus récent ; re-tri déterministe pour stabilité.
+                messages = sortedMessages(page.messages, by: .newest)
+                nextPageToken = page.nextPageToken
+                resultSizeEstimate = page.resultSizeEstimate
+                sortedWindow = []
+                error = nil
+            } else {
+                // Tri avant pagination : charge une fenêtre (jusqu’à 150), trie, puis page locale.
+                var collected: [MailMessageSummary] = []
+                var token: String? = nil
+                var estimate: Int?
+                var exhausted = true
+                while collected.count < sortWindowMax {
+                    let page = try await client.listMailMessages(
+                        maxResults: pageSize,
+                        category: cat,
+                        query: q.isEmpty ? nil : q,
+                        pageToken: token
+                    )
+                    guard gen == loadGeneration, !Task.isCancelled else { return }
+                    if let est = page.resultSizeEstimate { estimate = est }
+                    if page.messages.isEmpty { break }
+                    collected.append(contentsOf: page.messages)
+                    if let next = page.nextPageToken, !next.isEmpty {
+                        token = next
+                        if collected.count < sortWindowMax {
+                            exhausted = false
+                        } else {
+                            exhausted = false
+                            break
+                        }
+                    } else {
+                        exhausted = true
+                        break
+                    }
+                }
+                guard gen == loadGeneration, !Task.isCancelled else { return }
+                // Dédupliquer si chevauchement
+                var seen = Set<String>()
+                let unique = collected.filter { seen.insert($0.id).inserted }
+                sortedWindow = sortedMessages(unique, by: activeSort)
+                windowExhausted = exhausted
+                resultSizeEstimate = estimate
+                nextPageToken = nil
+                localPageIndex = 0
+                applyLocalPage()
+                error = nil
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -372,7 +607,7 @@ struct MailInboxView: View {
         do {
             try await client.markMailRead(id: msg.id)
             AppHaptics.light()
-            await load()
+            scheduleLoad()
         } catch {
             self.error = error.localizedDescription
         }

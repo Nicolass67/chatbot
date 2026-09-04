@@ -90,6 +90,7 @@ describe("GmailProvider", () => {
       q: undefined,
       maxResults: 5,
       labelIds: undefined,
+      pageToken: undefined,
     });
     expect(messages).toHaveLength(1);
     expect(messages[0]?.id).toBe("msg-1");
@@ -106,6 +107,7 @@ describe("GmailProvider", () => {
       q: "is:unread",
       maxResults: 10,
       labelIds: undefined,
+      pageToken: undefined,
     });
   });
 

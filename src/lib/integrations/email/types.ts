@@ -83,11 +83,19 @@ export interface ListMessagesParams {
   maxResults?: number;
   labelIds?: string[];
   after?: string;
+  pageToken?: string;
 }
 
 export interface SearchMessagesParams {
   query: string;
   maxResults?: number;
+  pageToken?: string;
+}
+
+export interface MailMessagesPage {
+  messages: NormalizedEmailMessage[];
+  nextPageToken: string | null;
+  resultSizeEstimate: number | null;
 }
 
 export interface SendDraftResult {
@@ -99,9 +107,12 @@ export interface EmailProvider {
   readonly capabilities: ProviderCapabilities;
   readonly accountEmail: string;
   listMessages(params: ListMessagesParams): Promise<NormalizedEmailMessage[]>;
+  /** Pagination Gmail (pageToken + estimate). */
+  listMessagesPage(params: ListMessagesParams): Promise<MailMessagesPage>;
   getMessage(messageId: string): Promise<NormalizedEmailMessage>;
   getThread(threadId: string): Promise<NormalizedEmailThread>;
   search(params: SearchMessagesParams): Promise<NormalizedEmailMessage[]>;
+  searchPage(params: SearchMessagesParams): Promise<MailMessagesPage>;
   createDraft(input: NormalizedDraftInput): Promise<NormalizedDraft>;
   sendDraft(providerDraftId: string): Promise<SendDraftResult>;
   trashMessage(messageId: string): Promise<void>;

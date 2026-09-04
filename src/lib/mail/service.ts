@@ -1,4 +1,5 @@
 import type {
+  MailMessagesPage,
   NormalizedEmailMessage,
   NormalizedEmailThread,
 } from "@/lib/integrations/email/types";
@@ -10,34 +11,45 @@ export interface ListMailMessagesParams {
   label?: string;
   categoryQuery?: string;
   maxResults?: number;
+  pageToken?: string;
 }
 
-export async function listMailMessages(
+export async function listMailMessagesPage(
   params: ListMailMessagesParams
-): Promise<NormalizedEmailMessage[]> {
+): Promise<MailMessagesPage> {
   const provider = await getEmailProvider(params.userId);
-  const maxResults = params.maxResults ?? 30;
+  const maxResults = params.maxResults ?? 50;
 
   if (params.query?.trim()) {
-    return provider.search({
+    return provider.searchPage({
       query: params.query.trim(),
       maxResults,
+      pageToken: params.pageToken,
     });
   }
 
   if (params.categoryQuery?.trim()) {
-    return provider.search({
+    return provider.searchPage({
       query: params.categoryQuery.trim(),
       maxResults,
+      pageToken: params.pageToken,
     });
   }
 
   const labelIds = params.label ? [params.label] : ["INBOX"];
 
-  return provider.listMessages({
+  return provider.listMessagesPage({
     labelIds,
     maxResults,
+    pageToken: params.pageToken,
   });
+}
+
+export async function listMailMessages(
+  params: ListMailMessagesParams
+): Promise<NormalizedEmailMessage[]> {
+  const page = await listMailMessagesPage(params);
+  return page.messages;
 }
 
 export async function getMailMessage(

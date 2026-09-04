@@ -70,6 +70,7 @@ enum A11yID {
         static let preview = "files.preview"
         static let back = "files.back"
         static let breadcrumb = "files.breadcrumb"
+        static let reindex = "files.reindex"
     }
 
     enum Assistant {

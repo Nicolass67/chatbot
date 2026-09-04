@@ -477,10 +477,11 @@ final class APIClient: @unchecked Sendable {
     }
 
     func listMailMessages(
-        maxResults: Int = 40,
+        maxResults: Int = 50,
         category: String? = nil,
-        query: String? = nil
-    ) async throws -> [MailMessageSummary] {
+        query: String? = nil,
+        pageToken: String? = nil
+    ) async throws -> MailMessagesPage {
         if UITestMode.isActive {
             var items = UITestFixtures.mailInbox(category: category)
             if let query, !query.isEmpty {
@@ -491,22 +492,43 @@ final class APIClient: @unchecked Sendable {
                         || ($0.from?.email ?? "").lowercased().contains(q)
                 }
             }
-            return Array(items.prefix(maxResults))
+            let page = Array(items.prefix(maxResults))
+            return MailMessagesPage(
+                messages: page,
+                nextPageToken: items.count > maxResults ? "uitest-next" : nil,
+                resultSizeEstimate: items.count
+            )
         }
         var components = URLComponents(url: baseURL.appendingPathComponent("api/mail/messages"), resolvingAgainstBaseURL: false)!
-        var items = [URLQueryItem(name: "maxResults", value: "\(maxResults)")]
+        var items = [URLQueryItem(name: "maxResults", value: "\(min(max(maxResults, 1), 50))")]
         if let category, !category.isEmpty {
             items.append(URLQueryItem(name: "category", value: category))
         }
         if let query, !query.isEmpty {
             items.append(URLQueryItem(name: "q", value: query))
         }
+        if let pageToken, !pageToken.isEmpty {
+            items.append(URLQueryItem(name: "pageToken", value: pageToken))
+        }
         components.queryItems = items
         let request = authorizedURLRequest(components.url!)
         let (data, resp) = try await URLSession.shared.data(for: request)
         try throwIfNeeded(resp, data)
-        struct Wrap: Decodable { let messages: [MailMessageSummary] }
-        return try JSONDecoder().decode(Wrap.self, from: data).messages
+        return try JSONDecoder().decode(MailMessagesPage.self, from: data)
+    }
+
+    func indexFileRoot(rootId: String, purge: Bool = false) async throws -> FileIndexResult {
+        if UITestMode.isActive {
+            return FileIndexResult(indexed: 3, skipped: 1, purged: purge ? true : nil)
+        }
+        var req = authorizedRequest(path: "api/files/index", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["rootId": rootId]
+        if purge { body["purge"] = true }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        return try JSONDecoder().decode(FileIndexResult.self, from: data)
     }
 
     func oauthAccounts() async throws -> (configured: Bool, emails: [String]) {
@@ -1078,6 +1100,19 @@ struct MailMessageSummary: Identifiable, Codable, Hashable {
     let date: String?
     let isUnread: Bool?
     let hasAttachments: Bool?
+}
+
+struct MailMessagesPage: Codable, Hashable {
+    let messages: [MailMessageSummary]
+    let nextPageToken: String?
+    let resultSizeEstimate: Int?
+}
+
+struct FileIndexResult: Codable, Hashable {
+    let indexed: Int?
+    let skipped: Int?
+    let purged: Bool?
+    let ok: Bool?
 }
 
 struct MailThreadMessage: Identifiable, Codable, Hashable {
