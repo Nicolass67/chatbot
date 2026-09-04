@@ -19,6 +19,7 @@ struct ChatContextRequest: Equatable, Sendable {
 }
 
 /// Compat : délègue à ConversationSessionStore (scopes Mail/Files).
+@MainActor
 enum ContextualChatStore {
     static func conversationId(for request: ChatContextRequest) -> String? {
         let scope: ConversationScope = request.kind == .mail ? .mail : .files

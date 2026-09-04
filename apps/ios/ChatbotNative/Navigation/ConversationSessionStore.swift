@@ -2,6 +2,7 @@ import Foundation
 
 /// Persistance des 3 contextes conversationnels (Chat / Mail / Files).
 /// Fermer un panel ≠ supprimer la conversation — seul « Nouveau chat » réinitialise.
+@MainActor
 enum ConversationSessionStore {
     static let globalContextKey = "__global__"
 
