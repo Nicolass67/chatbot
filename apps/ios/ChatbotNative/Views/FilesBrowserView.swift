@@ -68,12 +68,14 @@ struct FilesBrowserView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 AmbientBackground()
                 VStack(spacing: 0) {
                     filesIndexBanner
                     content
                 }
+            }
+            .overlay(alignment: .bottomTrailing) {
                 ContextualAssistantButton(tint: AppTheme.filesAccent) {
                     openFilesAssistant(.global)
                 }
@@ -158,8 +160,16 @@ struct FilesBrowserView: View {
             }
             .refreshable { await loadRoots() }
             .task {
+                if roots.isEmpty, let cached = TabMemoryCache.fileRoots, !cached.isEmpty {
+                    roots = cached
+                }
                 if roots.isEmpty {
                     await loadRoots()
+                }
+            }
+            .onChange(of: roots) { _, newRoots in
+                if !newRoots.isEmpty {
+                    TabMemoryCache.fileRoots = newRoots
                 }
             }
             .navigationDestination(for: FilesDestination.self) { dest in
@@ -330,15 +340,13 @@ struct FilesBrowserView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(roots.filter { $0.enabled != false }) { root in
-                        Button {
-                            path.append(
-                                FilesDestination.folder(
-                                    rootId: root.id,
-                                    path: "",
-                                    title: root.label ?? "Root"
-                                )
+                        NavigationLink(
+                            value: FilesDestination.folder(
+                                rootId: root.id,
+                                path: "",
+                                title: root.label ?? "Root"
                             )
-                        } label: {
+                        ) {
                             HStack(spacing: 12) {
                                 Image(systemName: "externaldrive.fill")
                                     .foregroundStyle(AppTheme.accent)
@@ -360,8 +368,10 @@ struct FilesBrowserView: View {
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 14)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .navigationLinkIndicatorVisibility(.hidden)
                         .accessibilityIdentifier(A11yID.Files.folder)
                         .contextMenu {
                             Button {
@@ -603,7 +613,7 @@ struct FileFolderView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             AmbientBackground()
             Group {
                 if loading && entries.isEmpty {
@@ -630,6 +640,8 @@ struct FileFolderView: View {
                     list
                 }
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
             ContextualAssistantButton(tint: AppTheme.filesAccent) {
                 assistantDetent = .large
                 showAssistant = true

@@ -164,6 +164,38 @@ struct MailInboxView: View {
         loadTask = Task { await load(pageToken: nil) }
     }
 
+    private func restoreMailCacheIfNeeded() {
+        guard messages.isEmpty, let snap = TabMemoryCache.mail else { return }
+        messages = snap.messages
+        category = snap.category
+        unreadOnly = snap.unreadOnly
+        if let s = MailSortOption(rawValue: snap.sortRaw) { sort = s }
+        search = snap.search
+        nextPageToken = snap.nextPageToken
+        pageTokenStack = snap.pageTokenStack.isEmpty ? [nil] : snap.pageTokenStack
+        resultSizeEstimate = snap.resultSizeEstimate
+        sortedWindow = snap.sortedWindow
+        localPageIndex = snap.localPageIndex
+        windowExhausted = snap.windowExhausted
+    }
+
+    private func persistMailCache() {
+        guard !messages.isEmpty || !(TabMemoryCache.mail?.messages.isEmpty ?? true) else { return }
+        TabMemoryCache.mail = .init(
+            messages: messages,
+            category: category,
+            unreadOnly: unreadOnly,
+            sortRaw: sort.rawValue,
+            search: search,
+            nextPageToken: nextPageToken,
+            pageTokenStack: pageTokenStack,
+            resultSizeEstimate: resultSizeEstimate,
+            sortedWindow: sortedWindow,
+            localPageIndex: localPageIndex,
+            windowExhausted: windowExhausted
+        )
+    }
+
     /// Enforce unread filter client-side (API can lag / mis-estimate).
     private func applyUnreadFilter(_ items: [MailMessageSummary]) -> [MailMessageSummary] {
         guard unreadOnly else { return items }
@@ -226,9 +258,12 @@ struct MailInboxView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 AmbientBackground()
                 mailStack
+            }
+            .overlay(alignment: .bottomTrailing) {
+                // Overlay intrinsèque — jamais un sibling plein écran.
                 ContextualAssistantButton {
                     openMailAssistant(.global)
                 }
@@ -262,11 +297,15 @@ struct MailInboxView: View {
             .onChange(of: sort) { _, _ in scheduleLoad() }
             .refreshable { scheduleLoad() }
             .task {
+                restoreMailCacheIfNeeded()
                 await loadOAuth()
-                // Ne pas recharger la boîte à chaque réapparition d’onglet.
+                // Ne pas recharger la boîte si le cache / l’état a déjà des mails.
                 if messages.isEmpty {
                     scheduleLoad()
                 }
+            }
+            .onChange(of: messages) { _, _ in
+                persistMailCache()
             }
             .onChange(of: nav.mailDeepLink) { _, link in
                 handleMailDeepLink(link)
@@ -482,16 +521,13 @@ struct MailInboxView: View {
         } else {
             List {
                 ForEach(messages) { msg in
-                    Button {
-                        path.append(msg)
-                    } label: {
+                    NavigationLink(value: msg) {
                         MailRow(message: msg)
                             .frame(minHeight: 72, alignment: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
+                    .navigationLinkIndicatorVisibility(.hidden)
                     .accessibilityIdentifier(A11yID.Mail.message)
                     .listRowBackground(AppTheme.surface.opacity(0.55))
                     .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
@@ -866,7 +902,7 @@ struct MailThreadView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             AmbientBackground()
             Group {
                 if loading {
@@ -883,6 +919,8 @@ struct MailThreadView: View {
                     threadContent(thread)
                 }
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
             ContextualAssistantButton {
                 assistantDetent = .large
                 showAssistant = true

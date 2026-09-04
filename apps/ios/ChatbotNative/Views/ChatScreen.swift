@@ -203,7 +203,9 @@ struct ChatScreen: View {
             reasoningEffort = conversation.reasoningEffort ?? ""
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
             persistActiveConversation()
-            // Skip reload si le fil est déjà en mémoire (switch d’onglet).
+            if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id) {
+                messages = cached
+            }
             if messages.isEmpty {
                 await loadMessages()
             }
@@ -213,7 +215,6 @@ struct ChatScreen: View {
             await refreshRuntimeStatus()
         }
         .task {
-            // Observation périodique — pause quand l’onglet Chat n’est pas visible.
             while !Task.isCancelled {
                 let chatVisible = forcedScope != nil || nav.selectedTab == .chat
                 if chatVisible {
@@ -221,6 +222,9 @@ struct ChatScreen: View {
                 }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
+        }
+        .onChange(of: messages) { _, msgs in
+            TabMemoryCache.saveChat(conversationId: conversation.id, messages: msgs)
         }
         .onChange(of: nav.chatComposerPrefill) { _, text in
             guard let text, !text.isEmpty else { return }
