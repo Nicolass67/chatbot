@@ -1062,6 +1062,147 @@ struct ChatScreen: View {
         messages = keep
     }
 
+    /// Fusionne un message local `asst-*` (souvent créé par files_found) vers l’ID serveur.
+    private func remountStreamingAssistant(onto serverId: String) {
+        let previousId = streamingAssistantId
+        streamingAssistantId = serverId
+
+        if let previousId, previousId != serverId,
+           let idx = messages.firstIndex(where: { $0.id == previousId }) {
+            let old = messages[idx]
+            let oldChrome = chromeById[previousId] ?? MessageChromeMeta()
+            if let existingIdx = messages.firstIndex(where: { $0.id == serverId }) {
+                let existing = messages[existingIdx]
+                let mergedContent = existing.content.count >= old.content.count
+                    ? existing.content
+                    : old.content
+                messages[existingIdx] = MessageDTO(
+                    id: serverId,
+                    role: "assistant",
+                    content: mergedContent,
+                    createdAt: existing.createdAt ?? old.createdAt,
+                    attachments: existing.attachments ?? old.attachments
+                )
+                messages.remove(at: idx)
+            } else {
+                messages[idx] = MessageDTO(
+                    id: serverId,
+                    role: "assistant",
+                    content: old.content,
+                    createdAt: old.createdAt,
+                    attachments: old.attachments
+                )
+            }
+            var merged = chromeById[serverId] ?? MessageChromeMeta()
+            if merged.sources.isEmpty { merged.sources = oldChrome.sources }
+            if merged.mailHandoff == nil { merged.mailHandoff = oldChrome.mailHandoff }
+            if merged.filesHandoff == nil { merged.filesHandoff = oldChrome.filesHandoff }
+            if merged.filesFound.isEmpty { merged.filesFound = oldChrome.filesFound }
+            else if !oldChrome.filesFound.isEmpty {
+                merged.filesFound = mergeFilesFound(merged.filesFound, oldChrome.filesFound)
+            }
+            chromeById[serverId] = merged
+            chromeById.removeValue(forKey: previousId)
+            ConversationSessionStore.setChrome(
+                merged,
+                conversationId: conversation.id,
+                messageId: serverId
+            )
+            // Tokens déjà accumulés dans streamingText → basculer sur le message serveur.
+            if !streamingText.isEmpty,
+               let sIdx = messages.firstIndex(where: { $0.id == serverId }),
+               messages[sIdx].content.isEmpty {
+                messages[sIdx] = MessageDTO(
+                    id: serverId,
+                    role: "assistant",
+                    content: streamingText,
+                    createdAt: messages[sIdx].createdAt,
+                    attachments: messages[sIdx].attachments
+                )
+            }
+            return
+        }
+
+        if messages.firstIndex(where: { $0.id == serverId }) == nil {
+            messages.append(
+                MessageDTO(id: serverId, role: "assistant", content: streamingText, createdAt: nil)
+            )
+        }
+    }
+
+    /// Ancre unique pour les cartes fichiers de ce tour.
+    private func ensureSingleFilesFoundAnchor(for files: [FilesFoundFileDTO]) -> String {
+        let ids = Set(files.map(\.id))
+        // 1) Déjà sur le message stream courant
+        if let current = streamingAssistantId,
+           messages.contains(where: { $0.id == current }) {
+            return current
+        }
+        // 2) Un message existant affiche déjà ces fichiers
+        for msg in messages.reversed() where msg.role == "assistant" {
+            let found = Set((chromeById[msg.id]?.filesFound ?? []).map(\.id))
+            if !found.isDisjoint(with: ids) {
+                return msg.id
+            }
+        }
+        // 3) Dernier assistant vide / local de ce tour
+        if let last = messages.last(where: { $0.role == "assistant" }),
+           last.id.hasPrefix("asst-") || last.content.isEmpty {
+            return last.id
+        }
+        // 4) Nouvelle ancre
+        let id = "asst-\(UUID().uuidString)"
+        messages.append(MessageDTO(id: id, role: "assistant", content: "", createdAt: nil))
+        return id
+    }
+
+    private func mergeFilesFound(
+        _ existing: [FilesFoundFileDTO],
+        _ incoming: [FilesFoundFileDTO]
+    ) -> [FilesFoundFileDTO] {
+        var seen = Set<String>()
+        var out: [FilesFoundFileDTO] = []
+        for f in existing + incoming {
+            if seen.insert(f.id).inserted {
+                out.append(f)
+            }
+        }
+        return out
+    }
+
+    /// Une seule carte par fichier — supprime les bulles assistant en double.
+    private func dedupeAssistantMessagesSharing(fileIds: Set<String>, keepId: String) {
+        guard !fileIds.isEmpty else { return }
+        var dropIds: [String] = []
+        for msg in messages where msg.role == "assistant" && msg.id != keepId {
+            let found = Set((chromeById[msg.id]?.filesFound ?? []).map(\.id))
+            if !found.isDisjoint(with: fileIds) {
+                // Transférer le texte utile vers keepId si besoin.
+                if let keepIdx = messages.firstIndex(where: { $0.id == keepId }),
+                   let dropIdx = messages.firstIndex(where: { $0.id == msg.id }) {
+                    let keep = messages[keepIdx]
+                    let drop = messages[dropIdx]
+                    if keep.content.count < drop.content.count {
+                        messages[keepIdx] = MessageDTO(
+                            id: keep.id,
+                            role: keep.role,
+                            content: drop.content,
+                            createdAt: keep.createdAt ?? drop.createdAt,
+                            attachments: keep.attachments ?? drop.attachments
+                        )
+                    }
+                }
+                dropIds.append(msg.id)
+            }
+        }
+        if !dropIds.isEmpty {
+            messages.removeAll { dropIds.contains($0.id) }
+            for id in dropIds {
+                chromeById.removeValue(forKey: id)
+            }
+        }
+    }
+
     private func loadSettings() async {
         async let web = client.getWebSearchEnabled()
         async let settings = client.getSettings()
@@ -1552,6 +1693,14 @@ struct ChatScreen: View {
             streamMailHandoff = nil
             streamFilesHandoff = nil
             suppressAssistantNarration = false
+            // Toujours dédupliquer les cartes fichiers (asst-* + id serveur).
+            if !finalFound.isEmpty {
+                dedupeAssistantMessagesSharing(
+                    fileIds: Set(finalFound.map(\.id)),
+                    keepId: promoteId
+                )
+            }
+            dedupeTrailingAssistant(matching: finalText, preferId: promoteId)
             // ID serveur déjà stable (assistant_start) : sync soft sans remplacer l’identité ForEach.
             if streamingAssistantId != nil {
                 streamingAssistantId = nil
@@ -1561,7 +1710,12 @@ struct ChatScreen: View {
                 }
             } else {
                 await loadMessages(preserveAssistantId: promoteId)
-                // Dédupliquer : si le serveur a un autre ID pour le même contenu, garder un seul.
+                if !finalFound.isEmpty {
+                    dedupeAssistantMessagesSharing(
+                        fileIds: Set(finalFound.map(\.id)),
+                        keepId: promoteId
+                    )
+                }
                 dedupeTrailingAssistant(matching: finalText, preferId: promoteId)
                 if let last = messages.last(where: { $0.role == "assistant" }) {
                     var meta = chromeById[last.id] ?? MessageChromeMeta()
@@ -1800,15 +1954,12 @@ struct ChatScreen: View {
                 agentActivity.currentStepTitle = msg
             }
         case "assistant_start":
-            if let id = obj["messageId"] as? String {
-                streamingAssistantId = id
-                if messages.firstIndex(where: { $0.id == id }) == nil {
-                    messages.append(
-                        MessageDTO(id: id, role: "assistant", content: "", createdAt: nil)
-                    )
-                }
+            if let id = obj["messageId"] as? String, !id.isEmpty {
+                // Si files_found a déjà créé un asst-* local : fusionner vers l’ID serveur
+                // (sinon → 2 bulles CI).
+                remountStreamingAssistant(onto: id)
             }
-            if !agentActivity.visible {
+            if !agentActivity.visible && streamFilesFound.isEmpty {
                 thinkingKind = .preparing
             }
         case "assistant_discard":
@@ -1818,6 +1969,7 @@ struct ChatScreen: View {
                 if let idx = messages.firstIndex(where: { $0.id == id }) {
                     messages.remove(at: idx)
                 }
+                chromeById.removeValue(forKey: id)
                 if !agentActivity.visible {
                     thinkingKind = .preparing
                 }
@@ -1906,29 +2058,24 @@ struct ChatScreen: View {
                         extensionHint: f["extension"] as? String
                     )
                 }
+                guard !parsed.isEmpty else { return }
                 streamFilesFound = parsed
-                if !parsed.isEmpty {
-                    suppressAssistantNarration = true
-                    // Ancre unique dans la liste — évite la carte flash puis double carte.
-                    let id = streamingAssistantId ?? "asst-\(UUID().uuidString)"
-                    if streamingAssistantId == nil {
-                        streamingAssistantId = id
-                        if messages.firstIndex(where: { $0.id == id }) == nil {
-                            messages.append(
-                                MessageDTO(id: id, role: "assistant", content: "", createdAt: nil)
-                            )
-                        }
-                    }
-                    var chrome = chromeById[id] ?? MessageChromeMeta()
-                    chrome.filesFound = parsed
-                    chromeById[id] = chrome
-                    ConversationSessionStore.mergeChrome(
-                        chrome,
-                        conversationId: conversation.id,
-                        messageId: id
-                    )
-                    thinkingKind = nil
-                }
+                suppressAssistantNarration = true
+                thinkingKind = nil
+
+                // Une seule bulle pour ces fichiers — réutilise l’ancre existante.
+                let anchorId = ensureSingleFilesFoundAnchor(for: parsed)
+                streamingAssistantId = anchorId
+                var chrome = chromeById[anchorId] ?? MessageChromeMeta()
+                chrome.filesFound = mergeFilesFound(chrome.filesFound, parsed)
+                chromeById[anchorId] = chrome
+                ConversationSessionStore.mergeChrome(
+                    chrome,
+                    conversationId: conversation.id,
+                    messageId: anchorId
+                )
+                // Purge toute autre bulle qui afficherait la même CI.
+                dedupeAssistantMessagesSharing(fileIds: Set(parsed.map(\.id)), keepId: anchorId)
             }
         case "draft_preview":
             if let draft = obj["draft"] as? [String: Any] {
