@@ -310,7 +310,9 @@ struct ChatScreen: View {
         ZStack(alignment: .bottomTrailing) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    // VStack (pas LazyVStack) : Lazy sous-estime la hauteur des bulles hors écran
+                    // → l’indicateur de scroll saute dès qu’on remonte un peu.
+                    VStack(alignment: .leading, spacing: 14) {
                         if messages.isEmpty && streamingText.isEmpty {
                             emptyThread
                         }
