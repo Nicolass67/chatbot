@@ -7,9 +7,9 @@ struct EmptyChatCanvas: View {
     @State private var appeared = false
 
     private let suggestions: [(icon: String, text: String)] = [
-        ("envelope", "Résume mes mails non lus"),
-        ("folder", "Cherche un fichier sur le disque"),
-        ("brain.head.profile", "Qu’as-tu retenu sur moi ?"),
+        ("pencil.and.outline", "Aide-moi à rédiger un message"),
+        ("lightbulb", "Explique-moi un concept simplement"),
+        ("list.bullet.clipboard", "Aide-moi à planifier ma journée"),
     ]
 
     var body: some View {
