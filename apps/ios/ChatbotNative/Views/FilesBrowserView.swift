@@ -462,10 +462,10 @@ struct FileFolderView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
-                    Text(title).font(.headline)
+                    Text(title).font(CNFont.headline)
                     Text(breadcrumb)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
                         .lineLimit(1)
                         .accessibilityIdentifier(A11yID.Files.breadcrumb)
                 }
@@ -545,8 +545,8 @@ struct FileFolderView: View {
                     fileRow(entry)
                 }
                 .buttonStyle(.plain)
-                .listRowBackground(AppTheme.surface.opacity(0.35))
-                .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
                 .contextMenu {
                     if entry.fileId != nil {
                         Button {
@@ -585,18 +585,22 @@ struct FileFolderView: View {
                         VStack(spacing: 8) {
                             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
                                 .font(.system(size: 28))
-                                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
+                                .foregroundStyle(isFolder(entry) ? AppTheme.filesAccent : AppTheme.muted)
                                 .frame(height: 48)
                             Text(entry.name ?? entry.relativePath)
-                                .font(.caption2)
+                                .font(CNFont.caption2)
                                 .foregroundStyle(AppTheme.foreground)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
                         }
-                        .padding(10)
+                        .padding(AppTheme.space10)
                         .frame(maxWidth: .infinity)
-                        .background(AppTheme.surface)
+                        .background(AppTheme.surface.opacity(0.85))
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -612,25 +616,27 @@ struct FileFolderView: View {
     }
 
     private func fileRow(_ entry: FileEntryDTO) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppTheme.space12) {
             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
-                .frame(width: 24)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isFolder(entry) ? AppTheme.filesAccent : AppTheme.muted)
+                .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name ?? entry.relativePath)
+                    .font(CNFont.body)
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
                 if !isFolder(entry), let size = entry.sizeBytes {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
                 } else if isFolder(entry) {
                     Text("Dossier")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.mutedForeground)

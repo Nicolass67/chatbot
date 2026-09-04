@@ -641,29 +641,53 @@ private struct MailThreadMessageCard: View {
     @EnvironmentObject private var session: AppSessionStore
     let message: MailThreadMessage
 
+    private var initials: String {
+        let raw = message.from?.name ?? message.from?.email ?? "?"
+        let parts = raw.split(whereSeparator: { $0.isWhitespace || $0 == "@" })
+        let letters = parts.prefix(2).compactMap { $0.first.map(String.init) }
+        return (letters.isEmpty ? "?" : letters.joined()).uppercased()
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: AppTheme.space16) {
+            HStack(alignment: .center, spacing: AppTheme.space12) {
+                ZStack {
+                    Circle().fill(AppTheme.mailAccent.opacity(0.18))
+                    Text(initials)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                }
+                .frame(width: 40, height: 40)
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
                     Text(message.from?.name ?? message.from?.email ?? "")
                         .font(CNFont.callout.weight(.semibold))
                         .foregroundStyle(AppTheme.foreground)
-                    Spacer()
-                    if let date = message.date {
-                        Text(AppDates.short(date))
+                        .lineLimit(1)
+                    if let email = message.from?.email,
+                       message.from?.name?.isEmpty == false {
+                        Text(email)
                             .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.mutedForeground)
+                            .foregroundStyle(AppTheme.muted)
+                            .lineLimit(1)
                     }
                 }
-                if let subject = message.subject, !subject.isEmpty {
-                    Text(subject)
-                        .font(CNFont.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.muted)
-                        .lineLimit(2)
+                Spacer(minLength: 0)
+                if let date = message.date {
+                    Text(AppDates.short(date))
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .monospacedDigit()
                 }
             }
 
-            Divider().overlay(AppTheme.borderSubtle)
+            if let subject = message.subject, !subject.isEmpty {
+                Text(subject)
+                    .font(CNFont.headline)
+                    .foregroundStyle(AppTheme.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             MailBodyReader(
                 html: message.bodyHtml,
@@ -672,7 +696,7 @@ private struct MailThreadMessageCard: View {
             )
 
             if let attachments = message.attachments, !attachments.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: AppTheme.space8) {
                     Text("Pièces jointes")
                         .font(CNFont.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.muted)
@@ -683,13 +707,8 @@ private struct MailThreadMessageCard: View {
                 }
             }
         }
-        .padding(14)
+        .padding(.vertical, AppTheme.space8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.surface.opacity(0.55))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .accessibilityElement(children: .contain)
     }
 }

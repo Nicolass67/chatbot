@@ -134,37 +134,45 @@ struct MailAttachmentRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: AppTheme.space10) {
             Image(systemName: iconName)
-                .foregroundStyle(AppTheme.accent)
+                .foregroundStyle(AppTheme.mailAccent)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename ?? "Pièce jointe")
-                    .font(.subheadline.weight(.medium))
+                    .font(CNFont.callout.weight(.medium))
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
                 if let size = attachment.sizeBytes {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
             if busy {
-                ProgressView().controlSize(.small)
+                ProgressView().controlSize(.small).tint(AppTheme.mailAccent)
             } else if let shareURL {
                 ShareLink(item: shareURL) {
                     Image(systemName: "square.and.arrow.up")
+                        .foregroundStyle(AppTheme.mailAccent)
+                        .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
                 }
             } else {
                 Button("Ouvrir") {
                     Task { await download() }
                 }
-                .font(.caption.weight(.semibold))
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mailAccent)
+                .frame(minHeight: AppTheme.touchMin)
             }
         }
-        .padding(10)
-        .background(AppTheme.surface.opacity(0.7))
+        .padding(AppTheme.space12)
+        .background(AppTheme.surface.opacity(0.85))
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .alert("Pièce jointe", isPresented: Binding(
             get: { error != nil },
             set: { if !$0 { error = nil } }
