@@ -1,5 +1,40 @@
 import SwiftUI
 
+struct AgentPlanStep: Identifiable, Equatable {
+    let id: String
+    var title: String
+    var status: String // pending | running | done | error
+}
+
+/// Snapshot persisté avec le message assistant (reste dans la conversation).
+struct AgentRunSnapshot: Equatable {
+    var planSteps: [AgentPlanStep] = []
+    var thoughtSeconds: Int?
+    var webQuery: String?
+    var activitySummary: String?
+    var lastError: String?
+    var completed: Bool = true
+
+    var asActivityState: AgentActivityState {
+        AgentActivityState(
+            phase: completed ? "synthesis" : "executing",
+            stepIndex: max(0, planSteps.firstIndex(where: { $0.status == "running" }) ?? 0),
+            totalSteps: planSteps.count,
+            currentStepTitle: planSteps.first(where: { $0.status == "running" })?.title
+                ?? planSteps.last(where: { $0.status == "done" })?.title,
+            planSteps: planSteps,
+            webQuery: webQuery,
+            webPhase: webQuery == nil ? .idle : .done,
+            lastError: lastError,
+            visible: true,
+            completed: completed,
+            startedAt: nil,
+            lockedThoughtSeconds: thoughtSeconds,
+            activitySummary: activitySummary
+        )
+    }
+}
+
 struct AgentActivityState: Equatable {
     var phase: String = "planning"
     var stepIndex: Int = 0
@@ -10,14 +45,36 @@ struct AgentActivityState: Equatable {
     var webPhase: WebSearchPhase = .idle
     var lastError: String?
     var visible: Bool = false
-    /// Après `done` : bandeau réduit puis disparaît.
+    /// Après `done` : reste inline jusqu’à attachement chrome, puis snapshot.
     var completed: Bool = false
-}
+    var startedAt: Date?
+    /// Durée figée à la fin (sinon calcul live depuis startedAt).
+    var lockedThoughtSeconds: Int?
+    var activitySummary: String?
 
-struct AgentPlanStep: Identifiable, Equatable {
-    let id: String
-    var title: String
-    var status: String // pending | running | done | error
+    func snapshot() -> AgentRunSnapshot {
+        let secs: Int? = {
+            if let locked = lockedThoughtSeconds { return locked }
+            if let start = startedAt {
+                return max(1, Int(Date().timeIntervalSince(start)))
+            }
+            return nil
+        }()
+        var steps = planSteps
+        if completed {
+            for i in steps.indices where steps[i].status == "running" || steps[i].status == "pending" {
+                if steps[i].status == "running" { steps[i].status = "done" }
+            }
+        }
+        return AgentRunSnapshot(
+            planSteps: steps,
+            thoughtSeconds: secs,
+            webQuery: webQuery,
+            activitySummary: activitySummary,
+            lastError: lastError,
+            completed: true
+        )
+    }
 }
 
 enum WebSearchPhase: Equatable {
@@ -27,7 +84,6 @@ enum WebSearchPhase: Equatable {
 enum AgentToolLabels {
     static func humanize(_ raw: String) -> String {
         let t = raw.lowercased()
-        // Motifs anglais / tool ids — pas de sous-chaîne dans « fichier » (« file »).
         if t.contains("web") || t.contains("search") || t.contains("searx") { return "Recherche web" }
         if t.contains("mail") || t.contains("gmail") || t.contains("email") { return "Mail" }
         if t.hasPrefix("file_") || t.contains("filesystem") || t.contains("list_files")
@@ -37,14 +93,12 @@ enum AgentToolLabels {
         if t.contains("memory") || t.contains("souvenir") { return "Mémoire" }
         if t.contains("http") || t.contains("fetch") { return "Consultation" }
         if t.contains("code") || t.contains("shell") { return "Exécution" }
-        // Nettoie snake_case / CamelCase
         let cleaned = raw
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: ".", with: " ")
         return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
     }
 
-    /// Titres d’étapes lisibles (pas la requête user entière).
     static func friendlyStepTitle(_ raw: String) -> String {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = t.lowercased()
@@ -63,7 +117,6 @@ enum AgentToolLabels {
         if lower.hasPrefix("répondre :") || lower.hasPrefix("repondre :") {
             return "Rédiger la réponse"
         }
-        // Titres déjà en français naturel : ne pas passer par humanize (évite « fichier » → « Fichiers »).
         if lower.contains(" ") || lower.contains("é") || lower.contains("è") || lower.contains("à") {
             if t.count > 48 {
                 t = String(t.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
@@ -109,41 +162,74 @@ enum AgentToolLabels {
     }
 }
 
-/// Timeline Agent compacte — expand auto pendant le travail ; collapse après completion.
+/// Panel agent style Cursor — inline dans le fil (pas au-dessus du composer).
 struct AgentActivityView: View {
     let state: AgentActivityState
     @State private var expanded = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var summaryLine: String {
-        if let err = state.lastError, !err.isEmpty {
-            return AgentToolLabels.friendlyError(err)
-        }
-        if state.completed {
-            return "Terminé"
-        }
-        if state.webPhase == .searching, let q = state.webQuery {
-            return "Recherche · \(q)"
-        }
-        if state.webPhase == .analyzing {
-            return "Analyse des sources…"
-        }
-        if let title = state.currentStepTitle, !title.isEmpty {
-            return AgentToolLabels.friendlyStepTitle(title)
-        }
-        switch state.phase {
-        case "planning": return "Préparation du plan…"
-        case "executing":
-            if state.totalSteps > 0 {
-                return "Étape \(min(state.stepIndex + 1, state.totalSteps))/\(state.totalSteps)"
-            }
-            return "Travail en cours…"
-        case "synthesis", "synthesizing": return "Rédaction de la réponse…"
-        default: return "Agent actif"
-        }
+    private var doneCount: Int {
+        state.planSteps.filter { $0.status == "done" }.count
+    }
+
+    private var totalCount: Int {
+        max(state.totalSteps, state.planSteps.count)
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            thoughtHeader
+
+            if let summary = activityLine, !summary.isEmpty {
+                Text(summary)
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !state.planSteps.isEmpty {
+                todosCard
+            } else if !state.completed {
+                pendingCard
+            }
+
+            if let err = state.lastError, !err.isEmpty {
+                Text(AgentToolLabels.friendlyError(err))
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.danger)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activité agent")
+        .accessibilityIdentifier(A11yID.Agent.root)
+        .onAppear {
+            expanded = !state.completed
+        }
+        .onChange(of: state.completed) { _, done in
+            // Terminé : on laisse le panel ouvert comme Cursor (repliable).
+            if done { /* keep user preference */ }
+        }
+    }
+
+    private var thoughtHeader: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TimelineView(.periodic(from: .now, by: state.completed ? 3600 : 1)) { context in
+                Text(thoughtLabel(at: context.date))
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.mutedForeground)
+            }
+            if let caption = thoughtCaption, !caption.isEmpty {
+                Text(caption)
+                    .font(CNFont.callout)
+                    .foregroundStyle(AppTheme.foreground.opacity(0.88))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier(A11yID.Agent.step)
+    }
+
+    private var todosCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.85)) {
@@ -151,141 +237,139 @@ struct AgentActivityView: View {
                 }
                 AppHaptics.light()
             } label: {
-                HStack(spacing: AppTheme.space12) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(state.lastError != nil ? AppTheme.danger : AppTheme.accent)
-                        .symbolEffect(
-                            .pulse,
-                            options: .repeating.speed(0.45),
-                            isActive: !reduceMotion && state.visible && !state.completed && state.lastError == nil
-                        )
-                        .frame(width: 28, height: 28)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(summaryLine)
-                            .font(CNFont.callout.weight(.medium))
-                            .foregroundStyle(AppTheme.foreground)
-                            .lineLimit(2)
-                        Text(state.completed ? "Terminé" : progressCaption)
-                            .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.muted)
-                    }
+                HStack {
+                    Text("Étapes \(min(doneCount, max(totalCount, 1)))/\(max(totalCount, 1))")
+                        .font(CNFont.callout.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
                     Spacer(minLength: 0)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.mutedForeground)
                 }
-                .padding(.horizontal, AppTheme.space16)
-                .padding(.vertical, AppTheme.space12)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(summaryLine)
-            .accessibilityIdentifier(A11yID.Agent.step)
 
             if expanded {
-                VStack(alignment: .leading, spacing: AppTheme.space8) {
-                    if state.webPhase != .idle, let q = state.webQuery {
-                        HStack(spacing: AppTheme.space8) {
-                            Image(systemName: webIcon)
-                                .foregroundStyle(AppTheme.accent)
-                            Text(q)
-                                .font(CNFont.caption)
-                                .foregroundStyle(AppTheme.muted)
-                                .lineLimit(2)
-                        }
-                    }
-                    if !state.planSteps.isEmpty {
-                        ForEach(state.planSteps) { step in
-                            HStack(alignment: .top, spacing: AppTheme.space8) {
-                                Image(systemName: stepIcon(step.status))
-                                    .font(.caption)
-                                    .foregroundStyle(stepColor(step.status))
-                                    .symbolEffect(
-                                        .pulse,
-                                        options: .repeating.speed(0.55),
-                                        isActive: !reduceMotion && step.status == "running"
-                                    )
-                                    .frame(width: 16)
-                                Text(AgentToolLabels.friendlyStepTitle(step.title))
-                                    .font(CNFont.caption.weight(step.status == "running" ? .semibold : .regular))
-                                    .foregroundStyle(
-                                        step.status == "pending"
-                                            ? AppTheme.mutedForeground
-                                            : AppTheme.foreground
-                                    )
-                                    .lineLimit(2)
-                            }
-                        }
-                    } else if state.totalSteps > 0 && !state.completed {
-                        ProgressView(
-                            value: Double(state.stepIndex + 1),
-                            total: Double(max(1, state.totalSteps))
-                        )
-                        .tint(AppTheme.accent)
-                    }
-                    if let err = state.lastError {
-                        Text(AgentToolLabels.friendlyError(err))
-                            .font(CNFont.caption)
-                            .foregroundStyle(AppTheme.danger)
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(state.planSteps) { step in
+                        stepRow(step)
                     }
                 }
-                .padding(.horizontal, AppTheme.space16)
-                .padding(.bottom, AppTheme.space12)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
                 .transition(.opacity.combined(with: .move(edge: .top)))
                 .accessibilityIdentifier(A11yID.Agent.timeline)
             }
         }
-        .chromeGlass(cornerRadius: AppTheme.radiusLg, opacity: 0.4)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Activité agent")
-        .accessibilityIdentifier(A11yID.Agent.root)
-        .opacity(state.completed ? 0.72 : 1)
-        .onAppear {
-            expanded = !state.completed
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(AppTheme.surfaceElevated.opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
+    private var pendingCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(AppTheme.accent)
+                .symbolEffect(
+                    .pulse,
+                    options: .repeating.speed(0.45),
+                    isActive: !reduceMotion && !state.completed
+                )
+            Text(state.currentStepTitle.map(AgentToolLabels.friendlyStepTitle) ?? "Préparation du plan…")
+                .font(CNFont.callout)
+                .foregroundStyle(AppTheme.foreground)
+                .lineLimit(2)
+            Spacer(minLength: 0)
         }
-        .onChange(of: state.completed) { _, done in
-            if done {
-                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(AppTheme.surfaceElevated.opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
+    private func stepRow(_ step: AgentPlanStep) -> some View {
+        let status = step.status
+        let title = AgentToolLabels.friendlyStepTitle(step.title)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: stepIcon(status))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(stepColor(status))
+                .symbolEffect(
+                    .pulse,
+                    options: .repeating.speed(0.55),
+                    isActive: !reduceMotion && status == "running"
+                )
+                .frame(width: 18)
+            Text(title)
+                .font(CNFont.callout)
+                .foregroundStyle(status == "done" || status == "pending" ? AppTheme.mutedForeground : AppTheme.foreground)
+                .strikethrough(status == "done", color: AppTheme.mutedForeground)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .accessibilityLabel("\(title), \(statusLabel(status))")
+    }
+
+    private var activityLine: String? {
+        if let summary = state.activitySummary, !summary.isEmpty { return summary }
+        if state.webPhase != .idle, let q = state.webQuery, !q.isEmpty {
+            switch state.webPhase {
+            case .searching: return "Recherche · \(q)"
+            case .analyzing: return "Analyse des sources · \(q)"
+            case .done: return "Recherche · \(q)"
+            case .idle: return nil
             }
         }
-        .onChange(of: state.stepIndex) { _, _ in
-            if !state.completed { expanded = true }
+        return nil
+    }
+
+    private var thoughtCaption: String? {
+        if state.completed {
+            if let err = state.lastError, !err.isEmpty {
+                return AgentToolLabels.friendlyError(err)
+            }
+            return nil
         }
-        .onChange(of: state.currentStepTitle) { _, _ in
-            if !state.completed { expanded = true }
+        if let title = state.currentStepTitle, !title.isEmpty {
+            return AgentToolLabels.friendlyStepTitle(title)
+        }
+        switch state.phase {
+        case "planning": return "Préparation du plan…"
+        case "synthesis", "synthesizing": return "Rédaction de la réponse…"
+        default: return nil
         }
     }
 
-    private var progressCaption: String {
-        let done = state.planSteps.filter { $0.status == "done" }.count
-        if state.totalSteps > 0 {
-            return "\(done)/\(state.totalSteps) étapes"
+    private func thoughtLabel(at date: Date) -> String {
+        let secs: Int
+        if let locked = state.lockedThoughtSeconds {
+            secs = locked
+        } else if let start = state.startedAt {
+            secs = max(0, Int(date.timeIntervalSince(start)))
+        } else {
+            return state.completed ? "Réflexion" : "Réflexion…"
         }
-        return "Activité"
-    }
-
-    private var iconName: String {
-        if state.lastError != nil { return "exclamationmark.triangle.fill" }
-        if state.completed { return "checkmark.circle.fill" }
-        if state.webPhase == .searching { return "globe" }
-        return "sparkles"
-    }
-
-    private var webIcon: String {
-        switch state.webPhase {
-        case .searching: return "magnifyingglass"
-        case .analyzing: return "doc.text.magnifyingglass"
-        case .done: return "checkmark"
-        case .idle: return "globe"
-        }
+        return "Réflexion \(secs)s"
     }
 
     private func stepIcon(_ status: String) -> String {
         switch status {
         case "done": return "checkmark.circle.fill"
-        case "running": return "circle.dotted"
+        case "running": return "arrow.forward.circle.fill"
         case "error": return "xmark.circle.fill"
         default: return "circle"
         }
@@ -293,10 +377,19 @@ struct AgentActivityView: View {
 
     private func stepColor(_ status: String) -> Color {
         switch status {
-        case "done": return AppTheme.success
-        case "running": return AppTheme.accent
+        case "done": return AppTheme.mutedForeground
+        case "running": return AppTheme.foreground
         case "error": return AppTheme.danger
-        default: return AppTheme.mutedForeground
+        default: return AppTheme.mutedForeground.opacity(0.7)
+        }
+    }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status {
+        case "done": return "terminé"
+        case "running": return "en cours"
+        case "error": return "erreur"
+        default: return "à faire"
         }
     }
 }

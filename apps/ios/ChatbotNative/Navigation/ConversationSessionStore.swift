@@ -73,6 +73,7 @@ enum ConversationSessionStore {
         if patch.mailHandoff != nil { existing.mailHandoff = patch.mailHandoff }
         if patch.filesHandoff != nil { existing.filesHandoff = patch.filesHandoff }
         if !patch.filesFound.isEmpty { existing.filesFound = patch.filesFound }
+        if patch.agentRun != nil { existing.agentRun = patch.agentRun }
         setChrome(existing, conversationId: conversationId, messageId: messageId)
     }
 
@@ -91,6 +92,7 @@ enum ConversationSessionStore {
             if temp.mailHandoff != nil { merged.mailHandoff = temp.mailHandoff }
             if temp.filesHandoff != nil { merged.filesHandoff = temp.filesHandoff }
             if !temp.filesFound.isEmpty { merged.filesFound = temp.filesFound }
+            if temp.agentRun != nil { merged.agentRun = temp.agentRun }
             map[last.id] = merged
             if last.id != temporaryId {
                 map.removeValue(forKey: temporaryId)

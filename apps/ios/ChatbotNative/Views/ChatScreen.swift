@@ -117,12 +117,6 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                if shouldShowAgentStrip {
-                    AgentActivityView(state: agentActivity)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 6)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,
@@ -307,6 +301,10 @@ struct ChatScreen: View {
                         }
                         ForEach(messages) { msg in
                             let chrome = chromeById[msg.id] ?? MessageChromeMeta()
+                            if let run = chrome.agentRun {
+                                AgentActivityView(state: run.asActivityState)
+                                    .id("agent-\(msg.id)")
+                            }
                             MessageBubble(
                                 message: msg,
                                 token: session.token,
@@ -350,6 +348,12 @@ struct ChatScreen: View {
                                 }
                             )
                             .id(msg.id)
+                        }
+                        // Live agent — dans le fil, au-dessus de la réponse (pas du composer).
+                        if shouldShowLiveAgentStrip {
+                            AgentActivityView(state: agentActivity)
+                                .id("agent-live")
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
                         if !streamingText.isEmpty && streamingAssistantId == nil {
                             MessageBubble(
@@ -405,7 +409,7 @@ struct ChatScreen: View {
                                   streamingText.isEmpty,
                                   streamFilesFound.isEmpty,
                                   streamingAssistantId == nil,
-                                  !shouldShowAgentStrip,
+                                  !shouldShowLiveAgentStrip,
                                   let thinkingKind {
                             // Indicateur ChatGPT-like dans le fil, à l’emplacement de la réponse.
                             InStreamWorkingIndicator(label: thinkingKind.label)
@@ -508,16 +512,22 @@ struct ChatScreen: View {
                     if sending {
                         withAnimation(.easeOut(duration: 0.32)) {
                             proxy.scrollTo(
-                                shouldShowAgentStrip ? "bottom" : "working-indicator",
+                                shouldShowLiveAgentStrip ? "agent-live" : "working-indicator",
                                 anchor: .bottom
                             )
                         }
                     }
                 }
                 .onChange(of: thinkingKind) { _, kind in
-                    guard isSending, kind != nil, streamingText.isEmpty, !shouldShowAgentStrip else { return }
+                    guard isSending, kind != nil, streamingText.isEmpty, !shouldShowLiveAgentStrip else { return }
                     withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo("working-indicator", anchor: .bottom)
+                    }
+                }
+                .onChange(of: agentActivity.planSteps) { _, _ in
+                    guard shouldShowLiveAgentStrip else { return }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo("agent-live", anchor: .bottom)
                     }
                 }
                 .onChange(of: draftCardText) { _, _ in
@@ -1097,6 +1107,7 @@ struct ChatScreen: View {
             if merged.sources.isEmpty { merged.sources = oldChrome.sources }
             if merged.mailHandoff == nil { merged.mailHandoff = oldChrome.mailHandoff }
             if merged.filesHandoff == nil { merged.filesHandoff = oldChrome.filesHandoff }
+            if merged.agentRun == nil { merged.agentRun = oldChrome.agentRun }
             if merged.filesFound.isEmpty { merged.filesFound = oldChrome.filesFound }
             else if !oldChrome.filesFound.isEmpty {
                 merged.filesFound = mergeFilesFound(merged.filesFound, oldChrome.filesFound)
@@ -1683,12 +1694,11 @@ struct ChatScreen: View {
                         MessageDTO(id: promoteId, role: "assistant", content: finalText, createdAt: nil)
                     )
                 }
-                let meta = MessageChromeMeta(
-                    sources: finalSources,
-                    mailHandoff: finalMail,
-                    filesHandoff: finalFiles,
-                    filesFound: finalFound
-                )
+                var meta = chromeById[promoteId] ?? MessageChromeMeta()
+                if !finalSources.isEmpty { meta.sources = finalSources }
+                if finalMail != nil { meta.mailHandoff = finalMail }
+                if finalFiles != nil { meta.filesHandoff = finalFiles }
+                if !finalFound.isEmpty { meta.filesFound = finalFound }
                 chromeById[promoteId] = meta
                 ConversationSessionStore.setChrome(
                     meta,
@@ -1732,6 +1742,9 @@ struct ChatScreen: View {
                     if meta.mailHandoff == nil { meta.mailHandoff = finalMail }
                     if meta.filesHandoff == nil { meta.filesHandoff = finalFiles }
                     if meta.filesFound.isEmpty { meta.filesFound = finalFound }
+                    if meta.agentRun == nil {
+                        meta.agentRun = chromeById[promoteId]?.agentRun
+                    }
                     chromeById[last.id] = meta
                     ConversationSessionStore.setChrome(
                         meta,
@@ -1747,9 +1760,12 @@ struct ChatScreen: View {
         } catch {
             thinkingKind = nil
             if agentActivity.visible {
-                agentActivity.lastError = nil
+                if let start = agentActivity.startedAt {
+                    agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+                }
                 agentActivity.completed = true
-                agentActivity.visible = false
+                syncAgentChromeToStreamingMessage(completed: true)
+                agentActivity = AgentActivityState()
             }
             if Self.isUserCancellation(error) {
                 runtimeStatus = "READY"
@@ -1833,21 +1849,60 @@ struct ChatScreen: View {
     }
 
     private var shouldShowAgentStrip: Bool {
-        agentActivity.visible || agentActivity.webPhase != .idle || agentActivity.completed || agentActivity.lastError != nil
+        shouldShowLiveAgentStrip
+    }
+
+    /// Panel live uniquement s’il n’est pas déjà accroché à un message du fil.
+    private var shouldShowLiveAgentStrip: Bool {
+        let active = agentActivity.visible
+            || agentActivity.webPhase != .idle
+            || agentActivity.lastError != nil
+            || (agentActivity.completed && !agentActivity.planSteps.isEmpty)
+        guard active else { return false }
+        if let id = streamingAssistantId,
+           messages.contains(where: { $0.id == id }),
+           chromeById[id]?.agentRun != nil {
+            return false
+        }
+        return true
+    }
+
+    /// Attache / met à jour le panel agent sur le message assistant courant (persistance conversation).
+    private func syncAgentChromeToStreamingMessage(completed: Bool = false) {
+        guard agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.webPhase != .idle else { return }
+        var snap = agentActivity.snapshot()
+        if !completed {
+            snap.completed = agentActivity.completed
+            // Pendant le run : ne pas forcer toutes les étapes à done.
+            snap.planSteps = agentActivity.planSteps
+            if let start = agentActivity.startedAt {
+                snap.thoughtSeconds = max(0, Int(Date().timeIntervalSince(start)))
+            }
+        }
+        let id = streamingAssistantId
+            ?? messages.last(where: { $0.role == "assistant" })?.id
+        guard let id else { return }
+        var chrome = chromeById[id] ?? MessageChromeMeta()
+        chrome.agentRun = snap
+        chromeById[id] = chrome
+        ConversationSessionStore.setChrome(
+            chrome,
+            conversationId: conversation.id,
+            messageId: id
+        )
     }
 
     private func finalizeStoppedStream() {
         isSending = false
         thinkingKind = nil
-        if agentActivity.visible || agentActivity.webPhase != .idle {
+        if agentActivity.visible || agentActivity.webPhase != .idle || !agentActivity.planSteps.isEmpty {
+            if let start = agentActivity.startedAt {
+                agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+            }
             agentActivity.completed = true
             agentActivity.visible = true
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 900_000_000)
-                withAnimation(.easeOut(duration: 0.25)) {
-                    agentActivity = AgentActivityState()
-                }
-            }
+            syncAgentChromeToStreamingMessage(completed: true)
+            agentActivity = AgentActivityState()
         } else {
             agentActivity = AgentActivityState()
         }
@@ -1942,11 +1997,16 @@ struct ChatScreen: View {
             agentActivity.completed = false
             agentActivity.lastError = nil
             agentActivity.phase = "planning"
+            agentActivity.startedAt = Date()
+            agentActivity.lockedThoughtSeconds = nil
+            agentActivity.activitySummary = nil
+            agentActivity.planSteps = []
         case "agent_plan":
             thinkingKind = nil
             agentActivity.visible = true
             agentActivity.completed = false
             agentActivity.phase = "planning"
+            if agentActivity.startedAt == nil { agentActivity.startedAt = Date() }
             if let plan = obj["plan"] as? [String: Any],
                let steps = plan["steps"] as? [[String: Any]] {
                 agentActivity.planSteps = steps.enumerated().map { idx, s in
@@ -1968,6 +2028,7 @@ struct ChatScreen: View {
                     agentActivity.currentStepTitle = first.title
                 }
             }
+            syncAgentChromeToStreamingMessage()
         case "agent_step", "agent_step_update":
             thinkingKind = nil
             agentActivity.visible = true
@@ -1982,7 +2043,6 @@ struct ChatScreen: View {
                     agentActivity.planSteps[i].title = AgentToolLabels.friendlyStepTitle(title)
                 }
                 agentActivity.currentStepTitle = agentActivity.planSteps[i].title
-                // Marque les étapes précédentes comme done si le serveur ne l’a pas encore fait.
                 if st == "running" || st == "done" {
                     for j in 0..<i where agentActivity.planSteps[j].status == "pending"
                         || agentActivity.planSteps[j].status == "running" {
@@ -1995,13 +2055,24 @@ struct ChatScreen: View {
             } else if let msg = obj["message"] as? String {
                 agentActivity.currentStepTitle = AgentToolLabels.friendlyStepTitle(msg)
             }
+            syncAgentChromeToStreamingMessage()
         case "agent_action_start":
             agentActivity.visible = true
             agentActivity.phase = "executing"
             if let action = obj["action"] as? [String: Any] {
                 let raw = (action["summary"] as? String) ?? (action["type"] as? String)
                 agentActivity.currentStepTitle = raw.map(AgentToolLabels.humanize)
+                if let label = raw.map(AgentToolLabels.humanize) {
+                    var parts = (agentActivity.activitySummary ?? "")
+                        .split(separator: "·")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                    if !parts.contains(label) {
+                        parts.append(label)
+                        agentActivity.activitySummary = parts.filter { !$0.isEmpty }.joined(separator: " · ")
+                    }
+                }
             }
+            syncAgentChromeToStreamingMessage()
         case "agent_done", "agent_status":
             if type == "agent_done" {
                 agentActivity.phase = "synthesis"
@@ -2009,11 +2080,13 @@ struct ChatScreen: View {
             if let msg = obj["message"] as? String, !msg.isEmpty {
                 agentActivity.currentStepTitle = msg
             }
+            syncAgentChromeToStreamingMessage()
         case "assistant_start":
             if let id = obj["messageId"] as? String, !id.isEmpty {
                 // Si files_found a déjà créé un asst-* local : fusionner vers l’ID serveur
                 // (sinon → 2 bulles CI).
                 remountStreamingAssistant(onto: id)
+                syncAgentChromeToStreamingMessage()
             }
             if !agentActivity.visible && streamFilesFound.isEmpty {
                 thinkingKind = .preparing
@@ -2043,6 +2116,18 @@ struct ChatScreen: View {
                         snippet: s["snippet"] as? String
                     )
                 }
+            }
+            if !streamSources.isEmpty {
+                let count = streamSources.count
+                let bit = "\(count) source\(count > 1 ? "s" : "")"
+                if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
+                    agentActivity.activitySummary = "\(base) · \(bit)"
+                } else if let q = agentActivity.webQuery, !q.isEmpty {
+                    agentActivity.activitySummary = "Recherche · \(q) · \(bit)"
+                } else if agentActivity.activitySummary == nil {
+                    agentActivity.activitySummary = bit
+                }
+                syncAgentChromeToStreamingMessage()
             }
         case "context_snapshot":
             if let snap = obj["snapshot"] as? [String: Any] {
@@ -2172,30 +2257,52 @@ struct ChatScreen: View {
             error = AgentToolLabels.friendlyError(msg)
         case "done":
             thinkingKind = nil
-            if agentActivity.visible || agentActivity.webPhase != .idle {
+            if agentActivity.visible || agentActivity.webPhase != .idle || !agentActivity.planSteps.isEmpty {
+                if let start = agentActivity.startedAt {
+                    agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+                }
                 agentActivity.completed = true
                 agentActivity.phase = "synthesis"
                 agentActivity.visible = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        agentActivity = AgentActivityState()
-                    }
+                for i in agentActivity.planSteps.indices
+                where agentActivity.planSteps[i].status == "running" {
+                    agentActivity.planSteps[i].status = "done"
                 }
+                syncAgentChromeToStreamingMessage(completed: true)
+                // Le panel reste dans le fil via chrome — on retire seulement l’état live.
+                agentActivity = AgentActivityState()
             } else {
                 agentActivity = AgentActivityState()
             }
             Task { @MainActor in
                 runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
             }
-            let chrome = MessageChromeMeta(
+            var chrome = MessageChromeMeta(
                 sources: streamSources,
                 mailHandoff: streamMailHandoff,
                 filesHandoff: streamFilesHandoff,
                 filesFound: streamFilesFound
             )
             if let id = streamingAssistantId ?? (obj["messageId"] as? String) {
-                chromeById[id] = chrome
+                // Préserve le panel agent déjà syncé.
+                if chromeById[id]?.agentRun != nil {
+                    chrome.agentRun = chromeById[id]?.agentRun
+                }
+                chromeById[id] = {
+                    var merged = chromeById[id] ?? MessageChromeMeta()
+                    if !chrome.sources.isEmpty { merged.sources = chrome.sources }
+                    if chrome.mailHandoff != nil { merged.mailHandoff = chrome.mailHandoff }
+                    if chrome.filesHandoff != nil { merged.filesHandoff = chrome.filesHandoff }
+                    if !chrome.filesFound.isEmpty { merged.filesFound = chrome.filesFound }
+                    return merged
+                }()
+                if let final = chromeById[id] {
+                    ConversationSessionStore.setChrome(
+                        final,
+                        conversationId: conversation.id,
+                        messageId: id
+                    )
+                }
             }
             lastSources = streamSources
             lastMailHandoff = streamMailHandoff

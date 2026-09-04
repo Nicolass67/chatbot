@@ -360,6 +360,8 @@ struct MessageChromeMeta: Equatable {
     var mailHandoff: MailHandoffDTO?
     var filesHandoff: FilesHandoffDTO?
     var filesFound: [FilesFoundFileDTO] = []
+    /// Panel agent Cursor-like — reste attaché au message après la génération.
+    var agentRun: AgentRunSnapshot?
 }
 
 struct AppearFade: ViewModifier {
