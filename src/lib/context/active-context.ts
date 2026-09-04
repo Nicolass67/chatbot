@@ -37,6 +37,7 @@ export type ResolvedActiveContext = {
     from?: string;
     date?: string;
     attachmentNames?: string[];
+    recipients?: string[];
   };
   root?: {
     rootId: string;
@@ -61,6 +62,7 @@ export function formatMailThreadBodyForLlm(
       .join(", ");
     const body =
       cleanPlainText(m.bodyText).slice(0, 3500) ||
+      cleanPlainText(m.bodyHtml ?? "").slice(0, 3500) ||
       cleanPlainText(m.snippet).slice(0, 500);
     const atts = (m.attachments ?? [])
       .map((a) => a.filename || a.id)
@@ -154,6 +156,9 @@ export async function resolveActiveContext(input: {
           ? `${last.from.name} <${last.from.email}>`
           : last.from.email
         : undefined;
+      const recipients = (last?.to ?? [])
+        .map((r) => (r.name ? `${r.name} <${r.email}>` : r.email))
+        .filter(Boolean);
       const attachmentNames = thread.messages
         .flatMap((m) => m.attachments ?? [])
         .map((a) => a.filename || a.id)
@@ -166,6 +171,7 @@ export async function resolveActiveContext(input: {
         from,
         date: last?.date,
         attachmentNames,
+        recipients,
       };
       if (mail.subject) entityLabels.push(mail.subject);
     } catch {
@@ -210,6 +216,9 @@ export function formatActiveContextBlock(
       `Fil mail actif: ${ctx.mail.subject ?? ctx.mail.threadId} (threadId=${ctx.mail.threadId})`
     );
     if (ctx.mail.from) lines.push(`Expéditeur: ${ctx.mail.from}`);
+    if (ctx.mail.recipients?.length) {
+      lines.push(`Destinataires: ${ctx.mail.recipients.join(", ")}`);
+    }
     if (ctx.mail.date) lines.push(`Date: ${ctx.mail.date}`);
     if (ctx.mail.attachmentNames?.length) {
       lines.push(`Pièces jointes: ${ctx.mail.attachmentNames.join(", ")}`);

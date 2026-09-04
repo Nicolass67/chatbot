@@ -68,10 +68,27 @@ export function FilesFoundCard({ files, className }: FilesFoundCardProps) {
                   Télécharger
                 </Button>
               </a>
-              <Link href={filesHref}>
+              <Link
+                href={
+                  file.rootId
+                    ? `/files?root=${encodeURIComponent(file.rootId)}${
+                        file.relativePath
+                          ? `&path=${encodeURIComponent(
+                              file.relativePath.includes("/")
+                                ? file.relativePath.slice(
+                                    0,
+                                    file.relativePath.lastIndexOf("/")
+                                  )
+                                : ""
+                            )}`
+                          : ""
+                      }`
+                    : filesHref
+                }
+              >
                 <Button variant="ghost" size="sm" type="button">
                   <FolderOpen className="h-3.5 w-3.5" />
-                  Voir dans Files
+                  Aller à la destination
                 </Button>
               </Link>
             </div>

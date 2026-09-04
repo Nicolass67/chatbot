@@ -54,13 +54,11 @@ struct MailBodyReader: View {
                 }
             } else if !trimmedHtml.isEmpty {
                 contentModeCaption("Version HTML")
-                // GeometryReader force une largeur réelle avant loadHTMLString (évite WKWebView blank).
-                GeometryReader { geo in
-                    MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
-                        .frame(width: max(geo.size.width, 1), height: measuredHeight)
-                }
-                .frame(height: measuredHeight)
-                .frame(maxWidth: .infinity)
+                // Largeur = parent SwiftUI ; pas de GeometryReader (évite décalage / largeur 0).
+                MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: measuredHeight)
+                    .clipped()
                 .accessibilityIdentifier(A11yID.Mail.bodyHtml)
                 .accessibilityLabel("Version HTML")
                 .accessibilityValue(htmlA11yPlain)

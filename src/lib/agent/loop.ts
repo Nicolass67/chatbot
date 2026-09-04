@@ -519,7 +519,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     } else if (freshnessState.requiresFreshWebData && webIntent.allowed) {
       const webAvailability = await evaluateWebSearchAvailability({
         // Hot path agent : fail-fast — ne pas bloquer jusqu'à 45s sur SearXNG starting
-        waitIfStartingMs: 2_000,
+        waitIfStartingMs: 500,
       });
       if (!webAvailability.available) {
         webStopReason =

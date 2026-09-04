@@ -30,9 +30,22 @@ struct MailDeepLink: Equatable, Sendable {
     var label: String?
 }
 
+/// Deep-link Files — preview fichier, dossier parent exact, ou recherche.
 struct FilesDeepLink: Equatable, Sendable {
+    enum Intent: String, Equatable, Sendable {
+        case search
+        case folder
+        case preview
+        case download
+    }
+
     var rootId: String?
     var query: String?
+    var fileId: String?
+    var fileName: String?
+    /// Chemin relatif du dossier parent (exact), "" = racine.
+    var folderPath: String?
+    var intent: Intent = .search
 }
 
 struct MemoryDeepLink: Equatable, Sendable {
@@ -71,7 +84,58 @@ final class AppNavigation {
     }
 
     func openFiles(rootId: String? = nil, query: String? = nil) {
-        filesDeepLink = FilesDeepLink(rootId: rootId, query: query)
+        filesDeepLink = FilesDeepLink(rootId: rootId, query: query, intent: .search)
+        selectedTab = .files
+    }
+
+    /// Ouvre le preview du fichier (ferme l’assistant si besoin côté appelant).
+    func openFilePreview(
+        fileId: String,
+        fileName: String,
+        rootId: String?,
+        folderPath: String?
+    ) {
+        presentMailAssistant = false
+        presentFilesAssistant = false
+        filesDeepLink = FilesDeepLink(
+            rootId: rootId,
+            fileId: fileId,
+            fileName: fileName,
+            folderPath: folderPath ?? "",
+            intent: .preview
+        )
+        selectedTab = .files
+    }
+
+    /// Navigue vers le dossier parent exact du fichier.
+    func openFileFolder(rootId: String?, folderPath: String, title: String? = nil) {
+        presentMailAssistant = false
+        presentFilesAssistant = false
+        filesDeepLink = FilesDeepLink(
+            rootId: rootId,
+            fileName: title,
+            folderPath: folderPath,
+            intent: .folder
+        )
+        selectedTab = .files
+    }
+
+    /// Déclenche téléchargement + navigation preview (share depuis FilePreview).
+    func downloadFile(
+        fileId: String,
+        fileName: String,
+        rootId: String?,
+        folderPath: String?
+    ) {
+        presentMailAssistant = false
+        presentFilesAssistant = false
+        filesDeepLink = FilesDeepLink(
+            rootId: rootId,
+            fileId: fileId,
+            fileName: fileName,
+            folderPath: folderPath ?? "",
+            intent: .download
+        )
         selectedTab = .files
     }
 
@@ -149,4 +213,19 @@ enum QaNavIntent: String, Equatable, Sendable {
     case filesNested
     case filesFile
     case filesAssistant
+}
+
+enum FilesPathHelpers {
+    /// Dossier parent d’un relativePath fichier (`a/b/c.pdf` → `a/b`, sinon `""`).
+    static func parentFolder(of relativePath: String?) -> String {
+        guard let relativePath, !relativePath.isEmpty else { return "" }
+        let normalized = relativePath.replacingOccurrences(of: "\\", with: "/")
+        guard let idx = normalized.lastIndex(of: "/") else { return "" }
+        return String(normalized[..<idx])
+    }
+
+    static func lastSegment(of path: String) -> String {
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        return normalized.split(separator: "/").last.map(String.init) ?? path
+    }
 }

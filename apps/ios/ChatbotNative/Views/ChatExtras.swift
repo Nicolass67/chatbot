@@ -6,32 +6,38 @@ import UIKit
 struct MailHtmlView: UIViewRepresentable {
     let html: String
     @Binding var measuredHeight: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         let web = WKWebView(frame: .zero, configuration: config)
-        // Fond opaque sombre : évite WKWebView « vide » (transparent + layout 0-width).
-        let bg = UIColor(red: 0.12, green: 0.13, blue: 0.16, alpha: 1)
         web.isOpaque = true
-        web.backgroundColor = bg
-        web.scrollView.backgroundColor = bg
+        web.backgroundColor = .clear
+        web.scrollView.backgroundColor = .clear
         web.scrollView.isScrollEnabled = false
+        web.scrollView.contentInsetAdjustmentBehavior = .never
+        web.scrollView.contentInset = .zero
+        web.scrollView.scrollIndicatorInsets = .zero
         web.navigationDelegate = context.coordinator
         web.setContentHuggingPriority(.defaultLow, for: .vertical)
+        web.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return web
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.heightBinding = $measuredHeight
         let width = webView.bounds.width
+        let dark = colorScheme == .dark
         let needsReload =
             context.coordinator.lastHtml != html
+            || context.coordinator.lastDark != dark
             || (width > 1 && abs(context.coordinator.lastWidth - width) > 1)
         if needsReload {
             context.coordinator.lastHtml = html
             context.coordinator.lastWidth = width
-            webView.loadHTMLString(Self.wrap(html), baseURL: nil)
+            context.coordinator.lastDark = dark
+            webView.loadHTMLString(Self.wrap(html, dark: dark), baseURL: nil)
         }
     }
 
@@ -40,15 +46,12 @@ struct MailHtmlView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHtml: String?
         var lastWidth: CGFloat = 0
+        var lastDark: Bool?
         var heightBinding: Binding<CGFloat>?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             remasure(webView)
-            // Images / CSS tardifs + second layout après largeur réelle
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.remasure(webView)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.remasure(webView)
             }
         }
@@ -56,26 +59,31 @@ struct MailHtmlView: UIViewRepresentable {
         private func remasure(_ webView: WKWebView) {
             let js = """
             (function(){
-              var s=document.getElementById('cn-force');
-              if(!s){
-                s=document.createElement('style');
-                s.id='cn-force';
-                s.textContent='html,body,*{color:#f2f2f7!important;background:transparent!important;background-color:transparent!important;}a{color:#8ec7ff!important;}img{max-width:100%!important;height:auto!important;}';
-                document.head.appendChild(s);
+              var b=document.body;
+              if(!b) return 160;
+              b.style.margin='0';
+              b.style.padding='0';
+              b.style.width='100%';
+              b.style.maxWidth='100%';
+              b.style.boxSizing='border-box';
+              var tables=b.querySelectorAll('table');
+              for(var i=0;i<tables.length;i++){
+                var t=tables[i];
+                t.style.maxWidth='100%';
+                t.style.marginLeft='0';
+                t.style.marginRight='0';
+                if(t.parentElement===b || (t.parentElement && t.parentElement.id==='cn-mail-root')){
+                  t.style.width='100%';
+                }
               }
-              document.querySelectorAll('[style]').forEach(function(el){
-                el.style.setProperty('color','#f2f2f7','important');
-                el.style.setProperty('background','transparent','important');
-                el.style.setProperty('background-color','transparent','important');
-              });
-              return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 160);
+              return Math.max(b.scrollHeight, document.documentElement.scrollHeight, 160);
             })();
             """
             webView.evaluateJavaScript(js) { [weak self] result, _ in
                 let height = (result as? CGFloat)
                     ?? (result as? Double).map { CGFloat($0) }
                     ?? 240
-                let clamped = max(160, min(height + 16, 4000))
+                let clamped = max(160, min(height + 8, 4000))
                 DispatchQueue.main.async {
                     self?.heightBinding?.wrappedValue = clamped
                 }
@@ -97,10 +105,8 @@ struct MailHtmlView: UIViewRepresentable {
         }
     }
 
-    /// Extrait le fragment body et retire styles qui forcent du texte sombre.
     private static func sanitize(_ html: String) -> String {
         var s = html
-        // Document complet → fragment body (évite <html> imbriqué dans wrap).
         if let regex = try? NSRegularExpression(
             pattern: "<body[^>]*>([\\s\\S]*?)</body>",
             options: [.caseInsensitive]
@@ -111,7 +117,6 @@ struct MailHtmlView: UIViewRepresentable {
         }
         s = s.replacingOccurrences(of: #"(?i)</?html[^>]*>"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(?i)</?head[^>]*>"#, with: "", options: .regularExpression)
-        // Strip <style>…</style>
         if let regex = try? NSRegularExpression(
             pattern: "<style[^>]*>[\\s\\S]*?</style>",
             options: [.caseInsensitive]
@@ -123,9 +128,8 @@ struct MailHtmlView: UIViewRepresentable {
                 withTemplate: ""
             )
         }
-        // Strip bgcolor / color / style attributes (best-effort)
         if let regex = try? NSRegularExpression(
-            pattern: "\\s(style|bgcolor|color|background|text)\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
+            pattern: "\\s(bgcolor|color|background|text)\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
             options: [.caseInsensitive]
         ) {
             s = regex.stringByReplacingMatches(
@@ -138,30 +142,34 @@ struct MailHtmlView: UIViewRepresentable {
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func wrap(_ html: String) -> String {
+    private static func wrap(_ html: String, dark: Bool) -> String {
         let body = sanitize(html)
+        let bg = dark ? "#18181a" : "#F4F4F5"
+        let fg = dark ? "#e2e2e6" : "#1a1a1e"
+        let link = dark ? "#7eb8c4" : "#5a9aa6"
+        let muted = dark ? "#a3a3aa" : "#5c5c66"
+        let quote = dark ? "#7eb8c4" : "#5a9aa6"
         return """
         <!DOCTYPE html><html><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-        <meta name="color-scheme" content="dark light">
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
         <base target="_blank" rel="noopener noreferrer">
         <style id="cn-base">
-        html,body{margin:0;padding:0 12px;
-        background:light-dark(#F3F4F6,#1e2128)!important;
-        color:light-dark(#14161A,#f2f2f7)!important;
-        font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:17px;line-height:1.55;width:100%;
-        max-width:100%;overflow-x:hidden;overflow-wrap:anywhere;word-break:break-word;-webkit-text-size-adjust:100%;}
-        /* Ne pas forcer width:100% sur tous les td (casse spacers Gmail). */
-        body > table{width:100%!important;max-width:100%!important;margin-left:auto!important;margin-right:auto!important;}
-        body > div, body > center{max-width:100%!important;margin-left:auto!important;margin-right:auto!important;}
-        html,body,p,span,div,li,td,th{color:light-dark(#14161A,#f2f2f7)!important;}
-        a,a *{color:light-dark(#3B6EA5,#8ec7ff)!important}
+        *,*::before,*::after{box-sizing:border-box;}
+        html{margin:0;padding:0;width:100%;max-width:100%;overflow-x:hidden;-webkit-text-size-adjust:100%;}
+        body{margin:0;padding:0;width:100%;max-width:100%;
+        background:\(bg)!important;color:\(fg)!important;
+        font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:17px;line-height:1.55;
+        overflow-x:hidden;overflow-wrap:anywhere;word-break:break-word;text-align:left;}
+        #cn-mail-root{display:block;width:100%;max-width:100%;margin:0;padding:0;text-align:left;}
+        #cn-mail-root > table{width:100%!important;max-width:100%!important;margin:0!important;}
+        #cn-mail-root > center,#cn-mail-root > div{max-width:100%!important;margin:0!important;}
         img{max-width:100%!important;height:auto!important}
         table{max-width:100%!important;border-collapse:collapse}
         td,th{word-break:break-word}
+        a,a *{color:\(link)!important}
         pre,code{white-space:pre-wrap;word-break:break-word}
-        blockquote{margin:0;padding-left:12px;border-left:3px solid light-dark(#3B6EA5,#3ECFBE);color:light-dark(#5C6370,#d1d1d6)!important}
-        </style></head><body>\(body)</body></html>
+        blockquote{margin:0;padding-left:12px;border-left:3px solid \(quote);color:\(muted)!important}
+        </style></head><body><div id="cn-mail-root">\(body)</div></body></html>
         """
     }
 }

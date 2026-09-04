@@ -329,7 +329,6 @@ struct ChatToolsSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -353,20 +352,27 @@ struct ScrollToBottomButton: View {
     }
 }
 
-/// Actions produit contextuelles (pas des suggestions de prompt).
-struct ContextualQuickActions: View {
+/// Barre d’actions produit persistante (au-dessus du chat) — jamais injectée comme messages.
+struct PersistentProductActionsBar: View {
     let scope: ConversationScope
     var hasMailThread: Bool = false
+    var hasDraft: Bool = false
     let onAction: (ChatScreen.QuickAction) -> Void
 
     private var actions: [(ChatScreen.QuickAction, String, String)] {
         if scope == .mail {
+            if hasDraft {
+                return [
+                    (.improve, "Modifier avec IA", "wand.and.stars"),
+                    (.extractTasks, "Ajouter PJ", "paperclip"),
+                    (.searchUnread, "Envoyer", "paperplane"),
+                ]
+            }
             if hasMailThread {
                 return [
                     (.summarize, "Résumer", "text.alignleft"),
                     (.reply, "Répondre", "arrowshape.turn.up.left"),
-                    (.extractTasks, "Tâches", "checklist"),
-                    (.draft, "Brouillon", "square.and.pencil"),
+                    (.extractTasks, "Extraire", "checklist"),
                 ]
             }
             return [
@@ -380,51 +386,68 @@ struct ContextualQuickActions: View {
     }
 
     var body: some View {
-        VStack(spacing: AppTheme.space20) {
-            Spacer(minLength: AppTheme.space24)
-            Image(systemName: scope == .mail ? "envelope.open" : "folder")
-                .font(.system(size: 32, weight: .medium))
-                .foregroundStyle(AppTheme.accent.opacity(0.9))
-            Text(scope == .mail ? "Assistant Mail" : "Assistant Files")
-                .font(CNFont.title)
-                .foregroundStyle(AppTheme.foreground)
-            Text(hasMailThread
-                ? "Actions sur le mail ouvert"
-                : "Choisis une action pour commencer")
-                .font(CNFont.callout)
-                .foregroundStyle(AppTheme.muted)
-                .multilineTextAlignment(.center)
-
-            LazyVGrid(
-                columns: [GridItem(.flexible()), GridItem(.flexible())],
-                spacing: 10
-            ) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
                 ForEach(actions, id: \.0) { item in
                     Button {
                         AppHaptics.light()
                         onAction(item.0)
                     } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Image(systemName: item.2)
+                                .font(.caption.weight(.semibold))
                             Text(item.1)
                                 .font(.subheadline.weight(.semibold))
                         }
-                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 36)
                         .foregroundStyle(AppTheme.foreground)
                         .background(AppTheme.surfaceElevated)
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
-                        )
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 0.5))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(item.1)
                 }
             }
-            .padding(.horizontal, AppTheme.space24)
-
-            Spacer(minLength: AppTheme.space16)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.surface.opacity(0.92))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(AppTheme.borderSubtle)
+                .frame(height: 0.5)
+        }
+        .accessibilityIdentifier("assistant.productActions")
+    }
+}
+
+/// Empty hero Assistant (sans boutons — les actions sont dans PersistentProductActionsBar).
+struct ContextualQuickActions: View {
+    let scope: ConversationScope
+    var hasMailThread: Bool = false
+    let onAction: (ChatScreen.QuickAction) -> Void
+
+    var body: some View {
+        let _ = onAction
+        VStack(spacing: AppTheme.space16) {
+            Image(systemName: scope == .mail ? "envelope.open" : "folder")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(AppTheme.accent.opacity(0.9))
+                .padding(.top, AppTheme.space16)
+            Text(scope == .mail ? "Assistant Mail" : "Assistant Files")
+                .font(CNFont.title)
+                .foregroundStyle(AppTheme.foreground)
+            Text(hasMailThread
+                ? "Utilise les actions ci-dessus, ou pose une question."
+                : "Utilise les actions ci-dessus pour commencer.")
+                .font(CNFont.callout)
+                .foregroundStyle(AppTheme.muted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, AppTheme.space24)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, AppTheme.space24)
     }
 }

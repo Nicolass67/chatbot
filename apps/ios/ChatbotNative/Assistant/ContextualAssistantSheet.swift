@@ -49,7 +49,6 @@ struct ContextualAssistantSheet: View {
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(AppTheme.surface.opacity(0.94), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
@@ -87,7 +86,6 @@ struct ContextualAssistantSheet: View {
             }
             .task { await boot() }
         }
-        .preferredColorScheme(.dark)
         .accessibilityIdentifier(A11yID.Assistant.root)
     }
 
@@ -278,7 +276,6 @@ struct ScopedConversationSwitcher: View {
             }
             .task { await load() }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func load() async {

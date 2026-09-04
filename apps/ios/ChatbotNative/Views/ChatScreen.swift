@@ -7,6 +7,7 @@ struct ChatScreen: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     let conversation: ConversationDTO
     var onOpenHistory: (() -> Void)? = nil
     var onOpenSettings: (() -> Void)? = nil
@@ -64,6 +65,9 @@ struct ChatScreen: View {
     @State private var streamingAssistantId: String?
     @State private var contextSnapshot: ContextSnapshotDTO?
     @State private var streamingService = ChatStreamingService()
+    /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
+    @State private var suppressAssistantNarration = false
+    @State private var exportShareURL: IdentifiedURL?
 
     struct PendingFileAction: Identifiable, Equatable {
         let id: String
@@ -87,6 +91,16 @@ struct ChatScreen: View {
         ZStack {
             AmbientBackground()
             VStack(spacing: 0) {
+                if let scope = forcedScope {
+                    PersistentProductActionsBar(
+                        scope: scope,
+                        hasMailThread: forcedActiveContext?.mailThreadId != nil,
+                        hasDraft: draftCardId != nil,
+                        onAction: { action in
+                            Task { await runQuickAction(action) }
+                        }
+                    )
+                }
                 messageScroll
                 if shouldShowAgentStrip {
                     AgentActivityView(state: agentActivity)
@@ -139,7 +153,6 @@ struct ChatScreen: View {
                 : (conversationTitle.isEmpty ? "Nouvelle conversation" : conversationTitle)
         )
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             if forcedScope == nil {
                 ToolbarItem(placement: .topBarLeading) {
@@ -237,6 +250,23 @@ struct ChatScreen: View {
             }
             .presentationDetents([.large])
         }
+        .sheet(item: $exportShareURL) { item in
+            NavigationStack {
+                ShareLink(item: item.url) {
+                    Label("Partager « \(item.title) »", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .padding()
+                .navigationTitle("Télécharger")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Fermer") { exportShareURL = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
         .fileImporter(
             isPresented: $showDocImporter,
             allowedContentTypes: [.pdf, .plainText, .utf8PlainText, .data, .image],
@@ -289,10 +319,13 @@ struct ChatScreen: View {
                                     quickLookURL = IdentifiedURL(url: url, title: title)
                                 },
                                 onOpenFoundFile: { file in
-                                    nav.openFiles(rootId: file.rootId, query: file.filename)
+                                    openFoundFilePreview(file)
+                                }
+                                onDownloadFoundFile: { file in
+                                    Task { await downloadFoundFile(file) }
                                 },
                                 onRevealFoundFile: { file in
-                                    nav.openFiles(rootId: file.rootId, query: file.relativePath ?? file.filename)
+                                    revealFoundFileFolder(file)
                                 }
                             )
                             .id(msg.id)
@@ -311,6 +344,7 @@ struct ChatScreen: View {
                                 sources: streamSources,
                                 mailHandoff: streamMailHandoff,
                                 filesHandoff: streamFilesHandoff,
+                                filesFound: streamFilesFound,
                                 onCopy: {},
                                 onEdit: {},
                                 onRegenerate: {},
@@ -330,9 +364,45 @@ struct ChatScreen: View {
                                 },
                                 onOpenDocument: { url, title in
                                     quickLookURL = IdentifiedURL(url: url, title: title)
+                                },
+                                onOpenFoundFile: { file in
+                                    openFoundFilePreview(file)
+                                }
+                                onDownloadFoundFile: { file in
+                                    Task { await downloadFoundFile(file) }
+                                },
+                                onRevealFoundFile: { file in
+                                    revealFoundFileFolder(file)
                                 }
                             )
                             .id("streaming")
+                        } else if streamingText.isEmpty && !streamFilesFound.isEmpty && streamingAssistantId == nil {
+                            MessageBubble(
+                                message: MessageDTO(
+                                    id: "streaming",
+                                    role: "assistant",
+                                    content: "",
+                                    createdAt: nil
+                                ),
+                                token: session.token,
+                                baseURL: session.baseURL,
+                                isEditing: false,
+                                filesFound: streamFilesFound,
+                                onCopy: {},
+                                onEdit: {},
+                                onRegenerate: {},
+                                onOpenImage: { _ in },
+                                onOpenFoundFile: { file in
+                                    openFoundFilePreview(file)
+                                }
+                                onDownloadFoundFile: { file in
+                                    Task { await downloadFoundFile(file) }
+                                },
+                                onRevealFoundFile: { file in
+                                    revealFoundFileFolder(file)
+                                }
+                            )
+                            .id("streaming-files")
                         }
                         Color.clear.frame(height: 8).id("bottom")
                     }
@@ -345,27 +415,12 @@ struct ChatScreen: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: messages.count) { _, _ in
-                    showScrollDown = false
+                    guard !showScrollDown else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: scrollToken) { _, _ in
                     showScrollDown = false
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
-                .onChange(of: isSending) { _, sending in
-                    if !sending {
-                        Task { @MainActor in
-                            // Double pass : layout Markdown final + reload messages.
-                            try? await Task.sleep(nanoseconds: 40_000_000)
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                            try? await Task.sleep(nanoseconds: 120_000_000)
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
-                    }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 12).onChanged { _ in
@@ -428,25 +483,134 @@ struct ChatScreen: View {
     }
 
     private func runQuickAction(_ action: QuickAction) async {
+        draft = ""
+        // Draft card visible : actions ciblées (pas de prompts doubles).
+        if draftCardId != nil {
+            switch action {
+            case .improve:
+                await send(
+                    forcedText: "Améliore le brouillon en cours via les outils mail (sans narrer le contenu).",
+                    hideUserMessage: true
+                )
+                return
+            case .extractTasks:
+                showDocImporter = true
+                return
+            case .searchUnread:
+                await sendDraftCard()
+                return
+            default:
+                break
+            }
+        }
+        // Actions produit : jamais injectées comme messages user visibles.
+        if let threadId = forcedActiveContext?.mailThreadId {
+            switch action {
+            case .summarize:
+                await runMailSummarizeProduct(threadId: threadId)
+                return
+            case .reply:
+                await runMailReplyProduct(threadId: threadId)
+                return
+            default:
+                break
+            }
+        }
+        let prompt: String
         switch action {
         case .summarize:
-            draft = ""
-            await send(forcedText: "Résume ce mail de façon claire et concise.")
+            prompt = "Résume ce mail de façon claire et concise."
         case .reply:
-            draft = ""
-            await send(forcedText: "Prépare une réponse professionnelle à ce mail et crée un brouillon.")
+            prompt = "Prépare une réponse professionnelle à ce mail et crée un brouillon via l’outil email_create_draft (sans narrer le brouillon)."
         case .draft:
-            draft = ""
-            await send(forcedText: "Crée un nouveau brouillon d’email pour répondre à ce contexte.")
+            prompt = "Crée un nouveau brouillon d’email pour ce contexte via email_create_draft."
         case .extractTasks:
-            draft = ""
-            await send(forcedText: "Extrais les tâches et dates demandées dans ce mail.")
+            prompt = "Extrais les tâches et dates demandées dans ce mail."
         case .searchUnread:
-            draft = ""
-            await send(forcedText: "Résume mes mails non lus les plus importants.")
+            prompt = forcedScope == .mail
+                ? "Résume mes mails non lus les plus importants."
+                : "Liste les fichiers pertinents pour mon contexte actuel."
         case .improve:
-            draft = ""
-            await send(forcedText: "Améliore le brouillon en cours pour le rendre plus clair et professionnel.")
+            prompt = "Améliore le brouillon en cours pour le rendre plus clair et professionnel via les outils mail."
+        }
+        await send(forcedText: prompt, hideUserMessage: true)
+    }
+
+    private func runMailSummarizeProduct(threadId: String) async {
+        guard !isSending else { return }
+        isSending = true
+        error = nil
+        defer { isSending = false }
+        do {
+            let summary = try await client.summarizeMail(threadId: threadId)
+            let id = "mail-summary-\(UUID().uuidString)"
+            messages.append(
+                MessageDTO(id: id, role: "assistant", content: summary, createdAt: nil)
+            )
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func runMailReplyProduct(threadId: String) async {
+        guard !isSending else { return }
+        isSending = true
+        error = nil
+        defer { isSending = false }
+        do {
+            let result = try await client.suggestMailReply(threadId: threadId)
+            if let id = result.draftId, !id.isEmpty {
+                draftCardId = id
+            }
+            draftCardText = result.bodyText
+            draftCardEditing = false
+            // Une seule présentation : carte draft (pas de message chat parallèle).
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func openFoundFilePreview(_ file: FilesFoundFileDTO) {
+        if forcedScope != nil { dismiss() }
+        let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
+        nav.openFilePreview(
+            fileId: file.id,
+            fileName: file.filename,
+            rootId: file.rootId,
+            folderPath: parent
+        )
+    }
+
+    private func revealFoundFileFolder(_ file: FilesFoundFileDTO) {
+        if forcedScope != nil { dismiss() }
+        let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
+        nav.openFileFolder(
+            rootId: file.rootId,
+            folderPath: parent,
+            title: FilesPathHelpers.lastSegment(of: parent).isEmpty
+                ? nil
+                : FilesPathHelpers.lastSegment(of: parent)
+        )
+    }
+
+    private func downloadFoundFile(_ file: FilesFoundFileDTO) async {
+        do {
+            let content = try await client.fetchFileContent(fileId: file.id)
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(file.filename)
+            if let binary = content.binary {
+                try binary.write(to: tmp, options: .atomic)
+            } else if let text = content.text {
+                try Data(text.utf8).write(to: tmp, options: .atomic)
+            } else {
+                throw APIClientError.decode
+            }
+            exportShareURL = IdentifiedURL(url: tmp, title: file.filename)
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -818,7 +982,7 @@ struct ChatScreen: View {
         await send(options: ChatSendOptions(regenerate: true, mode: chatMode))
     }
 
-    private func send(options: ChatSendOptions? = nil, forcedText: String? = nil) async {
+    private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false) async {
         let text = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
@@ -832,9 +996,11 @@ struct ChatScreen: View {
             opts.activeContext = forcedActiveContext
         }
 
+        suppressAssistantNarration = false
+
         if options?.regenerate != true {
             draft = ""
-            if !isEdit {
+            if !isEdit && !hideUserMessage {
                 let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : pendingAttachments
                     .filter { ids.contains($0.id) }
                     .map {
@@ -855,7 +1021,7 @@ struct ChatScreen: View {
                         attachments: localAtts
                     )
                 )
-            } else if let editId = editingMessageId,
+            } else if !hideUserMessage, let editId = editingMessageId,
                       let idx = messages.firstIndex(where: { $0.id == editId }) {
                 messages[idx] = MessageDTO(
                     id: editId,
@@ -901,14 +1067,18 @@ struct ChatScreen: View {
             lastSources = streamSources
             lastMailHandoff = streamMailHandoff
             lastFilesHandoff = streamFilesHandoff
-            let finalText = streamingText
+            let finalFound = streamFilesFound
+            var finalText = streamingText
+            // Résultat structuré = principal : pas de double narration.
+            if suppressAssistantNarration || !finalFound.isEmpty {
+                finalText = ""
+            }
             let finalSources = streamSources
             let finalMail = streamMailHandoff
             let finalFiles = streamFilesHandoff
-            let finalFound = streamFilesFound
             let promoteId = streamingAssistantId ?? "asst-\(UUID().uuidString)"
             // Promote in-place AVANT clear/reload — évite le trou « disparaît puis réapparaît ».
-            if !finalText.isEmpty {
+            if !finalText.isEmpty || !finalFound.isEmpty || finalMail != nil || finalFiles != nil || !finalSources.isEmpty {
                 if let idx = messages.firstIndex(where: { $0.id == promoteId }) {
                     messages[idx] = MessageDTO(
                         id: promoteId,
@@ -929,6 +1099,7 @@ struct ChatScreen: View {
                 )
             }
             streamingText = ""
+            suppressAssistantNarration = false
             await loadMessages(preserveAssistantId: promoteId)
             if let last = messages.last(where: { $0.role == "assistant" }),
                !finalSources.isEmpty || finalMail != nil || finalFiles != nil || !finalFound.isEmpty {
@@ -1230,6 +1401,10 @@ struct ChatScreen: View {
                     )
                 }
                 streamFilesFound = parsed
+                if !parsed.isEmpty {
+                    suppressAssistantNarration = true
+                    streamingText = ""
+                }
                 if let id = streamingAssistantId {
                     var chrome = chromeById[id] ?? MessageChromeMeta()
                     chrome.filesFound = parsed
@@ -1247,6 +1422,8 @@ struct ChatScreen: View {
                 if let id, !id.isEmpty {
                     draftCardId = id
                     draftCardText = body
+                    suppressAssistantNarration = true
+                    streamingText = ""
                     draftCardEditing = false
                 }
             }

@@ -40,6 +40,7 @@ struct FilesBrowserView: View {
     @State private var searching = false
     @State private var showAssistant = false
     @State private var assistantContext = FilesAssistantContext.global
+    @State private var pendingDeepLink: FilesDeepLink?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -58,8 +59,7 @@ struct FilesBrowserView: View {
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
+                        .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         nav.openSettings()
@@ -81,12 +81,10 @@ struct FilesBrowserView: View {
             }
             .onChange(of: nav.filesDeepLink) { _, link in
                 guard let link else { return }
-                if let q = link.query, !q.isEmpty {
-                    searchQuery = q
-                    Task { await runSearch(q) }
-                }
-                if let rootId = link.rootId, let root = rootsById[rootId] {
-                    path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Root"))
+                if rootsById.isEmpty {
+                    pendingDeepLink = link
+                } else {
+                    applyFilesDeepLink(link)
                 }
                 nav.filesDeepLink = nil
             }
@@ -144,6 +142,77 @@ struct FilesBrowserView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
             }
+        }
+    }
+
+    /// Navigation exacte : preview fichier, dossier parent, ou recherche.
+    private func applyFilesDeepLink(_ link: FilesDeepLink) {
+        showAssistant = false
+        switch link.intent {
+        case .search:
+            if let q = link.query, !q.isEmpty {
+                searchQuery = q
+                Task { await runSearch(q) }
+            }
+            if let rootId = link.rootId, rootsById[rootId] != nil {
+                path = NavigationPath()
+                path.append(
+                    FilesDestination.folder(
+                        rootId: rootId,
+                        path: "",
+                        title: rootsById[rootId]?.label ?? "Root"
+                    )
+                )
+            }
+        case .folder:
+            navigateToFolder(rootId: link.rootId, folderPath: link.folderPath ?? "")
+        case .preview, .download:
+            let folder = link.folderPath ?? ""
+            navigateToFolder(rootId: link.rootId, folderPath: folder)
+            if let fileId = link.fileId, !fileId.isEmpty {
+                let title = link.fileName ?? "Fichier"
+                let rootId = link.rootId
+                    ?? roots.first?.id
+                    ?? ""
+                path.append(
+                    FilesDestination.file(
+                        fileId: fileId,
+                        title: title,
+                        rootId: rootId,
+                        folderPath: folder
+                    )
+                )
+            }
+        }
+    }
+
+    private func navigateToFolder(rootId: String?, folderPath: String) {
+        path = NavigationPath()
+        let resolvedRootId = rootId
+            ?? roots.first?.id
+        guard let resolvedRootId, let root = rootsById[resolvedRootId] ?? roots.first else { return }
+        let rootKey = root.id
+        // Toujours pousser la racine, puis chaque segment du chemin parent.
+        path.append(
+            FilesDestination.folder(
+                rootId: rootKey,
+                path: "",
+                title: root.label ?? "Root"
+            )
+        )
+        let normalized = folderPath.replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !normalized.isEmpty else { return }
+        var cumulative = ""
+        for segment in normalized.split(separator: "/") {
+            cumulative = cumulative.isEmpty ? String(segment) : "\(cumulative)/\(segment)"
+            path.append(
+                FilesDestination.folder(
+                    rootId: rootKey,
+                    path: cumulative,
+                    title: String(segment)
+                )
+            )
         }
     }
 
@@ -321,6 +390,10 @@ struct FilesBrowserView: View {
             roots = try await client.listFileRoots()
             rootsById = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
             error = nil
+            if let pending = pendingDeepLink {
+                pendingDeepLink = nil
+                applyFilesDeepLink(pending)
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -430,8 +503,7 @@ struct FileFolderView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbar {
+                .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
                     Text(title).font(.headline)
@@ -806,8 +878,7 @@ struct FilePreviewView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbar {
+                .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let onAskAssistant {
                     Button {

@@ -30,11 +30,11 @@ struct SettingsView: View {
     private var appearanceHint: String {
         switch appearance.mode {
         case .system:
-            return "Suit Réglages iOS → Affichage. Nocturne Ink s’adapte automatiquement."
+            return "Suit Réglages iOS → Affichage. Soft Graphite s’adapte automatiquement."
         case .light:
             return "Thème clair forcé (indépendant du mode système)."
         case .dark:
-            return "Thème sombre Nocturne Ink forcé (indépendant du mode système)."
+            return "Thème sombre Soft Graphite forcé (indépendant du mode système)."
         }
     }
 

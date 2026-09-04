@@ -14,8 +14,6 @@ struct EmptyChatCanvas: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: AppTheme.space48)
-
             VStack(spacing: AppTheme.space16) {
                 Text("Chatbot")
                     .font(CNFont.brand)
@@ -30,6 +28,7 @@ struct EmptyChatCanvas: View {
                     .opacity(appeared ? 1 : 0)
             }
             .padding(.horizontal, AppTheme.space32)
+            .padding(.top, AppTheme.space24)
             .padding(.bottom, AppTheme.space40)
 
             VStack(spacing: AppTheme.space8) {
@@ -70,10 +69,8 @@ struct EmptyChatCanvas: View {
                 }
             }
             .padding(.horizontal, AppTheme.space24)
-
-            Spacer(minLength: AppTheme.space32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
         .onAppear {
             if reduceMotion {
                 appeared = true

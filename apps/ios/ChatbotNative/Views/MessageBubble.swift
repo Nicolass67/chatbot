@@ -18,6 +18,7 @@ struct MessageBubble: View {
     var onFilesHandoff: (() -> Void)? = nil
     var onOpenDocument: ((URL, String) -> Void)? = nil
     var onOpenFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
+    var onDownloadFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
     var onRevealFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
 
     private var isUser: Bool { message.role == "user" }
@@ -82,6 +83,7 @@ struct MessageBubble: View {
                         FileResultCard(
                             file: file,
                             onOpen: { onOpenFoundFile?(file) },
+                            onDownload: { onDownloadFoundFile?(file) },
                             onReveal: { onRevealFoundFile?(file) }
                         )
                     }
@@ -134,8 +136,13 @@ struct MessageBubble: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(AppTheme.mutedForeground)
 
-            MarkdownMessageView(markdown: message.content)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
+                    MarkdownMessageView(markdown: message.content)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .padding(.leading, AppTheme.space12)
         .overlay(alignment: .leading) {
@@ -160,6 +167,15 @@ struct MessageBubble: View {
             }
         }
         .accessibilityHint("Appui long pour copier, régénérer ou partager")
+    }
+
+    private static func looksLikeFileNarration(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let needles = [
+            "j'ai trouvé", "voici le fichier", "fichier trouvé", "files found",
+            "voici le document", "j’ai trouvé", "trouvé le fichier",
+        ]
+        return needles.contains { lower.contains($0) } || (text.count < 120 && lower.contains("fichier"))
     }
 }
 
@@ -203,6 +219,7 @@ struct HandoffBanner: View {
 struct FileResultCard: View {
     let file: FilesFoundFileDTO
     var onOpen: () -> Void
+    var onDownload: () -> Void
     var onReveal: () -> Void
 
     private var sizeLabel: String? {
@@ -210,6 +227,14 @@ struct FileResultCard: View {
         if bytes < 1024 { return "\(bytes) o" }
         if bytes < 1024 * 1024 { return String(format: "%.1f Ko", Double(bytes) / 1024) }
         return String(format: "%.1f Mo", Double(bytes) / (1024 * 1024))
+    }
+
+    private var typeLabel: String {
+        if let ext = file.extensionHint, !ext.isEmpty { return ext.uppercased() }
+        if let path = file.relativePath, let dot = path.lastIndex(of: ".") {
+            return String(path[path.index(after: dot)...]).uppercased()
+        }
+        return "Fichier"
     }
 
     var body: some View {
@@ -223,7 +248,12 @@ struct FileResultCard: View {
                         .foregroundStyle(AppTheme.foreground)
                         .lineLimit(2)
                     HStack(spacing: 6) {
+                        Text(typeLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.mutedForeground)
                         if let path = file.relativePath {
+                            Text("·")
+                                .foregroundStyle(AppTheme.mutedForeground)
                             Text(path)
                                 .font(.caption2)
                                 .foregroundStyle(AppTheme.muted)
@@ -243,7 +273,10 @@ struct FileResultCard: View {
                     .buttonStyle(.borderedProminent)
                     .tint(AppTheme.accent)
                     .controlSize(.small)
-                Button("Voir dans Files", action: onReveal)
+                Button("Télécharger", action: onDownload)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Aller à la destination", action: onReveal)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -334,9 +367,7 @@ struct SourcesSheet: View {
                     Button("Fermer") { dismiss() }
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
     }
 }
 
