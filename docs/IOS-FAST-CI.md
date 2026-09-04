@@ -25,7 +25,7 @@ Modify Swift → ios:deploy
 
 | Workflow | Contenu | Cible |
 |----------|---------|--------|
-| **Full CI** `ios-native.yml` | Unit tests only (+ DerivedData cache) | **≤5 min** — plus d’UI suite ni IPA |
+| **Full CI** `ios-native.yml` | Compile Debug `generic/platform=iOS Simulator` | **≤5 min** — pas de boot sim, pas d’UI, pas d’IPA |
 | **Fast Simulator** `plan=smoke` | 1 UITest × 3 tabs + 3 PNG | **≤5 min** (défaut `ios:sim`) |
 | **IPA Flash** | Release unsigned + inject URL | ~1–1.5 min |
 | `plan=all` | Suite complète screenshots | **opt-in long** (~15 min) — pas le gate |
