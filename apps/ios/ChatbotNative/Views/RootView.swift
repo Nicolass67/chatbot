@@ -176,6 +176,11 @@ struct MainTabView: View {
         }
         .tint(AppTheme.accent)
         .tabBarMinimizeBehavior(.onScrollDown)
+        // Pastille IA : au-dessus des 3 onglets (dépliés) → même niveau vertical (repliés),
+        // animé nativement par Liquid Glass.
+        .tabViewBottomAccessory {
+            TabBarAssistantAccessory()
+        }
         .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()

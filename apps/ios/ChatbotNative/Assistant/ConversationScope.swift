@@ -133,8 +133,18 @@ struct ContextualAssistantButton: View {
     var accessibilityId: String = A11yID.Assistant.open
     var accessibilityLabelText: String = "Ouvrir l’assistant"
     var tint: Color = AppTheme.accent
+    /// `true` dans `tabViewBottomAccessory` : paddings gérés par le TabView (pas de double marge).
+    var forTabAccessory: Bool = false
     var action: () -> Void
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.tabViewBottomAccessoryPlacement) private var accessoryPlacement
+
+    private var isInline: Bool {
+        forTabAccessory && accessoryPlacement == .inline
+    }
+
+    private var diameter: CGFloat { isInline ? 40 : 52 }
+    private var iconSize: CGFloat { isInline ? 17 : 20 }
 
     var body: some View {
         Button {
@@ -142,9 +152,9 @@ struct ContextualAssistantButton: View {
             action()
         } label: {
             Image(systemName: "sparkles")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 54, height: 54)
+                .frame(width: diameter, height: diameter)
                 .background {
                     if reduceTransparency {
                         Circle().fill(AppTheme.surfaceElevated)
@@ -152,13 +162,43 @@ struct ContextualAssistantButton: View {
                         Circle().fill(.ultraThinMaterial)
                     }
                 }
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                .shadow(color: .black.opacity(isInline ? 0.08 : 0.18), radius: isInline ? 4 : 8, y: isInline ? 1 : 3)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityIdentifier(accessibilityId)
         .accessibilityAddTraits(.isButton)
-        .padding(.trailing, 18)
-        .padding(.bottom, 18)
+        .padding(.trailing, forTabAccessory ? (isInline ? 4 : 10) : 18)
+        .padding(.bottom, forTabAccessory ? 0 : 18)
+        .animation(.smooth(duration: 0.32), value: accessoryPlacement)
+    }
+}
+
+/// Pastille Assistant branchée sur le TabView — monte/descend avec la barre d’onglets (Liquid Glass).
+struct TabBarAssistantAccessory: View {
+    @Environment(AppNavigation.self) private var nav
+
+    var body: some View {
+        Group {
+            switch nav.selectedTab {
+            case .chat:
+                // Chat = l’assistant lui-même : pas de pastille redondante.
+                Color.clear.frame(width: 0, height: 0)
+            case .mail:
+                HStack {
+                    Spacer(minLength: 0)
+                    ContextualAssistantButton(forTabAccessory: true) {
+                        nav.openMailAssistant(.global)
+                    }
+                }
+            case .files:
+                HStack {
+                    Spacer(minLength: 0)
+                    ContextualAssistantButton(tint: AppTheme.filesAccent, forTabAccessory: true) {
+                        nav.openFilesAssistant(.global)
+                    }
+                }
+            }
+        }
     }
 }

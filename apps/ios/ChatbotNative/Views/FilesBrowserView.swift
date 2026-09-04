@@ -80,13 +80,6 @@ struct FilesBrowserView: View {
                     content
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if !selection.isSelecting {
-                    ContextualAssistantButton(tint: AppTheme.filesAccent) {
-                        openFilesAssistant(.global)
-                    }
-                }
-            }
             .navigationTitle("Files")
             .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Files.root)
@@ -819,14 +812,6 @@ struct FileFolderView: View {
                     grid
                 } else {
                     list
-                }
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if !selection.isSelecting {
-                ContextualAssistantButton(tint: AppTheme.filesAccent) {
-                    assistantDetent = .large
-                    showAssistant = true
                 }
             }
         }
