@@ -1,14 +1,14 @@
 name: iOS Native Fast Simulator
 
-# Fast Simulator QA — UI tests + PNG (no IPA).
+# smoke = compile-only ≤5m (generic Simulator, no boot / no UI run).
+# Autres plans = UI + PNG (plus longs, opt-in).
 # Orchestrated by: npm.cmd run ios:sim
-# TEST_PLAN: all | mail | chat | files | gate | assistants
 
 on:
   workflow_dispatch:
     inputs:
       test_plan:
-        description: "Suite (smoke≤5m | gate | chat | mail | files | assistants | all=long)"
+        description: "smoke≤5m compile | gate|chat|mail|files|assistants|all=UI long"
         required: false
         default: "smoke"
         type: choice
@@ -23,7 +23,7 @@ on:
   workflow_call:
     inputs:
       test_plan:
-        description: "Suite (smoke≤5m | gate | … | all)"
+        description: "smoke≤5m compile | … | all=UI long"
         required: false
         default: "smoke"
         type: string
@@ -45,8 +45,7 @@ jobs:
   simulator-ui:
     name: Fast Simulator (${{ inputs.test_plan || 'smoke' }})
     runs-on: macos-26
-    # smoke/gate ≤10m soft ; all long opt-in
-    timeout-minutes: 12
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -68,6 +67,7 @@ jobs:
             exit 1
           }
           echo "XCODE_VERSION=$(head -1 /tmp/xcode-version.txt)" >> "$GITHUB_ENV"
+          echo "GATE_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Cache Homebrew XcodeGen
         uses: actions/cache@v4
@@ -90,29 +90,76 @@ jobs:
             brew install xcodegen
           fi
 
-      # Cache app sources séparément des UITests → hit plus fréquent quand seuls les tests changent.
       - name: Cache DerivedData (app)
         uses: actions/cache@v4
         with:
           path: apps/ios/derived-sim
-          key: ios-sim-dd-v2-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift') }}
+          key: ios-sim-dd-v3-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift', 'apps/ios/ChatbotNativeUITests/**/*.swift') }}
           restore-keys: |
-            ios-sim-dd-v2-${{ runner.os }}-
+            ios-sim-dd-v3-${{ runner.os }}-
 
       - name: Generate Xcode project
         working-directory: apps/ios
         run: xcodegen generate
 
+      - name: Smoke compile (generic iOS Simulator)
+        if: env.TEST_PLAN == 'smoke'
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          BUILD_START=$(date +%s)
+          xcodebuild build-for-testing \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNativeUI \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath derived-sim \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -quiet
+          BUILD_END=$(date +%s)
+          ELAPSED=$((BUILD_END - GATE_START))
+          BUILD_S=$((BUILD_END - BUILD_START))
+          {
+            echo "## Smoke compile gate (≤5m)"
+            echo "- build-for-testing generic: ${BUILD_S}s"
+            echo "- wall: ${ELAPSED}s"
+            echo "- UI run: skipped (device gate + plan=all pour PNG)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "${{ github.workspace }}/artifacts/simulator"
+          cat > "${{ github.workspace }}/artifacts/simulator/sim-meta.json" <<EOF
+          {
+            "git_sha": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "test_plan": "smoke",
+            "xcode": "${XCODE_VERSION}",
+            "build_seconds": ${BUILD_S},
+            "ui_test_seconds": 0,
+            "workflow": "simulator-smoke-compile"
+          }
+          EOF
+          if [ "$ELAPSED" -gt 360 ]; then
+            echo "::error::Smoke hard fail >6m (${ELAPSED}s)"
+            exit 1
+          fi
+
+      - name: Upload smoke meta
+        if: env.TEST_PLAN == 'smoke' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshots
+          path: artifacts/simulator/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Resolve Simulator destination
-        id: sim
+        if: env.TEST_PLAN != 'smoke'
         run: |
           set -euo pipefail
           PREFER_NAME="${IOS_SIMULATOR_DEVICE:-iPhone 17}"
           PREFER_OS="${IOS_SIMULATOR_OS:-}"
           export PREFER_NAME PREFER_OS
-          # Liste courte — pas de dump complet dans le summary.
           xcrun simctl list devices available > /tmp/devices.txt
-
           SELECTED=$(python3 <<'PY'
           import os, re
           prefer = (os.environ.get("PREFER_NAME") or "iPhone 17").lower()
@@ -147,7 +194,6 @@ jobs:
           raise SystemExit(1)
           PY
           )
-
           UDID=$(echo "$SELECTED" | cut -d'|' -f1)
           SIM_OS=$(echo "$SELECTED" | cut -d'|' -f2)
           SIM_NAME=$(echo "$SELECTED" | cut -d'|' -f3-)
@@ -161,21 +207,15 @@ jobs:
             echo "- Xcode: ${XCODE_VERSION}"
           } >> "$GITHUB_STEP_SUMMARY"
           xcrun simctl boot "$UDID" 2>/dev/null || true
-          # -b bloque jusqu’au boot ; timeout implicite runner.
           xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
 
       - name: Map TEST_PLAN → xcodebuild -only-testing
-        id: plan
+        if: env.TEST_PLAN != 'smoke'
         run: |
           set -euo pipefail
-          PLAN="${TEST_PLAN:-all}"
+          PLAN="${TEST_PLAN:-gate}"
           ONLY=()
           case "$PLAN" in
-            smoke)
-              # 1 launch × 3 tabs — budget ≤5 min (build cache + tests courts)
-              ONLY+=("-only-testing:ChatbotNativeUITests/SmokeGateUITests")
-              REQUIRED="chat-empty.png mail-inbox.png files-root.png"
-              ;;
             mail)
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
@@ -220,23 +260,17 @@ jobs:
               REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png files-folder-documents.png files-nested.png files-preview.png mail-draft.png mail-assistant.png files-assistant.png history-mail-scope.png history-files-scope.png chat-handoff-mail.png chat-handoff-files.png"
               ;;
             *)
-              echo "::error::Unknown TEST_PLAN=$PLAN (use smoke|gate|chat|mail|files|assistants|all)"
+              echo "::error::Unknown TEST_PLAN=$PLAN"
               exit 1
               ;;
           esac
-          # shell array → env (newline-separated)
           printf '%s\n' "${ONLY[@]}" > /tmp/only-testing.txt
           echo "REQUIRED_SHOTS=${REQUIRED}" >> "$GITHUB_ENV"
-          {
-            echo "ONLY_TESTING<<EOF"
-            cat /tmp/only-testing.txt
-            echo "EOF"
-          } >> "$GITHUB_ENV"
           echo "Plan=$PLAN" >> "$GITHUB_STEP_SUMMARY"
           echo "Required: $REQUIRED" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build for testing
-        id: build
+        if: env.TEST_PLAN != 'smoke'
         working-directory: apps/ios
         run: |
           set -euo pipefail
@@ -255,14 +289,14 @@ jobs:
           set -e
           BUILD_END=$(date +%s)
           echo "BUILD_SECONDS=$((BUILD_END - BUILD_START))" >> "$GITHUB_ENV"
-          echo "Build-for-testing: ${BUILD_SECONDS:-?}s (exit $BUILD_STATUS)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build-for-testing: $((BUILD_END - BUILD_START))s (exit $BUILD_STATUS)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$BUILD_STATUS" -ne 0 ]; then
             echo "::error::build-for-testing failed"
             exit "$BUILD_STATUS"
           fi
 
       - name: UI tests (Simulator)
-        id: uitest
+        if: env.TEST_PLAN != 'smoke'
         working-directory: apps/ios
         env:
           TEST_RUNNER_CHATBOT_SIM_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/simulator
@@ -301,7 +335,7 @@ jobs:
           fi
 
       - name: Collect + verify screenshots
-        if: always()
+        if: env.TEST_PLAN != 'smoke' && always()
         run: |
           set -euo pipefail
           DIR="${{ github.workspace }}/artifacts/simulator"
@@ -309,60 +343,20 @@ jobs:
           if [ -d /tmp/chatbot-sim-screenshots ]; then
             cp -f /tmp/chatbot-sim-screenshots/*.png "$DIR/" 2>/dev/null || true
           fi
-          # Fallback xcresult uniquement si PNG manquants (évite export coûteux).
-          NEED_EXPORT=0
-          for f in ${REQUIRED_SHOTS}; do
-            [ -f "$DIR/$f" ] || NEED_EXPORT=1
-          done
-          RESULT="${RUNNER_TEMP}/ios-sim-results/ChatbotUI.xcresult"
-          if [ "$NEED_EXPORT" -eq 1 ] && [ -d "$RESULT" ]; then
-            xcrun xcresulttool export attachments \
-              --path "$RESULT" \
-              --output-path "$DIR/xcattachments" 2>/dev/null || true
-            if [ -d "$DIR/xcattachments" ]; then
-              find "$DIR/xcattachments" -type f \( -name '*.png' -o -name '*.jpeg' \) | while read -r f; do
-                lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
-                dest=""
-                case "$lower" in
-                  *chat-empty*) dest="chat-empty.png" ;;
-                  *mail-inbox-after*) dest="mail-inbox-after-back.png" ;;
-                  *mail-inbox*) dest="mail-inbox.png" ;;
-                  *mail-detail-html*) dest="mail-detail-html.png" ;;
-                  *mail-detail-text*) dest="mail-detail-text.png" ;;
-                  *mail-summary*) dest="mail-summary.png" ;;
-                  *files-root*) dest="files-root.png" ;;
-                  *files-folder-documents*) dest="files-folder-documents.png" ;;
-                  *files-nested*) dest="files-nested.png" ;;
-                  *files-back*) dest="files-back-to-root.png" ;;
-                  *chat-composer*) dest="chat-composer.png" ;;
-                  *chat-keyboard-dismissed*) dest="chat-keyboard-dismissed.png" ;;
-                  *chat-thinking*) dest="chat-thinking.png" ;;
-                  *chat-agent-error*) dest="chat-agent-error.png" ;;
-                  *chat-agent-stopped*) dest="chat-agent-stopped.png" ;;
-                  *chat-agent*) dest="chat-agent.png" ;;
-                esac
-                if [ -n "$dest" ]; then cp -f "$f" "$DIR/$dest"; fi
-              done
-            fi
-          fi
-          echo "## Screenshots (${TEST_PLAN})" >> "$GITHUB_STEP_SUMMARY"
-          ls -la "$DIR" || true
           MISSING=0
           for f in ${REQUIRED_SHOTS}; do
             if [ -f "$DIR/$f" ]; then
-              echo "- PASS $f ($(wc -c < "$DIR/$f") bytes)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- PASS $f" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "- FAIL missing $f" >> "$GITHUB_STEP_SUMMARY"
               MISSING=1
             fi
           done
-          # Ne fail verify que si les tests ont réussi (sinon artefact partiel OK).
           if [ "${XC_STATUS:-1}" = "0" ] && [ "$MISSING" -ne 0 ]; then
             echo "::error::Required screenshots missing for plan=${TEST_PLAN}"
             exit 1
           fi
-          meta="${DIR}/sim-meta.json"
-          cat > "$meta" <<EOF
+          cat > "$DIR/sim-meta.json" <<EOF
           {
             "git_sha": "${GITHUB_SHA}",
             "run_id": "${GITHUB_RUN_ID}",
@@ -376,24 +370,9 @@ jobs:
             "workflow": "simulator"
           }
           EOF
-          {
-            echo ""
-            echo "## Timing"
-            echo "- build-for-testing: ${BUILD_SECONDS:-?}s"
-            echo "- test-without-building: ${UI_TEST_SECONDS:-?}s"
-            echo "- plan: ${TEST_PLAN}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          TOTAL=$(( ${BUILD_SECONDS:-0} + ${UI_TEST_SECONDS:-0} ))
-          if [ "${TEST_PLAN}" = "smoke" ] && [ "$TOTAL" -gt 240 ]; then
-            echo "::warning::Smoke build+test ${TOTAL}s — cible ≤4m hors setup (cache DerivedData)"
-          fi
-          if [ "${TEST_PLAN}" = "smoke" ] && [ "$TOTAL" -gt 360 ]; then
-            echo "::error::Smoke exceeded 6m build+test (${TOTAL}s)"
-            exit 1
-          fi
 
       - name: Upload simulator screenshots
-        if: always()
+        if: env.TEST_PLAN != 'smoke' && always()
         uses: actions/upload-artifact@v4
         with:
           name: simulator-screenshots
@@ -401,9 +380,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # xcresult ~80MB — uniquement en échec (diagnostic).
       - name: Upload xcresult (failure only)
-        if: failure()
+        if: env.TEST_PLAN != 'smoke' && failure()
         uses: actions/upload-artifact@v4
         with:
           name: simulator-xcresult

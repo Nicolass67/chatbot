@@ -25,7 +25,7 @@ const PLAN = (() => {
 })();
 
 const REQUIRED_BY_PLAN = {
-  smoke: ["chat-empty.png", "mail-inbox.png", "files-root.png"],
+  smoke: [], // compile-only — PNG via device gate / plan=all
   mail: [
     "mail-inbox.png",
     "mail-detail-html.png",
@@ -249,12 +249,24 @@ function main() {
   downloadArtifact(run.databaseId, dest);
   const dlMs = Date.now() - dl0;
 
-  console.log(`[4/4] Verify PNG (plan=${plan})…`);
+  console.log(`[4/4] Verify (plan=${plan})…`);
   const missing = [];
-  for (const f of required) {
-    const p = path.join(dest, f);
-    if (fs.existsSync(p)) console.log(`  PASS ${f} (${fs.statSync(p).size} bytes)`);
-    else { console.log(`  FAIL missing ${f}`); missing.push(f); }
+  if (plan === "smoke") {
+    const meta = path.join(dest, "sim-meta.json");
+    if (fs.existsSync(meta)) console.log(`  PASS sim-meta.json`);
+    else {
+      console.log(`  FAIL missing sim-meta.json`);
+      missing.push("sim-meta.json");
+    }
+  } else {
+    for (const f of required) {
+      const p = path.join(dest, f);
+      if (fs.existsSync(p)) console.log(`  PASS ${f} (${fs.statSync(p).size} bytes)`);
+      else {
+        console.log(`  FAIL missing ${f}`);
+        missing.push(f);
+      }
+    }
   }
 
   const latest = path.join(outRoot, "latest");

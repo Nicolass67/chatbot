@@ -26,9 +26,9 @@ Modify Swift → ios:deploy
 | Workflow | Contenu | Cible |
 |----------|---------|--------|
 | **Full CI** `ios-native.yml` | Compile Debug `generic/platform=iOS Simulator` | **≤5 min** — pas de boot sim, pas d’UI, pas d’IPA |
-| **Fast Simulator** `plan=smoke` | 1 UITest × 3 tabs + 3 PNG | **≤5 min** (défaut `ios:sim`) |
-| **IPA Flash** | Release unsigned + inject URL | ~1–1.5 min |
-| `plan=all` | Suite complète screenshots | **opt-in long** (~15 min) — pas le gate |
+| **Fast Simulator** `plan=smoke` | Compile `ChatbotNativeUI` generic (pas de boot / UI) | **≤5 min** |
+| **Fast Simulator** `plan=all|gate|…` | UI + PNG | **opt-in long** (~8–15 min) |
+| Device gate | Screenshots Chat/Mail/Files | local (`ios:qa`) |
 
 Freins historiques (~20–24 min Full CI) : UI suite complète (~18 min) + unit (~4 min) + IPA.  
 Mitigation : retirer UI/IPA du push gate ; smoke Simulator à 1 launch.
