@@ -152,7 +152,6 @@ struct ContextualAssistantButton: View {
                         Circle().fill(.ultraThinMaterial)
                     }
                 }
-                .overlay(Circle().stroke(tint.opacity(0.45), lineWidth: 1.25))
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
