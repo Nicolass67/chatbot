@@ -4,7 +4,7 @@ import Foundation
 /// Fermer un panel ≠ supprimer la conversation — seul « Nouveau chat » réinitialise.
 @MainActor
 enum ConversationSessionStore {
-    static let globalContextKey = "__global__"
+    nonisolated static let globalContextKey = "__global__"
 
     private static let generalKey = "ctxchat.general.active"
 
