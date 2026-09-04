@@ -267,6 +267,7 @@ struct MailDraftProposal: View {
                     .background(AppTheme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                     .foregroundStyle(AppTheme.foreground)
+                    .accessibilityLabel("Éditeur de brouillon")
                     .accessibilityIdentifier(A11yID.Mail.draftEditor)
             } else {
                 Text(draftText)

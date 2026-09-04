@@ -19,7 +19,7 @@ final class HistoryIsolationUITests: XCTestCase {
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 8)
         XCTAssertTrue(history.exists, "Bouton historique Assistant absent")
-        history.tap()
+        XCTAssertTrue(app.tapFirst(id: UITestA11y.assistantHistory), "History Mail tap")
         saveScreenshot(app, name: "history-mail-scope")
 
         XCTAssertTrue(
@@ -51,7 +51,7 @@ final class HistoryIsolationUITests: XCTestCase {
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 8)
         XCTAssertTrue(history.exists, "Bouton historique Assistant absent")
-        history.tap()
+        XCTAssertTrue(app.tapFirst(id: UITestA11y.assistantHistory), "History Files tap")
         saveScreenshot(app, name: "history-files-scope")
 
         XCTAssertTrue(

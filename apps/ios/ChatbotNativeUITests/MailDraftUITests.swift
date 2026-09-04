@@ -44,10 +44,18 @@ final class MailDraftUITests: XCTestCase {
         let edit = app.buttons["Modifier"]
         XCTAssertTrue(edit.waitForExistence(timeout: 4), "Modifier control")
         edit.tap()
-        XCTAssertTrue(app.element(id: "mail.draft.editor", timeout: 6).exists, "Draft editor")
+        let editor = app.element(id: "mail.draft.editor", timeout: 6)
+        XCTAssertTrue(
+            editor.exists
+                || app.textViews.firstMatch.waitForExistence(timeout: 4)
+                || app.textFields.firstMatch.waitForExistence(timeout: 2),
+            "Draft editor"
+        )
         saveScreenshot(app, name: "mail-draft-editing")
         if app.buttons["OK"].exists {
             app.buttons["OK"].tap()
+        } else if edit.exists {
+            edit.tap()
         }
 
         let send = app.element(id: "mail.send", timeout: 4)

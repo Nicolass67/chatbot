@@ -61,11 +61,24 @@ extension XCUIApplication {
         tabBars.buttons[label].tap()
     }
 
+    /// Tap le premier match d’un identifier (évite « Multiple matching elements »).
+    @discardableResult
+    func tapFirst(id: String, timeout: TimeInterval = 8) -> Bool {
+        let match = descendants(matching: .any).matching(identifier: id).firstMatch
+        guard match.waitForExistence(timeout: timeout) else { return false }
+        if match.isHittable {
+            match.tap()
+        } else {
+            match.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        return true
+    }
+
     /// FAB Assistant — id a11y + fallback label (Liquid Glass peut masquer l’identifier).
     @discardableResult
     func tapAssistantFAB(id: String, label: String, timeout: TimeInterval = 10) -> Bool {
-        let byId = element(id: id, timeout: min(timeout, 4))
-        if byId.exists {
+        let byId = descendants(matching: .any).matching(identifier: id).firstMatch
+        if byId.waitForExistence(timeout: min(timeout, 4)) {
             if byId.isHittable {
                 byId.tap()
                 return true

@@ -36,7 +36,7 @@ final class FilesAssistantUITests: XCTestCase {
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 5)
         if history.exists {
-            history.tap()
+            XCTAssertTrue(app.tapFirst(id: UITestA11y.assistantHistory), "History tap")
             XCTAssertTrue(
                 app.staticTexts["Conversations Files"].waitForExistence(timeout: 5),
                 "History title Files"

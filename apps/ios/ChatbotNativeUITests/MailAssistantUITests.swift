@@ -42,7 +42,7 @@ final class MailAssistantUITests: XCTestCase {
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 4)
         if history.exists {
-            history.tap()
+            XCTAssertTrue(app.tapFirst(id: UITestA11y.assistantHistory))
             XCTAssertTrue(
                 app.staticTexts["Conversations Mail"].waitForExistence(timeout: 5),
                 "History title Mail"

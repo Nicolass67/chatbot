@@ -58,11 +58,13 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 content
-                ContextualAssistantButton(
-                    accessibilityId: A11yID.Files.assistant,
-                    accessibilityLabelText: "Assistant Files"
-                ) {
-                    openFilesAssistant(.global)
+                if path.isEmpty {
+                    ContextualAssistantButton(
+                        accessibilityId: A11yID.Files.assistant,
+                        accessibilityLabelText: "Assistant Files"
+                    ) {
+                        openFilesAssistant(.global)
+                    }
                 }
             }
             .navigationTitle("Files")

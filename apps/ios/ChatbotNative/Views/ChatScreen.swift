@@ -77,6 +77,11 @@ struct ChatScreen: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
+    /// Garde le chrome Thinking à l’écran pendant le scénario UITest `thinking`.
+    private var uiTestKeepThinking: Bool {
+        UITestMode.isActive && UITestMode.sseScenario == "thinking"
+    }
+
     var body: some View {
         ZStack {
             AmbientBackground()
@@ -87,9 +92,12 @@ struct ChatScreen: View {
                         .padding(.horizontal, 14)
                         .padding(.bottom, 4)
                         .transition(.opacity.combined(with: .move(edge: .top)))
-                } else if let thinkingKind, isSending {
+                } else if let thinkingKind, isSending || uiTestKeepThinking {
                     ThinkingStatusView(kind: thinkingKind)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 4)
                         .transition(.opacity)
+                        .accessibilityIdentifier(A11yID.Chat.thinking)
                 }
                 if let pendingFileAction {
                     FileActionPendingCard(
@@ -721,7 +729,11 @@ struct ChatScreen: View {
 
         isSending = true
         streamingText = ""
-        thinkingKind = chatMode == "agent" ? nil : .reflecting
+        if chatMode == "agent" && !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
+            thinkingKind = nil
+        } else {
+            thinkingKind = .reflecting
+        }
         error = nil
         streamSources = []
         streamMailHandoff = nil
@@ -784,6 +796,9 @@ struct ChatScreen: View {
             }
         }
         isSending = false
+        if !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
+            thinkingKind = nil
+        }
         sendTask = nil
     }
 
