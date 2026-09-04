@@ -107,7 +107,6 @@ struct FilesBrowserView: View {
             .navigationTitle("Files")
             .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Files.root)
-            .environment(selection)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if selection.isSelecting {
@@ -222,6 +221,9 @@ struct FilesBrowserView: View {
             }
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
+                    // NavigationDestination ne hérite pas toujours de l’environment du root —
+                    // sans ça `@Environment(FilesSelectionStore.self)` crash à l’ouverture d’un disque.
+                    .environment(selection)
             }
             .sheet(isPresented: $showAssistant) {
                 ContextualAssistantSheet(
@@ -263,6 +265,7 @@ struct FilesBrowserView: View {
                 Text(selectionError ?? "")
             }
         }
+        .environment(selection)
     }
 
     private func deleteSelectedFiles() async {
@@ -388,6 +391,7 @@ struct FilesBrowserView: View {
                     root: root,
                     path: folderPath,
                     title: title,
+                    selection: selection,
                     onOpenFolder: { entry in
                         path.append(
                             FilesDestination.folder(
@@ -660,10 +664,10 @@ struct FilesBrowserView: View {
 struct FileFolderView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
-    @Environment(FilesSelectionStore.self) private var selection
     let root: FileRootDTO
     let path: String
     let title: String
+    @Bindable var selection: FilesSelectionStore
     var onOpenFolder: (FileEntryDTO) -> Void
     var onOpenFile: (FileEntryDTO) -> Void
     var onReindex: (() -> Void)? = nil
