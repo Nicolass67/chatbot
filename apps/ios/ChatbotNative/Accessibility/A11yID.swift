@@ -101,5 +101,6 @@ enum A11yID {
     enum Settings {
         static let root = "settings.root"
         static let close = "settings.close"
+        static let appearance = "settings.appearance"
     }
 }

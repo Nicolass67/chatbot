@@ -3,14 +3,17 @@ import SwiftUI
 @main
 struct ChatbotNativeApp: App {
     @StateObject private var session = AppSessionStore()
+    @StateObject private var appearance = AppearanceStore()
     @State private var nav = AppNavigation()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(session)
+                .environmentObject(appearance)
                 .environment(nav)
                 .tint(AppTheme.accent)
+                .preferredColorScheme(appearance.mode.preferredColorScheme)
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }

@@ -6,6 +6,7 @@ struct SettingsView: View {
     var embedded: Bool = false
 
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var appearance: AppearanceStore
     @State private var webSearchEnabled = false
     @State private var statusNote: String?
     @State private var runtimeStatus: String = "…"
@@ -24,6 +25,17 @@ struct SettingsView: View {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
         return "\(short) (\(build))"
+    }
+
+    private var appearanceHint: String {
+        switch appearance.mode {
+        case .system:
+            return "Suit Réglages iOS → Affichage. Nocturne Ink s’adapte automatiquement."
+        case .light:
+            return "Thème clair forcé (indépendant du mode système)."
+        case .dark:
+            return "Thème sombre Nocturne Ink forcé (indépendant du mode système)."
+        }
     }
 
     /// Banner Fast QA (Info.plist `QAGitSHA` injecté par ios-native-qa.yml).
@@ -79,8 +91,15 @@ struct SettingsView: View {
                 .listRowBackground(AppTheme.surface)
 
                 Section {
-                    LabeledContent("Thème", value: "Système (clair / sombre)")
-                    Text("L’app suit Réglages iOS → Affichage. Nocturne Ink s’adapte automatiquement.")
+                    Picker("Thème", selection: $appearance.mode) {
+                        ForEach(AppAppearanceMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier(A11yID.Settings.appearance)
+                    .accessibilityLabel("Thème de l’app")
+                    Text(appearanceHint)
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.muted)
                 } header: {

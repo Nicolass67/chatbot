@@ -152,6 +152,7 @@ struct LoginView: View {
 
 struct MainTabView: View {
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var appearance: AppearanceStore
     @Environment(AppNavigation.self) private var nav
 
     var body: some View {
@@ -178,6 +179,7 @@ struct MainTabView: View {
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
                 .environmentObject(session)
+                .environmentObject(appearance)
                 .environment(nav)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
