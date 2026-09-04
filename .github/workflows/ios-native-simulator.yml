@@ -1,14 +1,33 @@
 name: iOS Native Fast Simulator
 
-# Fast Simulator QA — UI tests + PNG screenshots (no IPA).
+# Fast Simulator QA — UI tests + PNG (no IPA).
 # Orchestrated by: npm.cmd run ios:sim
+# TEST_PLAN: all | mail | chat | files | gate
 
 on:
   workflow_dispatch:
+    inputs:
+      test_plan:
+        description: "Suite ciblée (all|mail|chat|files|gate)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - mail
+          - chat
+          - files
+          - gate
   workflow_call:
+    inputs:
+      test_plan:
+        description: "Suite ciblée (all|mail|chat|files|gate)"
+        required: false
+        default: "all"
+        type: string
 
 concurrency:
-  group: ios-native-simulator-${{ github.ref }}
+  group: ios-native-simulator-${{ github.ref }}-${{ inputs.test_plan || 'all' }}
   cancel-in-progress: true
 
 permissions:
@@ -18,12 +37,13 @@ permissions:
 env:
   IOS_SIMULATOR_DEVICE: ${{ vars.IOS_SIMULATOR_DEVICE }}
   IOS_SIMULATOR_OS: ${{ vars.IOS_SIMULATOR_OS }}
+  TEST_PLAN: ${{ inputs.test_plan || 'all' }}
 
 jobs:
   simulator-ui:
-    name: Fast Simulator UI
+    name: Fast Simulator (${{ inputs.test_plan || 'all' }})
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -39,12 +59,12 @@ jobs:
             exit 1
           fi
           sudo xcode-select -s "$PIN/Contents/Developer"
-          xcodebuild -version
-          xcodebuild -version | grep -E 'Xcode 26\.6' || {
+          xcodebuild -version | tee /tmp/xcode-version.txt
+          grep -E 'Xcode 26\.6' /tmp/xcode-version.txt >/dev/null || {
             echo "::error::Expected Xcode 26.6 after pin"
             exit 1
           }
-          echo "XCODE_VERSION=$(xcodebuild -version | head -1)" >> "$GITHUB_ENV"
+          echo "XCODE_VERSION=$(head -1 /tmp/xcode-version.txt)" >> "$GITHUB_ENV"
 
       - name: Cache Homebrew XcodeGen
         uses: actions/cache@v4
@@ -53,10 +73,10 @@ jobs:
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar/xcodegen
             /opt/homebrew/bin/xcodegen
-          key: brew-xcodegen-sim-${{ runner.os }}-${{ hashFiles('.github/workflows/ios-native-simulator.yml') }}
+          key: brew-xcodegen-sim-v2-${{ runner.os }}
           restore-keys: |
+            brew-xcodegen-sim-v2-${{ runner.os }}
             brew-xcodegen-sim-${{ runner.os }}-
-            brew-xcodegen-${{ runner.os }}-
 
       - name: Install XcodeGen
         run: |
@@ -67,13 +87,14 @@ jobs:
             brew install xcodegen
           fi
 
-      - name: Cache DerivedData
+      # Cache app sources séparément des UITests → hit plus fréquent quand seuls les tests changent.
+      - name: Cache DerivedData (app)
         uses: actions/cache@v4
         with:
           path: apps/ios/derived-sim
-          key: ios-sim-derived-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift', 'apps/ios/ChatbotNativeUITests/**/*.swift') }}
+          key: ios-sim-dd-v2-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift') }}
           restore-keys: |
-            ios-sim-derived-${{ runner.os }}-
+            ios-sim-dd-v2-${{ runner.os }}-
 
       - name: Generate Xcode project
         working-directory: apps/ios
@@ -83,13 +104,11 @@ jobs:
         id: sim
         run: |
           set -euo pipefail
-          echo "## Simulator selection" >> "$GITHUB_STEP_SUMMARY"
-          xcrun simctl list runtimes | tee /tmp/runtimes.txt | head -n 40 >> "$GITHUB_STEP_SUMMARY" || true
-          xcrun simctl list devices available | tee /tmp/devices.txt >/dev/null
-
           PREFER_NAME="${IOS_SIMULATOR_DEVICE:-iPhone 17}"
           PREFER_OS="${IOS_SIMULATOR_OS:-}"
           export PREFER_NAME PREFER_OS
+          # Liste courte — pas de dump complet dans le summary.
+          xcrun simctl list devices available > /tmp/devices.txt
 
           SELECTED=$(python3 <<'PY'
           import os, re
@@ -129,29 +148,92 @@ jobs:
           UDID=$(echo "$SELECTED" | cut -d'|' -f1)
           SIM_OS=$(echo "$SELECTED" | cut -d'|' -f2)
           SIM_NAME=$(echo "$SELECTED" | cut -d'|' -f3-)
-
           echo "UDID=$UDID" >> "$GITHUB_ENV"
           echo "SIM_OS=$SIM_OS" >> "$GITHUB_ENV"
           echo "SIM_NAME=$SIM_NAME" >> "$GITHUB_ENV"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-
           {
+            echo "## Simulator"
+            echo "- Plan: \`${TEST_PLAN}\`"
+            echo "- Device: ${SIM_NAME} (iOS ${SIM_OS})"
             echo "- Xcode: ${XCODE_VERSION}"
-            echo "- Preferred name: ${PREFER_NAME}"
-            echo "- Device: ${SIM_NAME}"
-            echo "- iOS runtime: ${SIM_OS}"
-            echo "- UDID: ${UDID}"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Booting simulator $UDID..."
           xcrun simctl boot "$UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$UDID" -b || true
+          # -b bloque jusqu’au boot ; timeout implicite runner.
+          xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
+
+      - name: Map TEST_PLAN → xcodebuild -only-testing
+        id: plan
+        run: |
+          set -euo pipefail
+          PLAN="${TEST_PLAN:-all}"
+          ONLY=()
+          case "$PLAN" in
+            mail)
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
+              REQUIRED="mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png"
+              ;;
+            chat)
+              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatEmptyAndKeyboardScreenshots")
+              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatThinkingAndAgentScreenshots")
+              REQUIRED="chat-empty.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png"
+              ;;
+            files)
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
+              REQUIRED="files-root.png files-folder-documents.png files-nested.png"
+              ;;
+            gate)
+              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
+              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png"
+              ;;
+            all|*)
+              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
+              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png files-folder-documents.png files-nested.png"
+              ;;
+          esac
+          # shell array → env (newline-separated)
+          printf '%s\n' "${ONLY[@]}" > /tmp/only-testing.txt
+          echo "REQUIRED_SHOTS=${REQUIRED}" >> "$GITHUB_ENV"
+          {
+            echo "ONLY_TESTING<<EOF"
+            cat /tmp/only-testing.txt
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+          echo "Plan=$PLAN" >> "$GITHUB_STEP_SUMMARY"
+          echo "Required: $REQUIRED" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build for testing
+        id: build
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          BUILD_START=$(date +%s)
+          set +e
+          xcodebuild build-for-testing \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNativeUI \
+            -destination "id=${UDID}" \
+            -derivedDataPath derived-sim \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -quiet
+          BUILD_STATUS=$?
+          set -e
+          BUILD_END=$(date +%s)
+          echo "BUILD_SECONDS=$((BUILD_END - BUILD_START))" >> "$GITHUB_ENV"
+          echo "Build-for-testing: ${BUILD_SECONDS:-?}s (exit $BUILD_STATUS)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "::error::build-for-testing failed"
+            exit "$BUILD_STATUS"
+          fi
 
       - name: UI tests (Simulator)
         id: uitest
         working-directory: apps/ios
         env:
-          # TEST_RUNNER_* is forwarded into the XCTest host (prefix stripped).
           TEST_RUNNER_CHATBOT_SIM_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/simulator
           CHATBOT_SIM_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/simulator
         run: |
@@ -159,10 +241,13 @@ jobs:
           mkdir -p "${{ github.workspace }}/artifacts/simulator"
           RESULT_DIR="${RUNNER_TEMP}/ios-sim-results"
           mkdir -p "$RESULT_DIR"
-          BUILD_START=$(date +%s)
-
+          ONLY_ARGS=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && ONLY_ARGS+=("$line")
+          done < /tmp/only-testing.txt
+          TEST_START=$(date +%s)
           set +e
-          xcodebuild test \
+          xcodebuild test-without-building \
             -project ChatbotNative.xcodeproj \
             -scheme ChatbotNativeUI \
             -destination "id=${UDID}" \
@@ -171,38 +256,38 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            -only-testing:ChatbotNativeUITests/SimulatorMVPUITests \
-            -only-testing:ChatbotNativeUITests/MailReadabilityUITests \
+            "${ONLY_ARGS[@]}" \
             2>&1 | tee /tmp/xcodebuild-sim.log
           XC_STATUS=${PIPESTATUS[0]}
           set -e
-
-          BUILD_END=$(date +%s)
-          echo "UI_TEST_SECONDS=$((BUILD_END - BUILD_START))" >> "$GITHUB_ENV"
+          TEST_END=$(date +%s)
+          echo "UI_TEST_SECONDS=$((TEST_END - TEST_START))" >> "$GITHUB_ENV"
           echo "XC_STATUS=$XC_STATUS" >> "$GITHUB_ENV"
-          echo "UI step wall: $((BUILD_END - BUILD_START))s" >> "$GITHUB_STEP_SUMMARY"
+          echo "test-without-building: $((TEST_END - TEST_START))s" >> "$GITHUB_STEP_SUMMARY"
           if [ "$XC_STATUS" -ne 0 ]; then
             echo "::error::UI tests failed (exit $XC_STATUS)"
             exit "$XC_STATUS"
           fi
 
-      - name: Extract screenshots from xcresult (fallback)
+      - name: Collect + verify screenshots
         if: always()
         run: |
           set -euo pipefail
           DIR="${{ github.workspace }}/artifacts/simulator"
           mkdir -p "$DIR"
-          # Prefer TEST_RUNNER writes; also harvest /tmp mirror
           if [ -d /tmp/chatbot-sim-screenshots ]; then
             cp -f /tmp/chatbot-sim-screenshots/*.png "$DIR/" 2>/dev/null || true
           fi
+          # Fallback xcresult uniquement si PNG manquants (évite export coûteux).
+          NEED_EXPORT=0
+          for f in ${REQUIRED_SHOTS}; do
+            [ -f "$DIR/$f" ] || NEED_EXPORT=1
+          done
           RESULT="${RUNNER_TEMP}/ios-sim-results/ChatbotUI.xcresult"
-          if [ -d "$RESULT" ] && [ ! -f "$DIR/chat-empty.png" ]; then
-            echo "Exporting attachments from xcresult..."
+          if [ "$NEED_EXPORT" -eq 1 ] && [ -d "$RESULT" ]; then
             xcrun xcresulttool export attachments \
               --path "$RESULT" \
-              --output-path "$DIR/xcattachments" 2>/tmp/xcresult-export.txt || true
-            cat /tmp/xcresult-export.txt || true
+              --output-path "$DIR/xcattachments" 2>/dev/null || true
             if [ -d "$DIR/xcattachments" ]; then
               find "$DIR/xcattachments" -type f \( -name '*.png' -o -name '*.jpeg' \) | while read -r f; do
                 lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
@@ -215,6 +300,9 @@ jobs:
                   *mail-detail-text*) dest="mail-detail-text.png" ;;
                   *mail-summary*) dest="mail-summary.png" ;;
                   *files-root*) dest="files-root.png" ;;
+                  *files-folder-documents*) dest="files-folder-documents.png" ;;
+                  *files-nested*) dest="files-nested.png" ;;
+                  *files-back*) dest="files-back-to-root.png" ;;
                   *chat-composer*) dest="chat-composer.png" ;;
                   *chat-keyboard-dismissed*) dest="chat-keyboard-dismissed.png" ;;
                   *chat-thinking*) dest="chat-thinking.png" ;;
@@ -222,37 +310,14 @@ jobs:
                   *chat-agent-stopped*) dest="chat-agent-stopped.png" ;;
                   *chat-agent*) dest="chat-agent.png" ;;
                 esac
-                if [ -n "$dest" ]; then
-                  cp -f "$f" "$DIR/$dest"
-                else
-                  cp -f "$f" "$DIR/$(basename "$f")"
-                fi
+                if [ -n "$dest" ]; then cp -f "$f" "$DIR/$dest"; fi
               done
             fi
           fi
+          echo "## Screenshots (${TEST_PLAN})" >> "$GITHUB_STEP_SUMMARY"
           ls -la "$DIR" || true
-
-      - name: Verify required screenshots
-        id: shots
-        run: |
-          set -euo pipefail
-          DIR="${{ github.workspace }}/artifacts/simulator"
-          echo "## Screenshots" >> "$GITHUB_STEP_SUMMARY"
-          ls -la "$DIR" || true
-          REQUIRED=(
-            chat-empty.png
-            mail-inbox.png
-            mail-detail-html.png
-            mail-detail-text.png
-            mail-summary.png
-            files-root.png
-            chat-composer.png
-            chat-keyboard-dismissed.png
-            chat-thinking.png
-            chat-agent.png
-          )
           MISSING=0
-          for f in "${REQUIRED[@]}"; do
+          for f in ${REQUIRED_SHOTS}; do
             if [ -f "$DIR/$f" ]; then
               echo "- PASS $f ($(wc -c < "$DIR/$f") bytes)" >> "$GITHUB_STEP_SUMMARY"
             else
@@ -260,8 +325,9 @@ jobs:
               MISSING=1
             fi
           done
-          if [ "$MISSING" -ne 0 ]; then
-            echo "::error::Required screenshots missing"
+          # Ne fail verify que si les tests ont réussi (sinon artefact partiel OK).
+          if [ "${XC_STATUS:-1}" = "0" ] && [ "$MISSING" -ne 0 ]; then
+            echo "::error::Required screenshots missing for plan=${TEST_PLAN}"
             exit 1
           fi
           meta="${DIR}/sim-meta.json"
@@ -269,23 +335,22 @@ jobs:
           {
             "git_sha": "${GITHUB_SHA}",
             "run_id": "${GITHUB_RUN_ID}",
+            "test_plan": "${TEST_PLAN}",
             "xcode": "${XCODE_VERSION}",
             "device": "${SIM_NAME}",
             "ios": "${SIM_OS}",
             "udid": "${UDID}",
+            "build_seconds": ${BUILD_SECONDS:-0},
             "ui_test_seconds": ${UI_TEST_SECONDS:-0},
             "workflow": "simulator"
           }
           EOF
-          cat "$meta" >> "$GITHUB_STEP_SUMMARY"
           {
             echo ""
-            echo "## Result"
-            echo "SIMULATOR: PASS"
-            echo "BUILD+UI TEST: PASS (${UI_TEST_SECONDS:-?}s)"
-            echo "SCREENSHOTS: PASS"
-            echo "Device: ${SIM_NAME} / iOS ${SIM_OS}"
-            echo "Xcode: ${XCODE_VERSION}"
+            echo "## Timing"
+            echo "- build-for-testing: ${BUILD_SECONDS:-?}s"
+            echo "- test-without-building: ${UI_TEST_SECONDS:-?}s"
+            echo "- plan: ${TEST_PLAN}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload simulator screenshots
@@ -297,11 +362,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload xcresult
-        if: always()
+      # xcresult ~80MB — uniquement en échec (diagnostic).
+      - name: Upload xcresult (failure only)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: simulator-xcresult
           path: ${{ runner.temp }}/ios-sim-results
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7

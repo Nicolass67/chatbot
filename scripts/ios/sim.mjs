@@ -1,7 +1,10 @@
 ﻿#!/usr/bin/env node
 /**
  * Fast Simulator orchestrator (Windows → GHA macos-26 → PNG download).
- * Usage: npm.cmd run ios:sim
+ * Usage:
+ *   npm.cmd run ios:sim
+ *   IOS_SIM_TEST_PLAN=mail npm.cmd run ios:sim
+ *   IOS_SIM_TEST_PLAN=chat|files|gate|all
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -14,6 +17,50 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const REPO = resolveGhRepo(ROOT);
 const WORKFLOW = "iOS Native Fast Simulator";
 const ARTIFACT = "simulator-screenshots";
+
+const PLAN = (() => {
+  const arg = process.argv.find((a) => a.startsWith("--plan="));
+  if (arg) return arg.slice("--plan=".length).trim().toLowerCase();
+  return (process.env.IOS_SIM_TEST_PLAN || "all").trim().toLowerCase();
+})();
+
+const REQUIRED_BY_PLAN = {
+  mail: ["mail-inbox.png", "mail-detail-html.png", "mail-detail-text.png", "mail-summary.png"],
+  chat: [
+    "chat-empty.png",
+    "chat-composer.png",
+    "chat-keyboard-dismissed.png",
+    "chat-thinking.png",
+    "chat-agent.png",
+  ],
+  files: ["files-root.png", "files-folder-documents.png", "files-nested.png"],
+  gate: [
+    "chat-empty.png",
+    "mail-inbox.png",
+    "mail-detail-html.png",
+    "mail-detail-text.png",
+    "mail-summary.png",
+    "files-root.png",
+    "chat-composer.png",
+    "chat-keyboard-dismissed.png",
+    "chat-thinking.png",
+    "chat-agent.png",
+  ],
+  all: [
+    "chat-empty.png",
+    "mail-inbox.png",
+    "mail-detail-html.png",
+    "mail-detail-text.png",
+    "mail-summary.png",
+    "files-root.png",
+    "chat-composer.png",
+    "chat-keyboard-dismissed.png",
+    "chat-thinking.png",
+    "chat-agent.png",
+    "files-folder-documents.png",
+    "files-nested.png",
+  ],
+};
 
 function sh(cmd, args, opts = {}) {
   return spawnSync(cmd, args, { encoding: "utf8", cwd: ROOT, shell: false, ...opts });
@@ -43,7 +90,7 @@ function gitBranch() {
 function findRunId(sha) {
   const r = shOk("gh", [
     "run", "list", "--repo", REPO, "--workflow", WORKFLOW, "--limit", "15",
-    "--json", "databaseId,headSha,status,conclusion,url",
+    "--json", "databaseId,headSha,status,conclusion,url,displayTitle",
   ]);
   const runs = JSON.parse(r.stdout || "[]");
   const match = runs.find((x) => x.headSha === sha);
@@ -92,10 +139,14 @@ function main() {
   }
   fs.mkdirSync(dest, { recursive: true });
 
+  const plan = REQUIRED_BY_PLAN[PLAN] ? PLAN : "all";
+  const required = REQUIRED_BY_PLAN[plan];
+
   console.log("FAST SIMULATOR");
   console.log("──────────────");
   console.log(`Branch: ${branch}`);
   console.log(`SHA: ${sha}`);
+  console.log(`Plan: ${plan}`);
   console.log(`Artifacts: ${dest}`);
   console.log("");
 
@@ -126,7 +177,10 @@ function main() {
   }
 
   console.log("[1/4] Dispatch workflow…");
-  shOk("gh", ["workflow", "run", WORKFLOW, "--repo", REPO, "--ref", branch]);
+  shOk("gh", [
+    "workflow", "run", WORKFLOW, "--repo", REPO, "--ref", branch,
+    "-f", `test_plan=${plan}`,
+  ]);
   sleep(5000);
 
   let run = null;
@@ -151,19 +205,7 @@ function main() {
   downloadArtifact(run.databaseId, dest);
   const dlMs = Date.now() - dl0;
 
-  const required = [
-    "chat-empty.png",
-    "mail-inbox.png",
-    "mail-detail-html.png",
-    "mail-detail-text.png",
-    "mail-summary.png",
-    "files-root.png",
-    "chat-composer.png",
-    "chat-keyboard-dismissed.png",
-    "chat-thinking.png",
-    "chat-agent.png",
-  ];
-  console.log("[4/4] Verify PNG…");
+  console.log(`[4/4] Verify PNG (plan=${plan})…`);
   const missing = [];
   for (const f of required) {
     const p = path.join(dest, f);
@@ -181,6 +223,7 @@ function main() {
   console.log("");
   console.log(`SIMULATOR: ${missing.length ? "FAIL" : "PASS"}`);
   console.log(`SHA: ${short}`);
+  console.log(`Plan: ${plan}`);
   console.log(`Watch+CI: ~${Math.round(watchMs / 1000)}s`);
   console.log(`Download: ~${Math.round(dlMs / 1000)}s`);
   console.log(`Total: ~${Math.round((Date.now() - t0) / 1000)}s`);

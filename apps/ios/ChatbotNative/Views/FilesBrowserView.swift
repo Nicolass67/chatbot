@@ -439,6 +439,7 @@ struct FileFolderView: View {
                         .font(.caption2)
                         .foregroundStyle(AppTheme.mutedForeground)
                         .lineLimit(1)
+                        .accessibilityIdentifier(A11yID.Files.breadcrumb)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {

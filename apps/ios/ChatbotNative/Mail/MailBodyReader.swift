@@ -208,12 +208,28 @@ struct MailAttachmentRow: View {
 struct MailSummaryBlock: View {
     let text: String
 
+    /// Évite le double titre « Résumé » (caption UI + heading Markdown).
+    private var bodyMarkdown: String {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let regex = try? NSRegularExpression(
+            pattern: #"^#{1,6}\s*Résumé\s*\r?\n+"#,
+            options: [.caseInsensitive]
+        ) {
+            t = regex.stringByReplacingMatches(
+                in: t,
+                range: NSRange(t.startIndex..., in: t),
+                withTemplate: ""
+            )
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
             Text("Résumé")
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.accent)
-            MarkdownMessageView(markdown: text)
+            MarkdownMessageView(markdown: bodyMarkdown)
                 .foregroundStyle(AppTheme.foreground)
         }
         .padding(14)
