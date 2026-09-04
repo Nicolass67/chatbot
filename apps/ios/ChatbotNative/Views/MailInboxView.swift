@@ -170,6 +170,24 @@ struct MailInboxView: View {
         return items.filter { $0.isUnread == true }
     }
 
+    /// Combine catégorie (Envoyés, etc.) + Non lus + recherche — sans écraser la catégorie.
+    private func mailListQuery(searchText: String) -> String? {
+        var parts: [String] = []
+        if unreadOnly {
+            parts.append("is:unread")
+            // Catégorie inbox = label INBOX sans query : garder le scope boîte.
+            if category == "inbox" {
+                parts.append("in:inbox")
+            }
+        }
+        let s = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !s.isEmpty {
+            parts.append(s)
+        }
+        let joined = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
     private func goPreviousPage() {
         loadTask?.cancel()
         loadTask = Task {
@@ -351,11 +369,11 @@ struct MailInboxView: View {
 
             HStack(spacing: 10) {
                 Picker("Filtre", selection: $unreadOnly) {
-                    Text("Boîte").tag(false)
+                    Text("Tous").tag(false)
                     Text("Non lus").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .accessibilityLabel("Filtre boîte ou non lus")
+                .accessibilityLabel("Tous les mails ou non lus seulement")
 
                 Menu {
                     Section("Catégorie") {
@@ -555,14 +573,15 @@ struct MailInboxView: View {
             }
         }
 
-        let cat = unreadOnly ? "unread" : category
+        let cat = category
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let listQuery = mailListQuery(searchText: q)
 
         do {
             if activeSort == .newest {
                 let page = try await listMailWithRetry(
                     category: cat,
-                    query: q.isEmpty ? nil : q,
+                    query: listQuery,
                     pageToken: pageToken
                 )
                 guard gen == loadGeneration, !Task.isCancelled else { return }
@@ -589,7 +608,7 @@ struct MailInboxView: View {
                 while collected.count < sortWindowMax {
                     let page = try await listMailWithRetry(
                         category: cat,
-                        query: q.isEmpty ? nil : q,
+                        query: listQuery,
                         pageToken: token
                     )
                     guard gen == loadGeneration, !Task.isCancelled else { return }
