@@ -458,6 +458,8 @@ struct MailSummaryBlock: View {
 }
 
 struct MailDraftProposal: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     @Binding var draftText: String
     var draftId: String?
     var toLabel: String = ""
@@ -474,23 +476,32 @@ struct MailDraftProposal: View {
     var onAttach: (() -> Void)? = nil
     var onDiscard: (() -> Void)? = nil
 
+    private var sendDisabled: Bool {
+        busy || isStreaming
+            || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || draftId == nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
-            HStack {
+            HStack(spacing: AppTheme.space8) {
                 Text(statusLabel)
                     .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mailAccent)
-                Spacer()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(AppTheme.mailAccent.opacity(0.14), in: Capsule())
+                Spacer(minLength: 0)
                 if let onDiscard {
                     Button {
                         AppHaptics.warning()
                         onDiscard()
                     } label: {
                         Image(systemName: "trash")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(AppTheme.danger)
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
+                            .frame(width: 36, height: 36)
+                            .background(AppTheme.danger.opacity(0.12), in: Circle())
                     }
                     .buttonStyle(.plain)
                     .disabled(busy || isStreaming)
@@ -504,9 +515,9 @@ struct MailDraftProposal: View {
             }
 
             if !toLabel.isEmpty || !subjectLabel.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     if !toLabel.isEmpty {
-                        Label(toLabel, systemImage: "person")
+                        Label(toLabel, systemImage: "person.fill")
                             .font(CNFont.caption)
                             .foregroundStyle(AppTheme.muted)
                     }
@@ -541,11 +552,11 @@ struct MailDraftProposal: View {
                     .frame(minHeight: 160)
                     .padding(AppTheme.space12)
                     .scrollContentBackground(.hidden)
-                    .background(AppTheme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .background(AppTheme.surface.opacity(0.55))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                            .stroke(AppTheme.glassBorder, lineWidth: 1)
                     )
                     .foregroundStyle(AppTheme.foreground)
                     .accessibilityLabel("Éditeur de brouillon")
@@ -557,95 +568,122 @@ struct MailDraftProposal: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(AppTheme.space12)
-                    .background(AppTheme.surface.opacity(0.7))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .background(AppTheme.surface.opacity(0.45))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
             }
 
-            // Actions : secondaires discrètes + Envoyer principal.
-            VStack(spacing: AppTheme.space10) {
-                HStack(spacing: AppTheme.space8) {
-                    draftSecondaryButton(
-                        title: isEditing ? "OK" : "Modifier",
-                        systemImage: isEditing ? "checkmark" : "pencil",
-                        disabled: isStreaming,
-                        action: onEditToggle
-                    )
-                    .accessibilityIdentifier(A11yID.Mail.draftEdit)
+            // Actions secondaires — capsules Liquid Glass (iOS 26).
+            HStack(spacing: AppTheme.space8) {
+                draftGlassChip(
+                    title: isEditing ? "OK" : "Modifier",
+                    systemImage: isEditing ? "checkmark" : "pencil",
+                    disabled: isStreaming,
+                    action: onEditToggle
+                )
+                .accessibilityIdentifier(A11yID.Mail.draftEdit)
 
-                    if let onAttach {
-                        draftSecondaryButton(
-                            title: "Joindre",
-                            systemImage: "paperclip",
-                            disabled: busy || isStreaming,
-                            action: onAttach
-                        )
-                    }
-
-                    draftSecondaryButton(
-                        title: "Réécrire",
-                        systemImage: "arrow.clockwise",
+                if let onAttach {
+                    draftGlassChip(
+                        title: "Joindre",
+                        systemImage: "paperclip",
                         disabled: busy || isStreaming,
-                        action: onRetry
+                        action: onAttach
                     )
-                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
                 }
 
-                Button {
-                    AppHaptics.medium()
-                    onSend()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("Envoyer")
-                            .font(CNFont.callout.weight(.semibold))
-                    }
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 48)
-                    .background(
-                        (busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-                            ? Color(red: 0.23, green: 0.51, blue: 0.96).opacity(0.4)
-                            : Color(red: 0.23, green: 0.51, blue: 0.96),
-                        in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-                .accessibilityIdentifier(A11yID.Mail.send)
+                draftGlassChip(
+                    title: "Réécrire",
+                    systemImage: "arrow.triangle.2.circlepath",
+                    disabled: busy || isStreaming,
+                    action: onRetry
+                )
+                .accessibilityIdentifier(A11yID.Mail.draftRetry)
             }
+
+            Button {
+                AppHaptics.medium()
+                onSend()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("Envoyer")
+                        .font(CNFont.callout.weight(.semibold))
+                }
+                .foregroundStyle(sendDisabled ? AppTheme.muted : AppTheme.accentForeground)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 48)
+                .background {
+                    let shape = Capsule(style: .continuous)
+                    if reduceTransparency || sendDisabled {
+                        shape.fill(AppTheme.mailAccent.opacity(sendDisabled ? 0.32 : 0.92))
+                    } else {
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassEffect(
+                                .regular.tint(AppTheme.mailAccent.opacity(0.65)),
+                                in: shape
+                            )
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(sendDisabled)
+            .accessibilityIdentifier(A11yID.Mail.send)
         }
         .padding(AppTheme.space14)
-        .background(AppTheme.surfaceElevated.opacity(0.9))
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous)
+            if reduceTransparency {
+                shape.fill(AppTheme.surfaceElevated)
+            } else {
+                Color.clear
+                    .glassEffect(
+                        .regular.tint(AppTheme.mailAccent.opacity(0.06)),
+                        in: shape
+                    )
+            }
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous)
+                .stroke(AppTheme.glassBorder, lineWidth: 1)
         )
         .accessibilityIdentifier(A11yID.Mail.draft)
     }
 
-    private func draftSecondaryButton(
+    private func draftGlassChip(
         title: String,
         systemImage: String,
         disabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                 Text(title)
-                    .font(CNFont.caption2.weight(.medium))
+                    .font(CNFont.caption.weight(.semibold))
                     .lineLimit(1)
             }
             .foregroundStyle(disabled ? AppTheme.muted : AppTheme.foreground)
+            .padding(.horizontal, 12)
             .frame(maxWidth: .infinity)
-            .frame(minHeight: 52)
-            .background(AppTheme.surface.opacity(0.9), in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+            .frame(minHeight: 40)
+            .background {
+                let shape = Capsule(style: .continuous)
+                if reduceTransparency {
+                    shape.fill(AppTheme.surface.opacity(0.9))
+                } else {
+                    Color.clear
+                        .glassEffect(
+                            .regular.tint(AppTheme.surface.opacity(0.28)),
+                            in: shape
+                        )
+                }
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                Capsule(style: .continuous)
+                    .stroke(AppTheme.glassBorder, lineWidth: 0.8)
             )
         }
         .buttonStyle(.plain)

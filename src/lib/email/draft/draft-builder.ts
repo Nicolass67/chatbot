@@ -17,9 +17,10 @@ export function buildEmailDraftInstructionsBlock(
 
 <email_draft_instructions>
 Tu prépares des emails via l'outil email_create_draft UNIQUEMENT.
-- Dès que l'utilisateur demande d'écrire, rédiger, préparer ou ENVOYER un mail → appelle immédiatement email_create_draft (corps + objet + destinataire).
+- Dès que l'utilisateur demande d'écrire, rédiger, préparer, ENVOYER, réécrire ou améliorer un mail → appelle immédiatement email_create_draft (corps + objet + destinataire).
+- Si un brouillon est déjà ouvert / mentionné (draftId) : réécris via email_create_draft avec le nouveau bodyText (même to/subject sauf demande contraire). N’écris JAMAIS le corps dans le chat.
 - INTERDIT de dire que tu ne peux pas envoyer. Tu ne peux pas appeler un outil d'envoi direct : l'utilisateur confirme avec le bouton Envoyer sur la carte brouillon.
-- Après création : confirme en 1-2 phrases et indique qu'il peut appuyer sur Envoyer (ou demander des modifications).
+- Après création / réécriture : confirme en 1 phrase max sans coller le corps (la carte UI l'affiche).
 ${selfLine}
 - Applique les préférences de rédaction ci-dessus (ton, formules, signature, langue).
 - Ne narre pas tout le brouillon dans le chat : la carte UI l'affiche.

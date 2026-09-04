@@ -85,6 +85,9 @@ struct ChatScreen: View {
     @State private var streamingService = ChatStreamingService()
     /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
     @State private var suppressAssistantNarration = false
+    /// Bouton Réécrire / Améliorer : le résultat doit aller dans la carte, pas le chat.
+    @State private var awaitingDraftRewrite = false
+    @State private var draftPreviewReceivedThisTurn = false
     @State private var settingsHydrated = false
 
     struct PendingFileAction: Identifiable, Equatable {
@@ -381,7 +384,7 @@ struct ChatScreen: View {
                                 .id("agent-live")
                                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
-                        if !streamingText.isEmpty && streamingAssistantId == nil {
+                        if !streamingText.isEmpty && streamingAssistantId == nil && !awaitingDraftRewrite {
                             MessageBubble(
                                 message: MessageDTO(
                                     id: "streaming",
@@ -462,7 +465,7 @@ struct ChatScreen: View {
                                 },
                                 onEditToggle: { draftCardEditing.toggle() },
                                 onRetry: {
-                                    Task { await send(forcedText: "Réécris le brouillon de façon plus claire.", hideUserMessage: true) }
+                                    Task { await rewriteOpenDraft() }
                                 },
                                 onSend: {
                                     Task { await sendDraftCard() }
@@ -618,10 +621,7 @@ struct ChatScreen: View {
         if draftCardId != nil {
             switch action {
             case .improve:
-                await send(
-                    forcedText: "Améliore le brouillon en cours via les outils mail (sans narrer le contenu).",
-                    hideUserMessage: true
-                )
+                await rewriteOpenDraft()
                 return
             case .extractTasks:
                 showDocImporter = true
@@ -664,6 +664,21 @@ struct ChatScreen: View {
             prompt = "Améliore le brouillon en cours pour le rendre plus clair et professionnel via les outils mail."
         }
         await send(forcedText: prompt, hideUserMessage: true)
+    }
+
+    /// Réécrit le brouillon ouvert → met à jour la carte (pas une bulle chat).
+    private func rewriteOpenDraft() async {
+        guard draftCardId != nil, !isSending else { return }
+        await send(
+            forcedText: """
+            Réécris le corps de CE brouillon email de façon plus claire et naturelle.
+            Conserve le même destinataire et le même objet.
+            Appelle immédiatement l’outil email_create_draft avec to, subject et le nouveau bodyText.
+            INTERDIT d’écrire le corps du mail dans le chat — la carte brouillon l’affiche.
+            """,
+            hideUserMessage: true,
+            rewriteDraftCard: true
+        )
     }
 
     private func runMailSummarizeProduct(threadId: String) async {
@@ -947,8 +962,67 @@ struct ChatScreen: View {
         draftCardEditing = false
         draftCardStreaming = false
         draftInConversation = false
+        awaitingDraftRewrite = false
+        draftPreviewReceivedThisTurn = false
         draftCardStatus = "Brouillon"
         AppHaptics.light()
+    }
+
+    /// Après « Réécrire » : si l’outil a mis à jour la carte, OK ; sinon appliquer le texte streamé via PATCH.
+    private func finishDraftRewriteIfNeeded(appliedViaPreview: Bool, fallbackText: String) async {
+        guard awaitingDraftRewrite else { return }
+        defer {
+            awaitingDraftRewrite = false
+            draftCardStreaming = false
+            draftCardStatus = "Brouillon"
+            suppressAssistantNarration = false
+        }
+        if appliedViaPreview {
+            AppHaptics.success()
+            return
+        }
+        let body = Self.extractRewrittenDraftBody(from: fallbackText)
+        guard !body.isEmpty, let draftId = draftCardId else {
+            draftCardStatus = "Brouillon"
+            return
+        }
+        draftCardText = body
+        do {
+            try await client.updateEmailDraft(id: draftId, bodyText: body)
+            AppHaptics.success()
+        } catch {
+            // Carte déjà mise à jour localement — l’envoi pourra resync.
+            AppHaptics.warning()
+        }
+    }
+
+    /// Retire les enveloppes « Objet / Corps » si le modèle a narré au lieu d’appeler l’outil.
+    private static func extractRewrittenDraftBody(from raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+        let markers = ["Corps du message", "Corps :", "Corps:", "**Corps"]
+        for marker in markers {
+            if let r = t.range(of: marker, options: .caseInsensitive) {
+                t = String(t[r.upperBound...])
+                if t.hasPrefix("**") { t = String(t.dropFirst(2)) }
+                if t.hasPrefix(":") { t = String(t.dropFirst()) }
+                t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+        // Drop leading Objet line if present.
+        let lines = t.components(separatedBy: .newlines)
+        if let first = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+           first.lowercased().hasPrefix("objet") {
+            t = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Ignore meta refusals without a real body.
+        let lower = t.lowercased()
+        if t.count < 40,
+           lower.contains("limite") || lower.contains("ne peux pas") || lower.contains("outil") {
+            return ""
+        }
+        return t
     }
 
     private var composer: some View {
@@ -1629,19 +1703,21 @@ struct ChatScreen: View {
         await send(options: ChatSendOptions(regenerate: true, mode: chatMode))
     }
 
-    private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false) async {
+    private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false, rewriteDraftCard: Bool = false) async {
         let rawText = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
         guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
 
-        // Texte API : enrichi si un brouillon est ouvert (contexte pour « moins formel », etc.).
+        // Texte API : enrichi si un brouillon est ouvert (contexte pour peaufiner / réécrire).
         var text = rawText
-        if forcedText == nil,
-           let draftId = draftCardId,
+        if let draftId = draftCardId,
            !draftId.isEmpty,
            !rawText.isEmpty {
             let bodySnippet = String(draftCardText.prefix(2500))
+            let rewriteRule = rewriteDraftCard
+                ? "RÉÉCRITURE : appelle email_create_draft avec le même destinataire/objet et un bodyText réécrit. INTERDIT de coller le corps dans le chat."
+                : "Réécris et mets à jour CE brouillon selon la demande (outil email_create_draft / draft_preview). Ne crée pas un fil séparé. Ne pose pas de question — applique directement le changement."
             text = """
             Brouillon email ouvert (draftId=\(draftId)).
             Destinataire: \(draftCardTo.isEmpty ? "(inconnu)" : draftCardTo)
@@ -1651,7 +1727,7 @@ struct ChatScreen: View {
 
             Demande de l’utilisateur: \(rawText)
 
-            Réécris et mets à jour CE brouillon selon la demande (outil mail / draft_preview). Ne crée pas un nouveau brouillon. Ne pose pas de question — applique directement le changement de ton/contenu.
+            \(rewriteRule)
             """
         }
 
@@ -1675,7 +1751,14 @@ struct ChatScreen: View {
             opts.activeContext = ctx
         }
 
-        suppressAssistantNarration = false
+        awaitingDraftRewrite = rewriteDraftCard
+        draftPreviewReceivedThisTurn = false
+        suppressAssistantNarration = rewriteDraftCard
+        if rewriteDraftCard {
+            draftCardStreaming = true
+            draftCardStatus = "Réécriture…"
+            draftCardEditing = false
+        }
 
         var immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
         let lower = rawText.lowercased()
@@ -1684,8 +1767,8 @@ struct ChatScreen: View {
         let inMailFlow = draftCardId != nil
             || forcedActiveContext?.mailThreadId != nil
             || (forcedActiveContext?.label?.localizedCaseInsensitiveContains("mail") == true)
-        if draftCardId != nil, forcedText == nil {
-            immediateThinking = .custom("Amélioration du brouillon…")
+        if draftCardId != nil {
+            immediateThinking = .custom(rewriteDraftCard ? "Réécriture du brouillon…" : "Amélioration du brouillon…")
         } else if inMailFlow, Self.containsMailRecipientPhrase(lower) {
             immediateThinking = .custom("Recherche du destinataire…")
         } else if inMailFlow,
@@ -1775,6 +1858,7 @@ struct ChatScreen: View {
                 thinkingKind = nil
                 isSending = false
                 sendTask = nil
+                await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
                 return
             }
             lastSources = streamSources
@@ -1788,8 +1872,10 @@ struct ChatScreen: View {
             let finalMail = streamMailHandoff
             let finalFiles = streamFilesHandoff
             let promoteId = streamingAssistantId ?? "asst-\(UUID().uuidString)"
+            let skipPromoteNarration = awaitingDraftRewrite || (suppressAssistantNarration && draftPreviewReceivedThisTurn)
             // Promote in-place AVANT clear/reload — évite le trou « disparaît puis réapparaît ».
-            if !finalText.isEmpty || !finalFound.isEmpty || finalMail != nil || finalFiles != nil || !finalSources.isEmpty {
+            if !skipPromoteNarration,
+               !finalText.isEmpty || !finalFound.isEmpty || finalMail != nil || finalFiles != nil || !finalSources.isEmpty {
                 if let idx = messages.firstIndex(where: { $0.id == promoteId }) {
                     messages[idx] = MessageDTO(
                         id: promoteId,
@@ -1798,7 +1884,7 @@ struct ChatScreen: View {
                         createdAt: messages[idx].createdAt,
                         attachments: messages[idx].attachments
                     )
-                } else {
+                } else if !finalText.isEmpty || !finalFound.isEmpty {
                     messages.append(
                         MessageDTO(id: promoteId, role: "assistant", content: finalText, createdAt: nil)
                     )
@@ -1815,11 +1901,14 @@ struct ChatScreen: View {
                     messageId: promoteId
                 )
             }
+            let rewriteFallback = finalText
+            let rewriteHadPreview = draftPreviewReceivedThisTurn
             streamingText = ""
             streamFilesFound = []
             streamSources = []
             streamMailHandoff = nil
             streamFilesHandoff = nil
+            await finishDraftRewriteIfNeeded(appliedViaPreview: rewriteHadPreview, fallbackText: rewriteFallback)
             suppressAssistantNarration = false
             // Toujours dédupliquer les cartes fichiers (asst-* + id serveur).
             if !finalFound.isEmpty {
@@ -1828,7 +1917,9 @@ struct ChatScreen: View {
                     keepId: promoteId
                 )
             }
-            dedupeTrailingAssistant(matching: finalText, preferId: promoteId)
+            if !skipPromoteNarration {
+                dedupeTrailingAssistant(matching: finalText, preferId: promoteId)
+            }
             // ID serveur déjà stable (assistant_start) : sync soft sans remplacer l’identité ForEach.
             if streamingAssistantId != nil {
                 streamingAssistantId = nil
@@ -1836,7 +1927,7 @@ struct ChatScreen: View {
                 Task {
                     contextSnapshot = try? await client.conversationContext(conversationId: conversation.id)
                 }
-            } else {
+            } else if !skipPromoteNarration {
                 await loadMessages(preserveAssistantId: promoteId)
                 if !finalFound.isEmpty {
                     dedupeAssistantMessagesSharing(
@@ -1862,10 +1953,14 @@ struct ChatScreen: View {
                     )
                 }
                 scrollToken += 1
+            } else {
+                streamingAssistantId = nil
+                scrollToken += 1
             }
         } catch is CancellationError {
             thinkingKind = nil
             runtimeStatus = "READY"
+            await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
         } catch {
             thinkingKind = nil
             if agentActivity.visible {
@@ -1878,6 +1973,7 @@ struct ChatScreen: View {
             }
             if Self.isUserCancellation(error) {
                 runtimeStatus = "READY"
+                await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
             } else {
                 self.error = friendlyChatSendError(error)
                 canRetrySend = true
@@ -1888,6 +1984,7 @@ struct ChatScreen: View {
                 if runtimeStatus.uppercased() == "BUSY" {
                     runtimeStatus = "READY"
                 }
+                await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
             }
         }
         isSending = false
@@ -2038,6 +2135,11 @@ struct ChatScreen: View {
         case "token":
             if let c = obj["content"] as? String {
                 streamingText += c
+                // Réécriture brouillon : accumuler pour fallback, ne pas afficher dans le fil.
+                if awaitingDraftRewrite || suppressAssistantNarration {
+                    thinkingKind = nil
+                    break
+                }
                 if let id = streamingAssistantId,
                    let idx = messages.firstIndex(where: { $0.id == id }) {
                     let prev = messages[idx]
@@ -2343,6 +2445,7 @@ struct ChatScreen: View {
                     draftCardStatus = "Brouillon"
                     draftInConversation = true
                     draftCardStreaming = false
+                    draftPreviewReceivedThisTurn = true
                     suppressAssistantNarration = true
                     streamingText = ""
                     draftCardEditing = false
