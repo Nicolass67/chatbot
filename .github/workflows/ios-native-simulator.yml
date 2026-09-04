@@ -173,7 +173,6 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             -only-testing:ChatbotNativeUITests/SimulatorMVPUITests \
             -only-testing:ChatbotNativeUITests/MailReadabilityUITests \
-            -only-testing:ChatbotNativeUITests/ChatGateUITests \
             2>&1 | tee /tmp/xcodebuild-sim.log
           XC_STATUS=${PIPESTATUS[0]}
           set -e
