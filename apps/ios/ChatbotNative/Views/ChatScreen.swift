@@ -2571,13 +2571,19 @@ struct PendingAttachmentCard: View {
                     }
                 }
 
+                // Croix inset (pas d’offset hors bounds) — sinon clipShape du parent la coupe,
+                // surtout sur les previews image (Files → Mail).
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .black.opacity(0.65))
-                        .font(.system(size: 18))
+                        .foregroundStyle(.white, Color.black.opacity(0.72))
+                        .font(.system(size: 20, weight: .semibold))
+                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                 }
-                .offset(x: 4, y: -4)
+                .buttonStyle(.plain)
+                .padding(6)
+                .zIndex(2)
+                .accessibilityLabel("Retirer \(attachment.filename)")
             }
 
             Text(attachment.filename)
@@ -2591,8 +2597,10 @@ struct PendingAttachmentCard: View {
         }
         .padding(8)
         .frame(width: 120, alignment: .leading)
-        .background(AppTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .fill(AppTheme.surface)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
