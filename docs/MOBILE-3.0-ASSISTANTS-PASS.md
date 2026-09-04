@@ -4,17 +4,24 @@ Date : 2026-09-03 (maj 2026-09-04)
 Plan : assistants contextuels (Chat · Mail · Files)  
 Build cible : 3.0.0 (**build 25** = P2–P4 Chat)
 
-## Boucle Fast Simulator (règle — vitesse)
+## Boucle Fast Simulator (règle — CI = EXCEPTION)
 
-**Priorité = volume de mods de qualité / temps**, pas le nombre de CI vertes.
+**Par défaut : NE PAS lancer de CI.**
 
-1. Gros lot local (plusieurs écrans / phases)  
-2. Tests locaux rapides (`privacy:scan`, vitest ciblé)  
-3. Inspection screenshots **déjà téléchargés**  
-4. **UNE** CI (`IOS_SIM_TEST_PLAN=mail|chat|files|gate|all`)  
-5. Analyser **tous** les PNG + logs → corriger en batch → CI ciblée seulement si besoin
+Boucle principale :
 
-Ne pas lancer de CI pour une micro-fix cosmétique.
+```
+CODE → tests locaux (privacy, contracts ciblés) → inspection screenshots existants
+→ gros lot → commit → push → continuer
+```
+
+`npm.cmd run ios:sim` **ne dispatch plus** sauf :
+
+```
+IOS_SIM_DISPATCH=1 IOS_SIM_TEST_PLAN=gate npm.cmd run ios:sim
+```
+
+CI autorisée uniquement si validation Simulator / workflow / lot final / IPA autrement impossible.
 
 ### Plans Simulator
 
@@ -71,7 +78,7 @@ Puis P5…P17
 | P5 Scope | done (DB + API + client) |
 | P6–P7 Assistants | done (FAB + sheet) |
 | P8 Harden | baseline P1b |
-| P9 Send | done (validate → propose → confirm) |
+| P9 Send | done + UITest `MailDraftUITests` (Modifier/Envoyer stubs) |
 | P10–P17 | partiel |
 
 ## Note Contracts CI

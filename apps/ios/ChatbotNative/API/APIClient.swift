@@ -563,6 +563,12 @@ final class APIClient: @unchecked Sendable {
     }
 
     func proposeEmailSend(draftId: String) async throws -> EmailSendProposal {
+        if UITestMode.isActive {
+            return EmailSendProposal(
+                actionId: "uitest-send-action",
+                confirmationToken: "uitest-confirm-token"
+            )
+        }
         var req = authorizedRequest(path: "api/email/actions/send", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["draftId": draftId])
@@ -583,6 +589,7 @@ final class APIClient: @unchecked Sendable {
         confirmationToken: String,
         conversationId: String
     ) async throws {
+        if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/email/actions/\(actionId)/confirm", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -614,6 +621,9 @@ final class APIClient: @unchecked Sendable {
     }
 
     func proposeMailTrash(messageId: String) async throws -> MailTrashProposal {
+        if UITestMode.isActive {
+            return MailTrashProposal(actionId: "uitest-trash-action", confirmationToken: "uitest-trash-token")
+        }
         var req = authorizedRequest(path: "api/mail/actions/trash", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["messageId": messageId])
@@ -627,6 +637,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     func confirmMailTrash(actionId: String, confirmationToken: String) async throws {
+        if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/mail/actions/\(actionId)/confirm", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["confirmationToken": confirmationToken])

@@ -25,7 +25,13 @@ const PLAN = (() => {
 })();
 
 const REQUIRED_BY_PLAN = {
-  mail: ["mail-inbox.png", "mail-detail-html.png", "mail-detail-text.png", "mail-summary.png"],
+  mail: [
+    "mail-inbox.png",
+    "mail-detail-html.png",
+    "mail-detail-text.png",
+    "mail-summary.png",
+    "mail-draft.png",
+  ],
   chat: [
     "chat-empty.png",
     "chat-composer.png",
@@ -176,7 +182,19 @@ function main() {
     console.log(`[SIMULATOR] SHA ${short} present on origin/${branch}`);
   }
 
-  console.log("[1/4] Dispatch workflow…");
+  // CI = EXCEPTION. Ne dispatch JAMAIS sauf IOS_SIM_DISPATCH=1.
+  if (process.env.IOS_SIM_DISPATCH !== "1") {
+    console.log("");
+    console.log("[SIMULATOR] CI désactivée par défaut (pas de dispatch).");
+    console.log("Validation locale / screenshots existants d’abord.");
+    console.log("Pour forcer une CI exceptionnelle :");
+    console.log(`  set IOS_SIM_DISPATCH=1&& npm.cmd run ios:sim -- --plan=${plan}`);
+    console.log("");
+    console.log("Aucun workflow lancé.");
+    process.exit(0);
+  }
+
+  console.log("[1/4] Dispatch workflow (IOS_SIM_DISPATCH=1)…");
   shOk("gh", [
     "workflow", "run", WORKFLOW, "--repo", REPO, "--ref", branch,
     "-f", `test_plan=${plan}`,

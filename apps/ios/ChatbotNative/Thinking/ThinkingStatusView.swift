@@ -70,7 +70,13 @@ struct ThinkingStatusView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, AppTheme.space16)
-        .padding(.vertical, AppTheme.space8)
+        .padding(.vertical, AppTheme.space10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel(kind.label)
         .accessibilityIdentifier(A11yID.Chat.thinking)

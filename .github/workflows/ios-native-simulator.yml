@@ -170,7 +170,8 @@ jobs:
           case "$PLAN" in
             mail)
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
-              REQUIRED="mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
+              REQUIRED="mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png mail-draft.png"
               ;;
             chat)
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatEmptyAndKeyboardScreenshots")
