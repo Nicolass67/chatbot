@@ -44,7 +44,6 @@ struct ContextualAssistantSheet: View {
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Fermer") { dismiss() }
@@ -84,26 +83,32 @@ struct ContextualAssistantSheet: View {
             }
             .task { await boot() }
         }
-        .preferredColorScheme(.dark)
         .accessibilityIdentifier(A11yID.Assistant.root)
     }
 
     private var contextChip: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppTheme.space8) {
             Image(systemName: scope == .mail ? "envelope.fill" : "folder.fill")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
-            Text(contextLabel)
-                .font(CNFont.caption)
-                .foregroundStyle(AppTheme.foreground)
-                .lineLimit(1)
+                .foregroundStyle(scope == .mail ? AppTheme.mailAccent : AppTheme.filesAccent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(scope == .mail ? "Dans Mail" : "Dans Files")
+                    .font(CNFont.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.muted)
+                Text(contextLabel)
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(1)
+            }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(AppTheme.surface.opacity(0.9))
+        .padding(.horizontal, AppTheme.space14)
+        .padding(.vertical, AppTheme.space10)
+        .background((scope == .mail ? AppTheme.mailAccent : AppTheme.filesAccent).opacity(0.10))
         .overlay(alignment: .bottom) {
-            Divider().overlay(AppTheme.borderSubtle)
+            Rectangle()
+                .fill(AppTheme.borderSubtle)
+                .frame(height: 1)
         }
     }
 
@@ -275,7 +280,6 @@ struct ScopedConversationSwitcher: View {
             }
             .task { await load() }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func load() async {

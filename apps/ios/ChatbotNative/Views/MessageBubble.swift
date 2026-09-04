@@ -29,14 +29,14 @@ struct MessageBubble: View {
                     Image(systemName: "pencil")
                         .font(.caption2.weight(.semibold))
                     Text("En édition")
-                        .font(.caption2.weight(.semibold))
+                        .font(CNFont.caption2.weight(.semibold))
                 }
                 .foregroundStyle(AppTheme.accent)
             }
 
             if isUser {
                 HStack(spacing: 0) {
-                    Spacer(minLength: 48)
+                    Spacer(minLength: 56)
                     userContent
                 }
             } else {
@@ -79,11 +79,11 @@ struct MessageBubble: View {
 
     private var userContent: some View {
         Text(message.content)
-            .font(.body)
+            .font(CNFont.body)
             .foregroundStyle(AppTheme.foreground)
             .textSelection(.enabled)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, AppTheme.space16)
+            .padding(.vertical, AppTheme.space12)
             .background(AppTheme.userMessage)
             .clipShape(
                 UnevenRoundedRectangle(
@@ -103,7 +103,7 @@ struct MessageBubble: View {
                     style: .continuous
                 )
                 .stroke(
-                    isEditing ? AppTheme.accent.opacity(0.6) : Color.white.opacity(0.07),
+                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.borderSubtle,
                     lineWidth: isEditing ? 1.5 : 1
                 )
             )
@@ -114,28 +114,23 @@ struct MessageBubble: View {
             .accessibilityHint("Appui long pour copier ou modifier")
     }
 
-    /// Canvas lecture assistant — pas de bulle web, actions uniquement via context menu.
+    /// Lecture éditoriale — pas de bulle chat générique.
     private var assistantCanvas: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space8) {
+        VStack(alignment: .leading, spacing: AppTheme.space10) {
             Text(isStreaming ? "Assistant…" : "Assistant")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppTheme.mutedForeground)
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.accent)
+                .tracking(0.3)
 
             MarkdownMessageView(markdown: message.content)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.leading, AppTheme.space12)
+        .padding(.leading, AppTheme.space14)
         .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [AppTheme.accent.opacity(0.65), AppTheme.assistantBar.opacity(0.35)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: 2)
-                .padding(.top, 18)
+            Capsule()
+                .fill(AppTheme.accent.opacity(isStreaming ? 0.85 : 0.45))
+                .frame(width: 2.5)
+                .padding(.top, 4)
         }
         .contextMenu {
             Button("Copier", systemImage: "doc.on.doc", action: onCopy)
@@ -150,6 +145,10 @@ struct MessageBubble: View {
     }
 }
 
+private extension AppTheme {
+    static let space10: CGFloat = 10
+}
+
 struct HandoffBanner: View {
     let title: String
     let subtitle: String
@@ -159,15 +158,17 @@ struct HandoffBanner: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
+            HStack(spacing: AppTheme.space12) {
                 Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
+                    .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(CNFont.callout.weight(.semibold))
                         .foregroundStyle(AppTheme.foreground)
                     Text(subtitle)
-                        .font(.caption)
+                        .font(CNFont.caption)
                         .foregroundStyle(AppTheme.muted)
                         .lineLimit(2)
                 }
@@ -176,12 +177,12 @@ struct HandoffBanner: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mutedForeground)
             }
-            .padding(12)
-            .background(AppTheme.surface.opacity(0.95))
+            .padding(AppTheme.space14)
+            .background(AppTheme.surface.opacity(0.9))
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.accent.opacity(0.35), lineWidth: 1)
+                    .stroke(AppTheme.accent.opacity(0.28), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -266,9 +267,7 @@ struct SourcesSheet: View {
                     Button("Fermer") { dismiss() }
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -315,7 +314,7 @@ struct RemoteAttachmentCard: View {
     private var sizeLabel: String {
         guard let bytes = attachment.sizeBytes else { return isImage ? "Image" : "Document" }
         let kind = isImage ? "Image" : "Document"
-        return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
+        return "\(kind) ┬À \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
     }
 
     var body: some View {

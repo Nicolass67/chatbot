@@ -213,7 +213,6 @@ struct SettingsView: View {
         }
         .navigationTitle("Réglages")
         .navigationBarTitleDisplayMode(embedded ? .inline : .large)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await load() }
         .refreshable { await load() }
     }

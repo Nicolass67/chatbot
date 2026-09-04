@@ -57,7 +57,6 @@ struct SettingsHubView: View {
             }
             .navigationTitle("Réglages")
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .onChange(of: nav.memoryDeepLink) { _, link in
                 guard link != nil else { return }
                 path.append(MemoryRoute.list)

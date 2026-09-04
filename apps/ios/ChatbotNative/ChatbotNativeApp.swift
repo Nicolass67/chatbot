@@ -10,7 +10,6 @@ struct ChatbotNativeApp: App {
             RootView()
                 .environmentObject(session)
                 .environment(nav)
-                .preferredColorScheme(.dark)
                 .tint(AppTheme.accent)
                 .onOpenURL { url in
                     handleDeepLink(url)

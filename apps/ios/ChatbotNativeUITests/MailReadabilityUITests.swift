@@ -76,7 +76,8 @@ final class MailReadabilityUITests: XCTestCase {
         let summary = app.element(id: "mail.summary", timeout: 10)
         XCTAssertTrue(summary.exists, "MailSummaryBlock must appear")
         XCTAssertTrue(
-            app.staticTexts["Résumé"].waitForExistence(timeout: 6),
+            app.staticTexts["Essentiel"].waitForExistence(timeout: 6)
+                || app.staticTexts["Résumé"].waitForExistence(timeout: 2),
             "Summary caption / markdown heading"
         )
         XCTAssertFalse(

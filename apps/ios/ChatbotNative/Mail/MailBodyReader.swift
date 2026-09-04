@@ -204,11 +204,11 @@ struct MailAttachmentRow: View {
     }
 }
 
-/// Résumé assistant — MarkdownMessageView uniquement (jamais le corps mail brut).
+/// Résumé assistant — compact, repliable, sans carte « AI » générique.
 struct MailSummaryBlock: View {
     let text: String
+    @State private var expanded = true
 
-    /// Évite le double titre « Résumé » (caption UI + heading Markdown).
     private var bodyMarkdown: String {
         var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let regex = try? NSRegularExpression(
@@ -225,19 +225,44 @@ struct MailSummaryBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space12) {
-            Text("Résumé")
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
-            MarkdownMessageView(markdown: bodyMarkdown)
-                .foregroundStyle(AppTheme.foreground)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.88)) {
+                    expanded.toggle()
+                }
+                AppHaptics.light()
+            } label: {
+                HStack(spacing: AppTheme.space8) {
+                    Image(systemName: "text.alignleft")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                    Text("Essentiel")
+                        .font(CNFont.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                    Spacer(minLength: 0)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.mutedForeground)
+                }
+                .padding(.horizontal, AppTheme.space14)
+                .padding(.vertical, AppTheme.space12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                MarkdownMessageView(markdown: bodyMarkdown)
+                    .foregroundStyle(AppTheme.foreground)
+                    .padding(.horizontal, AppTheme.space14)
+                    .padding(.bottom, AppTheme.space14)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.surfaceElevated.opacity(0.92))
+        .background(AppTheme.mailAccent.opacity(0.08))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                .stroke(AppTheme.mailAccent.opacity(0.22), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .accessibilityElement(children: .contain)
@@ -255,46 +280,73 @@ struct MailDraftProposal: View {
     var onSend: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Réponse proposée")
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
+            HStack {
+                Text("Brouillon")
+                    .font(CNFont.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mailAccent)
+                Spacer()
+                if busy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(AppTheme.mailAccent)
+                }
+            }
 
             if isEditing {
                 TextEditor(text: $draftText)
-                    .frame(minHeight: 140)
-                    .padding(8)
+                    .frame(minHeight: 160)
+                    .padding(AppTheme.space12)
+                    .scrollContentBackground(.hidden)
                     .background(AppTheme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    )
                     .foregroundStyle(AppTheme.foreground)
                     .accessibilityLabel("Éditeur de brouillon")
                     .accessibilityIdentifier(A11yID.Mail.draftEditor)
             } else {
                 Text(draftText)
-                    .font(.system(size: 15))
+                    .font(CNFont.body)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(AppTheme.space12)
+                    .background(AppTheme.surface.opacity(0.7))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
             }
 
-            HStack(spacing: 10) {
-                Button(isEditing ? "OK" : "Modifier") { onEditToggle() }
+            HStack(spacing: AppTheme.space8) {
+                Button(isEditing ? "Terminé" : "Modifier") { onEditToggle() }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier(A11yID.Mail.draftEdit)
-                Button("Réessayer") { onRetry() }
+                Button("Réécrire") { onRetry() }
                     .buttonStyle(.bordered)
                     .disabled(busy)
                     .accessibilityIdentifier(A11yID.Mail.draftRetry)
-                Spacer()
-                Button("Envoyer") { onSend() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.accent)
-                    .disabled(busy || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-                    .accessibilityIdentifier(A11yID.Mail.send)
+                Spacer(minLength: 0)
+                Button {
+                    AppHaptics.medium()
+                    onSend()
+                } label: {
+                    Label("Envoyer", systemImage: "paperplane.fill")
+                        .font(CNFont.callout.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.mailAccent)
+                .disabled(busy || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+                .accessibilityIdentifier(A11yID.Mail.send)
             }
-            .font(.subheadline.weight(.semibold))
         }
-        .padding(.vertical, 6)
+        .padding(AppTheme.space14)
+        .background(AppTheme.surfaceElevated.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .accessibilityIdentifier(A11yID.Mail.draft)
     }
 }

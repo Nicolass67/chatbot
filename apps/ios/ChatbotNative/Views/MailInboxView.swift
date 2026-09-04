@@ -47,14 +47,14 @@ struct MailInboxView: View {
                 }
                 ContextualAssistantButton(
                     accessibilityId: A11yID.Mail.assistant,
-                    accessibilityLabelText: "Assistant Mail"
+                    accessibilityLabelText: "Assistant Mail",
+                    tint: AppTheme.mailAccent
                 ) {
                     openMailAssistant(.global)
                 }
             }
             .navigationTitle("Mail")
             .accessibilityIdentifier(A11yID.Mail.root)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -338,39 +338,66 @@ struct MailRow: View {
     let message: MailMessageSummary
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(message.isUnread == true ? AppTheme.accent : Color.clear)
-                .frame(width: 10, height: 10)
-                .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
+        HStack(alignment: .top, spacing: AppTheme.space10) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.mailAccent.opacity(0.18))
+                Text(initials)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mailAccent)
+            }
+            .frame(width: 36, height: 36)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: AppTheme.space8) {
                     Text(message.from?.name ?? message.from?.email ?? "Inconnu")
                         .font(CNFont.callout.weight(message.isUnread == true ? .semibold : .regular))
                         .foregroundStyle(AppTheme.foreground)
                         .lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: 4)
                     if let date = message.date {
                         Text(AppDates.short(date))
                             .font(CNFont.caption2)
                             .foregroundStyle(AppTheme.mutedForeground)
+                            .monospacedDigit()
                     }
                 }
-                Text(message.subject?.isEmpty == false ? message.subject! : "(sans objet)")
-                    .font(CNFont.callout.weight(message.isUnread == true ? .semibold : .regular))
-                    .foregroundStyle(AppTheme.foreground)
-                    .lineLimit(1)
-                Text(message.snippet ?? "")
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.mutedForeground)
-                    .lineLimit(2)
-                if message.hasAttachments == true {
-                    Label("Pièce jointe", systemImage: "paperclip")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.accent)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if message.isUnread == true {
+                        Circle()
+                            .fill(AppTheme.mailAccent)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+                    }
+                    Text(message.subject?.isEmpty == false ? message.subject! : "(sans objet)")
+                        .font(CNFont.callout.weight(message.isUnread == true ? .semibold : .regular))
+                        .foregroundStyle(AppTheme.foreground)
+                        .lineLimit(1)
+                }
+                HStack(spacing: 6) {
+                    Text(message.snippet ?? "")
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(1)
+                    if message.hasAttachments == true {
+                        Image(systemName: "paperclip")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .accessibilityLabel("Pièce jointe")
+                    }
                 }
             }
         }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var initials: String {
+        let raw = message.from?.name ?? message.from?.email ?? "?"
+        let parts = raw.split(whereSeparator: { $0.isWhitespace || $0 == "@" })
+        let letters = parts.prefix(2).compactMap { $0.first.map(String.init) }
+        return (letters.isEmpty ? "?" : letters.joined()).uppercased()
     }
 }
 
@@ -457,7 +484,8 @@ struct MailThreadView: View {
             }
             ContextualAssistantButton(
                 accessibilityId: A11yID.Mail.assistant,
-                accessibilityLabelText: "Assistant Mail"
+                accessibilityLabelText: "Assistant Mail",
+                tint: AppTheme.mailAccent
             ) {
                 showAssistant = true
             }
@@ -465,7 +493,6 @@ struct MailThreadView: View {
         .navigationTitle(summary.subject ?? "Fil")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier(A11yID.Mail.detail)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

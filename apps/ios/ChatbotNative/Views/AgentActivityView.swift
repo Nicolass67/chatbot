@@ -122,7 +122,7 @@ struct AgentActivityView: View {
                             .font(CNFont.callout.weight(.medium))
                             .foregroundStyle(AppTheme.foreground)
                             .lineLimit(2)
-                        Text(state.completed ? "Agent" : "Activité")
+                        Text(state.completed ? "Terminé" : "Activité")
                             .font(CNFont.caption2)
                             .foregroundStyle(AppTheme.muted)
                     }

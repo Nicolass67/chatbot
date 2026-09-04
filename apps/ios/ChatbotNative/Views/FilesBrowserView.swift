@@ -61,7 +61,8 @@ struct FilesBrowserView: View {
                 if path.isEmpty {
                     ContextualAssistantButton(
                         accessibilityId: A11yID.Files.assistant,
-                        accessibilityLabelText: "Assistant Files"
+                        accessibilityLabelText: "Assistant Files",
+                        tint: AppTheme.filesAccent
                     ) {
                         openFilesAssistant(.global)
                     }
@@ -69,7 +70,6 @@ struct FilesBrowserView: View {
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -239,27 +239,33 @@ struct FilesBrowserView: View {
                                 )
                             )
                         } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "externaldrive.fill")
-                                    .foregroundStyle(AppTheme.accent)
-                                    .frame(width: 28)
+                            HStack(spacing: AppTheme.space12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                                        .fill(AppTheme.filesAccent.opacity(0.16))
+                                    Image(systemName: rootIcon(for: root))
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(AppTheme.filesAccent)
+                                }
+                                .frame(width: 40, height: 40)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(root.label?.isEmpty == false ? root.label! : "Racine")
+                                        .font(CNFont.body.weight(.medium))
                                         .foregroundStyle(AppTheme.foreground)
                                     if let path = root.absolutePath {
                                         Text(path)
-                                            .font(.caption2)
-                                            .foregroundStyle(AppTheme.mutedForeground)
+                                            .font(CNFont.caption2)
+                                            .foregroundStyle(AppTheme.muted)
                                             .lineLimit(1)
                                     }
                                 }
-                                Spacer()
+                                Spacer(minLength: 0)
                                 Image(systemName: "chevron.right")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(AppTheme.mutedForeground)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 14)
+                            .padding(.horizontal, AppTheme.space16)
+                            .padding(.vertical, AppTheme.space14)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(A11yID.Files.folder)
@@ -319,6 +325,17 @@ struct FilesBrowserView: View {
                 .padding(.bottom, 72)
             }
         }
+    }
+
+    private func rootIcon(for root: FileRootDTO) -> String {
+        let label = ((root.label ?? "") + " " + (root.absolutePath ?? "")).lowercased()
+        if label.contains("download") { return "arrow.down.circle.fill" }
+        if label.contains("document") { return "doc.fill" }
+        if label.contains("desktop") || label.contains("bureau") { return "desktopcomputer" }
+        if label.contains("picture") || label.contains("image") || label.contains("photo") {
+            return "photo.fill"
+        }
+        return "externaldrive.fill"
     }
 
     private func loadRoots() async {
@@ -436,12 +453,12 @@ struct FileFolderView: View {
             ContextualAssistantButton(
                 accessibilityId: A11yID.Files.assistant,
                 accessibilityLabelText: "Assistant Files",
+                tint: AppTheme.filesAccent,
                 action: onAskAssistant
             )
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
@@ -813,6 +830,7 @@ struct FilePreviewView: View {
                 ContextualAssistantButton(
                     accessibilityId: A11yID.Files.assistant,
                     accessibilityLabelText: "Assistant Files",
+                    tint: AppTheme.filesAccent,
                     action: onAskAssistant
                 )
             }
@@ -820,7 +838,6 @@ struct FilePreviewView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier(A11yID.Files.preview)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let onAskAssistant {

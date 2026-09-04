@@ -52,7 +52,9 @@ final class MailDraftUITests: XCTestCase {
             "Draft editor"
         )
         saveScreenshot(app, name: "mail-draft-editing")
-        if app.buttons["OK"].exists {
+        if app.buttons["Terminé"].exists {
+            app.buttons["Terminé"].tap()
+        } else if app.buttons["OK"].exists {
             app.buttons["OK"].tap()
         } else if edit.exists {
             edit.tap()

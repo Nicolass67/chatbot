@@ -28,7 +28,6 @@ struct ConversationListView: View {
             }
             .navigationTitle("Chat")
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .navigationDestination(for: ConversationDTO.self) { conv in
                 ChatScreen(conversation: conv)
             }

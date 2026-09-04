@@ -108,11 +108,13 @@ enum MailAssistantContext: Equatable {
     }
 }
 
-/// Bouton signature Assistant contextuel (FAB).
+/// Bouton signature Assistant contextuel (FAB) — chrome glass, accent de scope.
 struct ContextualAssistantButton: View {
     var accessibilityId: String = A11yID.Assistant.open
     var accessibilityLabelText: String = "Ouvrir l’assistant"
+    var tint: Color = AppTheme.accent
     var action: () -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Color.clear
@@ -125,11 +127,17 @@ struct ContextualAssistantButton: View {
                 } label: {
                     Image(systemName: "sparkles")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(AppTheme.accentForeground)
-                        .frame(width: 52, height: 52)
-                        .background(AppTheme.accent)
-                        .clipShape(Circle())
-                        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+                        .foregroundStyle(tint)
+                        .frame(width: 54, height: 54)
+                        .background {
+                            if reduceTransparency {
+                                Circle().fill(AppTheme.surfaceElevated)
+                            } else {
+                                Circle().fill(.ultraThinMaterial)
+                            }
+                        }
+                        .overlay(Circle().stroke(tint.opacity(0.45), lineWidth: 1.25))
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(accessibilityLabelText)

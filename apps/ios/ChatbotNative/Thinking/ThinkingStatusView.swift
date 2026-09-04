@@ -1,5 +1,44 @@
 import SwiftUI
 
+/// Thinking — discret, distinct de l’Agent.
+struct ThinkingStatusView: View {
+    let kind: ThinkingKind
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: AppTheme.space10) {
+            Circle()
+                .fill(AppTheme.accent)
+                .frame(width: 7, height: 7)
+                .opacity(reduceMotion ? 0.9 : (pulse ? 1 : 0.35))
+                .animation(
+                    reduceMotion
+                        ? nil
+                        : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                    value: pulse
+                )
+
+            Text(kind.label)
+                .font(CNFont.caption.weight(.medium))
+                .foregroundStyle(AppTheme.muted)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, AppTheme.space16)
+        .padding(.vertical, AppTheme.space10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(kind.label)
+        .accessibilityIdentifier(A11yID.Chat.thinking)
+        .accessibilityAddTraits(.updatesFrequently)
+        .onAppear {
+            if !reduceMotion { pulse = true }
+        }
+    }
+}
+
 /// État de progression user-safe (pas de chaîne de pensée privée).
 enum ThinkingKind: Equatable {
     case reflecting
@@ -46,40 +85,5 @@ enum ThinkingKind: Equatable {
             return .custom(message)
         }
         return .reflecting
-    }
-}
-
-/// Indicateur compact pendant le streaming Chat (pas Agent).
-struct ThinkingStatusView: View {
-    let kind: ThinkingKind
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        HStack(spacing: AppTheme.space12) {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(AppTheme.accent)
-                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: !reduceMotion)
-                .frame(width: 22, height: 22)
-
-            Text(kind.label)
-                .font(CNFont.callout)
-                .foregroundStyle(AppTheme.muted)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, AppTheme.space16)
-        .padding(.vertical, AppTheme.space8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(kind.label)
-        .accessibilityIdentifier(A11yID.Chat.thinking)
-        .accessibilityAddTraits(.updatesFrequently)
     }
 }

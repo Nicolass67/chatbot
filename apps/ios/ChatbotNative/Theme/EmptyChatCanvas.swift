@@ -1,0 +1,87 @@
+import SwiftUI
+
+/// Empty Chat — calme, éditorial, invite à écrire (pas un dashboard).
+struct EmptyChatCanvas: View {
+    let onSuggestion: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    private let suggestions: [(icon: String, text: String)] = [
+        ("envelope", "Résume mes mails non lus"),
+        ("folder", "Cherche un fichier sur le disque"),
+        ("brain.head.profile", "Qu’as-tu retenu sur moi ?"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: AppTheme.space48)
+
+            VStack(spacing: AppTheme.space16) {
+                Text("Chatbot")
+                    .font(CNFont.brand)
+                    .foregroundStyle(AppTheme.foreground)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared || reduceMotion ? 0 : 10)
+
+                Text("Dis-moi ce dont tu as besoin.")
+                    .font(CNFont.callout)
+                    .foregroundStyle(AppTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .opacity(appeared ? 1 : 0)
+            }
+            .padding(.horizontal, AppTheme.space32)
+            .padding(.bottom, AppTheme.space40)
+
+            VStack(spacing: AppTheme.space8) {
+                ForEach(Array(suggestions.enumerated()), id: \.offset) { index, item in
+                    Button {
+                        AppHaptics.light()
+                        onSuggestion(item.text)
+                    } label: {
+                        HStack(spacing: AppTheme.space12) {
+                            Image(systemName: item.icon)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(AppTheme.accent)
+                                .frame(width: 28)
+                            Text(item.text)
+                                .font(CNFont.body)
+                                .foregroundStyle(AppTheme.foreground)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 0)
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(AppTheme.mutedForeground)
+                        }
+                        .padding(.horizontal, AppTheme.space16)
+                        .padding(.vertical, AppTheme.space14)
+                        .background(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                .fill(AppTheme.surface.opacity(0.72))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.text)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared || reduceMotion ? 0 : CGFloat(8 + index * 4))
+                }
+            }
+            .padding(.horizontal, AppTheme.space24)
+
+            Spacer(minLength: AppTheme.space32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            if reduceMotion {
+                appeared = true
+            } else {
+                withAnimation(.spring(response: AppTheme.motionSettle, dampingFraction: 0.86)) {
+                    appeared = true
+                }
+            }
+        }
+    }
+}

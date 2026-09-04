@@ -331,7 +331,6 @@ struct ChatToolsSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -352,57 +351,5 @@ struct ScrollToBottomButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Descendre")
-    }
-}
-
-struct EmptyChatCanvas: View {
-    let onSuggestion: (String) -> Void
-
-    private let suggestions = [
-        "Résume mes mails non lus",
-        "Cherche un fichier sur le disque",
-        "Qu’as-tu retenu sur moi ?",
-    ]
-
-    var body: some View {
-        VStack(spacing: AppTheme.space24) {
-            Spacer(minLength: AppTheme.space32)
-            VStack(spacing: AppTheme.space12) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(AppTheme.accent.opacity(0.9))
-                    .accessibilityHidden(true)
-                Text("Chatbot")
-                    .font(CNFont.title)
-                    .foregroundStyle(AppTheme.foreground)
-                Text("Dis-moi ce dont tu as besoin.")
-                    .font(CNFont.callout)
-                    .foregroundStyle(AppTheme.muted)
-                    .multilineTextAlignment(.center)
-            }
-
-            VStack(alignment: .leading, spacing: AppTheme.space8) {
-                ForEach(suggestions, id: \.self) { suggestion in
-                    Button {
-                        AppHaptics.light()
-                        onSuggestion(suggestion)
-                    } label: {
-                        Text(suggestion)
-                            .font(CNFont.body)
-                            .foregroundStyle(AppTheme.foreground)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, AppTheme.space16)
-                            .padding(.vertical, AppTheme.space12)
-                            .background(AppTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(suggestion)
-                }
-            }
-            .padding(.horizontal, AppTheme.space24)
-
-            Spacer(minLength: AppTheme.space16)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

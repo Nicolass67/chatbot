@@ -114,7 +114,6 @@ struct MemoryListView: View {
         }
         .navigationTitle("Souvenirs")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .searchable(text: $search, prompt: "Rechercher un souvenir…")
         .onSubmit(of: .search) { Task { await load() } }
         .onChange(of: search) { _, q in
@@ -202,9 +201,7 @@ struct MemoryListView: View {
                         .disabled(draftContent.trimmingCharacters(in: .whitespacesAndNewlines).count < 10 || creating)
                     }
                 }
-                .toolbarColorScheme(.dark, for: .navigationBar)
             }
-            .preferredColorScheme(.dark)
         }
         .alert(
             "Oublier ce souvenir ?",
@@ -391,9 +388,7 @@ struct MemoryDetailSheet: View {
                     KeyboardDismissButton()
                 }
             }
-            .toolbarColorScheme(.dark, for: .navigationBar)
         }
-        .preferredColorScheme(.dark)
     }
 
     private func save() async {

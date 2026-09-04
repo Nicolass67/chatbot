@@ -141,7 +141,6 @@ struct ChatScreen: View {
                 : (conversationTitle.isEmpty ? "Nouvelle conversation" : conversationTitle)
         )
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             if forcedScope == nil {
                 ToolbarItem(placement: .topBarLeading) {

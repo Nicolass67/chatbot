@@ -69,6 +69,7 @@ struct SoftEmptyState: View {
     let message: String
     var actionTitle: String? = nil
     var action: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ContentUnavailableView {
@@ -79,7 +80,11 @@ struct SoftEmptyState: View {
                 Image(systemName: systemImage)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(AppTheme.accent)
-                    .symbolEffect(.pulse, options: .repeating.speed(0.4))
+                    .symbolEffect(
+                        .pulse,
+                        options: .repeating.speed(0.4),
+                        isActive: !reduceMotion
+                    )
             }
         } description: {
             Text(message)

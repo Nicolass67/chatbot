@@ -1,67 +1,92 @@
 import SwiftUI
+import UIKit
 
-/// Graphite Depth — Mobile 2.0 design tokens (ADN Soft Graphite, expression iOS 2026).
+/// Nocturne Ink — identité Chatbot 3.1
+/// Encre profonde, accent teal signal, typo système hiérarchisée.
+/// Glass / material : navigation & contrôles uniquement (jamais le contenu).
 enum AppTheme {
-    // MARK: - Colors (semantic)
-    static let background = Color(hex: 0x121214)
-    static let sidebar = Color(hex: 0x1A1A1D)
-    static let foreground = Color(hex: 0xE8E8EC)
-    static let surface = Color(hex: 0x1F1F23)
-    static let surfaceElevated = Color(hex: 0x28282D)
-    static let surfaceHover = Color(hex: 0x303036)
-    static let surfaceActive = Color(hex: 0x3A3A40)
-    static let accent = Color(hex: 0x5B8FD4)
-    static let accentHover = Color(hex: 0x74A3E0)
-    static let accentForeground = Color(hex: 0xEEF3FA)
-    static let accentSubtle = Color(hex: 0x5B8FD4).opacity(0.16)
-    static let muted = Color(hex: 0xA8A8B0)
-    static let mutedForeground = Color(hex: 0x7A7A84)
-    static let userMessage = Color(hex: 0x2C2C32)
-    static let danger = Color(hex: 0xD48884)
-    static let success = Color(hex: 0x6FBA92)
-    static let warning = Color(hex: 0xD0A872)
-    static let border = Color(hex: 0x3E3E46)
-    static let borderSubtle = Color.white.opacity(0.07)
-    static let glassBorder = Color.white.opacity(0.16)
-    static let codeBg = Color(hex: 0x0E0E10)
-    static let assistantBar = Color(hex: 0x6E6E76)
-    static let ambientCool = Color(hex: 0x8A9BB0)
+    // MARK: - Semantic colors (Light + Dark)
 
-    // MARK: - Spacing (4-pt grid)
+    static let background = Color.cn(light: 0xF3F4F6, dark: 0x0A0B0D)
+    static let sidebar = Color.cn(light: 0xECEEF1, dark: 0x101116)
+    static let foreground = Color.cn(light: 0x14161A, dark: 0xF0F1F3)
+    static let surface = Color.cn(light: 0xFFFFFF, dark: 0x14161A)
+    static let surfaceElevated = Color.cn(light: 0xFFFFFF, dark: 0x1B1E24)
+    static let surfaceHover = Color.cn(light: 0xE8EAEE, dark: 0x242830)
+    static let surfaceActive = Color.cn(light: 0xDDE1E7, dark: 0x2E333C)
+
+    /// Accent signal — teal, distinct du bleu « AI SaaS » générique.
+    static let accent = Color.cn(light: 0x0D8F82, dark: 0x3ECFBE)
+    static let accentHover = Color.cn(light: 0x0B7A6F, dark: 0x5AD9CB)
+    static let accentForeground = Color.cn(light: 0xFFFFFF, dark: 0x06201C)
+    static let accentSubtle = accent.opacity(0.14)
+
+    static let muted = Color.cn(light: 0x5C6370, dark: 0xA4A9B4)
+    static let mutedForeground = Color.cn(light: 0x8B929E, dark: 0x6E7480)
+
+    static let userMessage = Color.cn(light: 0xE7F5F3, dark: 0x1A2422)
+    static let danger = Color.cn(light: 0xC4574E, dark: 0xE08B84)
+    static let success = Color.cn(light: 0x2F8F6B, dark: 0x5FCB9A)
+    static let warning = Color.cn(light: 0xB07A2E, dark: 0xD4A65A)
+
+    static let border = Color.cn(light: 0xD5D9E0, dark: 0x2F343D)
+    static let borderSubtle = Color.cn(light: 0x00000018, dark: 0xFFFFFF12)
+    static let glassBorder = Color.cn(light: 0x00000020, dark: 0xFFFFFF28)
+    static let codeBg = Color.cn(light: 0xEEF0F3, dark: 0x0C0D10)
+    static let assistantBar = accent
+    static let ambientCool = Color.cn(light: 0x8AABB8, dark: 0x4A7A88)
+    static let ambientWarm = Color.cn(light: 0xC4B5A0, dark: 0x3A342C)
+
+    /// Scopes
+    static let mailAccent = Color.cn(light: 0x3B6EA5, dark: 0x6BA3D9)
+    static let filesAccent = Color.cn(light: 0x8A6A3D, dark: 0xC4A06A)
+
+    // MARK: - Spacing (4-pt)
+
     static let space4: CGFloat = 4
     static let space8: CGFloat = 8
+    static let space10: CGFloat = 10
     static let space12: CGFloat = 12
+    static let space14: CGFloat = 14
     static let space16: CGFloat = 16
     static let space20: CGFloat = 20
     static let space24: CGFloat = 24
     static let space32: CGFloat = 32
     static let space40: CGFloat = 40
     static let space48: CGFloat = 48
+    static let space64: CGFloat = 64
 
     // MARK: - Radii
+
     static let radiusSm: CGFloat = 8
     static let radiusMd: CGFloat = 12
     static let radiusLg: CGFloat = 16
     static let radiusXl: CGFloat = 22
-    static let radius2xl: CGFloat = 22
+    static let radius2xl: CGFloat = 28
     static let radiusPill: CGFloat = 999
 
     static let touchMin: CGFloat = 44
 
     // MARK: - Motion
+
     static let motionQuick: Double = 0.18
     static let motionStandard: Double = 0.28
     static let motionSheet: Double = 0.36
+    static let motionSettle: Double = 0.48
 }
 
+/// Typographie Dynamic Type — hiérarchie courte et intentionnelle.
 enum CNFont {
-    static let display = Font.system(.largeTitle, design: .rounded).weight(.bold)
+    static let display = Font.system(.largeTitle, design: .default).weight(.bold)
     static let title = Font.title2.weight(.semibold)
+    static let headline = Font.headline.weight(.semibold)
     static let body = Font.body
     static let callout = Font.callout
     static let caption = Font.caption
     static let caption2 = Font.caption2
     static let mono = Font.system(.body, design: .monospaced)
+    /// Marque / empty hero uniquement.
+    static let brand = Font.system(size: 34, weight: .bold, design: .serif)
 }
 
 extension Color {
@@ -71,36 +96,55 @@ extension Color {
         let b = Double(hex & 0xFF) / 255
         self.init(.sRGB, red: r, green: g, blue: b, opacity: opacity)
     }
+
+    /// Adaptive light/dark from hex (alpha nibble optional in light/dark as RGB only).
+    static func cn(light: UInt32, dark: UInt32) -> Color {
+        Color(UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            let r = CGFloat((hex >> 16) & 0xFF) / 255
+            let g = CGFloat((hex >> 8) & 0xFF) / 255
+            let b = CGFloat(hex & 0xFF) / 255
+            return UIColor(red: r, green: g, blue: b, alpha: 1)
+        })
+    }
 }
 
-/// Fond profond — ambient discret (pas de glow kitsch).
+/// Fond encre — ambient discret, pas de glow kitsch.
 struct AmbientBackground: View {
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         ZStack {
             AppTheme.background
             RadialGradient(
-                colors: [AppTheme.accent.opacity(0.12), .clear],
-                center: UnitPoint(x: 0.92, y: 0.06),
-                startRadius: 8,
-                endRadius: 380
+                colors: [
+                    AppTheme.accent.opacity(scheme == .dark ? 0.10 : 0.06),
+                    .clear,
+                ],
+                center: UnitPoint(x: 0.88, y: 0.02),
+                startRadius: 4,
+                endRadius: 420
             )
             RadialGradient(
-                colors: [AppTheme.ambientCool.opacity(0.06), .clear],
-                center: UnitPoint(x: 0.12, y: 0.88),
-                startRadius: 16,
-                endRadius: 360
+                colors: [
+                    AppTheme.ambientWarm.opacity(scheme == .dark ? 0.05 : 0.04),
+                    .clear,
+                ],
+                center: UnitPoint(x: 0.08, y: 0.95),
+                startRadius: 20,
+                endRadius: 380
             )
         }
         .ignoresSafeArea()
     }
 }
 
-/// Chrome glass — navigation / composer / FAB uniquement (jamais contenu message).
-/// Mobile 3.0 : préférer glass système (bars) + `glassEffect` custom sur le composer uniquement.
+/// Chrome glass — tab / toolbar / composer / FAB uniquement.
 struct ChromeGlass: ViewModifier {
     var cornerRadius: CGFloat = AppTheme.radiusXl
-    var opacity: Double = 0.42
+    var opacity: Double = 0.55
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
         if reduceTransparency {
@@ -115,23 +159,18 @@ struct ChromeGlass: ViewModifier {
                 )
         } else {
             content
-                .background(
+                .background {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(AppTheme.surface.opacity(opacity))
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(AppTheme.glassBorder, lineWidth: 1)
-                )
-                .overlay(alignment: .top) {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        .blur(radius: 0.4)
-                        .mask(
-                            LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .bottom)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .fill(AppTheme.surface.opacity(scheme == .dark ? opacity * 0.35 : 0.55))
                         )
                 }
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(AppTheme.glassBorder, lineWidth: 0.75)
+                )
         }
     }
 }
@@ -139,12 +178,11 @@ struct ChromeGlass: ViewModifier {
 typealias GlassChrome = ChromeGlass
 
 extension View {
-    func chromeGlass(cornerRadius: CGFloat = AppTheme.radiusXl, opacity: Double = 0.42) -> some View {
+    func chromeGlass(cornerRadius: CGFloat = AppTheme.radiusXl, opacity: Double = 0.55) -> some View {
         modifier(ChromeGlass(cornerRadius: cornerRadius, opacity: opacity))
     }
 
-    /// Compat Soft Graphite 0.6
-    func glassChrome(cornerRadius: CGFloat = AppTheme.radiusXl, opacity: Double = 0.42) -> some View {
+    func glassChrome(cornerRadius: CGFloat = AppTheme.radiusXl, opacity: Double = 0.55) -> some View {
         chromeGlass(cornerRadius: cornerRadius, opacity: opacity)
     }
 }
@@ -163,14 +201,15 @@ struct RuntimeStatusPill: View {
 
     var body: some View {
         HStack(spacing: AppTheme.space8) {
-            Circle().fill(color).frame(width: 7, height: 7)
+            Circle().fill(color).frame(width: 6, height: 6)
             Text(status.uppercased())
                 .font(CNFont.caption2.weight(.semibold))
                 .foregroundStyle(AppTheme.muted)
+                .tracking(0.4)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(AppTheme.surfaceElevated.opacity(0.9))
+        .background(AppTheme.surfaceElevated.opacity(0.92))
         .clipShape(Capsule())
         .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 1))
     }

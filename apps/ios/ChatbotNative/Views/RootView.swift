@@ -22,7 +22,6 @@ struct RootView: View {
         }
         .animation(.smooth(duration: AppTheme.motionStandard), value: session.isAuthenticated)
         .animation(.smooth(duration: AppTheme.motionQuick), value: session.isUnlocked)
-        .preferredColorScheme(.dark)
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, session.biometricLockEnabled, session.isAuthenticated {
                 session.isUnlocked = false
@@ -93,9 +92,9 @@ struct LoginView: View {
                         .symbolEffect(.pulse, options: .repeating.speed(0.35))
                         .accessibilityHidden(true)
                     Text("Chatbot")
-                        .font(CNFont.display)
+                        .font(CNFont.brand)
                         .foregroundStyle(AppTheme.foreground)
-                    Text("Assistant personnel · iPhone natif")
+                    Text("Ton assistant personnel.")
                         .font(CNFont.callout)
                         .foregroundStyle(AppTheme.muted)
                         .multilineTextAlignment(.center)
