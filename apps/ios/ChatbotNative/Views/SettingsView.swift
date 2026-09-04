@@ -245,7 +245,7 @@ struct SettingsView: View {
         }
         .accessibilityIdentifier(A11yID.Settings.root)
         .navigationTitle("Réglages")
-        .navigationBarTitleDisplayMode(embedded ? .inline : .large)
+        .tabRootNavigationChrome()
         .task { await load() }
         .refreshable { await load() }
     }

@@ -95,6 +95,7 @@ struct MailInboxView: View {
                 }
             }
             .navigationTitle("Mail")
+            .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Mail.root)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -249,7 +250,8 @@ struct MailInboxView: View {
             }
             .padding(.horizontal, 14)
         }
-        .padding(.vertical, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
         .background(AppTheme.sidebar.opacity(0.7))
     }
 

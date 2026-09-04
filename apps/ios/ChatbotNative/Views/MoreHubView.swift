@@ -57,7 +57,7 @@ struct SettingsHubView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Réglages")
-            .navigationBarTitleDisplayMode(.large)
+            .tabRootNavigationChrome()
             .onChange(of: nav.memoryDeepLink) { _, link in
                 guard link != nil else { return }
                 path.append(MemoryRoute.list)

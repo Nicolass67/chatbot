@@ -34,6 +34,24 @@ enum Keyboard {
     }
 }
 
+/// Chrome navigation des onglets racine (Chat / Mail / Files) :
+/// titre + contrôles sur **une** barre inline — pas de large title
+/// (qui place le bouton en haut et le titre beaucoup plus bas).
+struct TabRootNavigationChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(AppTheme.surface.opacity(0.94), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+    }
+}
+
+extension View {
+    func tabRootNavigationChrome() -> some View {
+        modifier(TabRootNavigationChrome())
+    }
+}
+
 struct KeyboardDismissButton: View {
     var title: String = "Fermer"
 

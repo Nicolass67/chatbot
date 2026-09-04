@@ -27,7 +27,7 @@ struct ConversationListView: View {
                 }
             }
             .navigationTitle("Chat")
-            .navigationBarTitleDisplayMode(.large)
+            .tabRootNavigationChrome()
             .navigationDestination(for: ConversationDTO.self) { conv in
                 ChatScreen(conversation: conv)
             }

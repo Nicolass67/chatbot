@@ -173,7 +173,7 @@ struct ChatScreen: View {
                 ? ""
                 : (conversationTitle.isEmpty ? "Nouvelle conversation" : conversationTitle)
         )
-        .navigationBarTitleDisplayMode(.inline)
+        .tabRootNavigationChrome()
         .toolbar {
             if forcedScope == nil {
                 ToolbarItem(placement: .topBarLeading) {

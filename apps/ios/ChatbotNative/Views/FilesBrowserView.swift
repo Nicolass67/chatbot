@@ -51,6 +51,7 @@ struct FilesBrowserView: View {
                 content
             }
             .navigationTitle("Files")
+            .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Files.root)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -295,7 +296,7 @@ struct FilesBrowserView: View {
                         Divider().overlay(AppTheme.borderSubtle).padding(.leading, 54)
                     }
                 }
-                .padding(.bottom, 72)
+                .padding(.bottom, AppTheme.space24)
             }
         }
     }
@@ -345,7 +346,7 @@ struct FilesBrowserView: View {
                         Divider().overlay(AppTheme.borderSubtle).padding(.leading, 14)
                     }
                 }
-                .padding(.bottom, 72)
+                .padding(.bottom, AppTheme.space24)
             }
         }
     }
@@ -583,7 +584,6 @@ struct FileFolderView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 72) }
     }
 
     private var grid: some View {
@@ -618,7 +618,7 @@ struct FileFolderView: View {
                 }
             }
             .padding(14)
-            .padding(.bottom, 72)
+            .padding(.bottom, AppTheme.space24)
         }
     }
 
