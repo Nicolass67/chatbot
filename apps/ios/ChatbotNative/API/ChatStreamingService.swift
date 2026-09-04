@@ -162,7 +162,7 @@ actor ChatStreamingService {
             "type": "thinking",
             "message": "Réflexion…",
         ]))
-        let holdNs: UInt64 = (scenario == "thinking" || scenario == "chat") ? 1_000_000_000 : 400_000_000
+        let holdNs: UInt64 = (scenario == "thinking" || scenario == "chat") ? 1_600_000_000 : 400_000_000
         try await Task.sleep(nanoseconds: holdNs)
         guard myGeneration == generation else { return }
 

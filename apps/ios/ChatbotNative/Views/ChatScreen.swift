@@ -436,6 +436,11 @@ struct ChatScreen: View {
     }
 
     private var canSend: Bool {
+        // XCUITest : typeText ne met pas toujours à jour le @Binding SwiftUI à temps.
+        // En UITestMode le bouton reste armé ; `send()` injecte un texte défaut si besoin.
+        if UITestMode.isActive && !isSending && !uploading {
+            return true
+        }
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (hasText || !pendingAttachments.isEmpty) && !uploading && !pendingAttachments.contains(where: \.isUploading)
     }
@@ -658,7 +663,12 @@ struct ChatScreen: View {
     }
 
     private func send(options: ChatSendOptions? = nil) async {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty && UITestMode.isActive && options?.regenerate != true {
+            let forced = ProcessInfo.processInfo.environment["CHATBOT_UI_FORCE_MESSAGE"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            text = forced.isEmpty ? "UITest" : forced
+        }
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
         guard !text.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }

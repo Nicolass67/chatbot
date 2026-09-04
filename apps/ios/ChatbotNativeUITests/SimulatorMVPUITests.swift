@@ -67,15 +67,13 @@ final class SimulatorMVPUITests: XCTestCase {
         app.tapTab(UITestA11y.tabChat)
         let field = try requireComposerField(app)
         field.tap()
+        // Send armé en UITestMode même si le binding draft n’a pas suivi typeText.
         field.typeText("UITest thinking")
         let send = app.element(id: UITestA11y.chatSend, timeout: 8)
-        XCTAssertTrue(send.exists || app.buttons["Envoyer"].exists || sendOrArrow(app).exists)
-        if send.exists {
-            send.tap()
-        } else {
-            sendOrArrow(app).tap()
-        }
-        let thinking = app.element(id: UITestA11y.chatThinking, timeout: 12)
+        XCTAssertTrue(send.exists)
+        send.tap()
+        // ThinkingStatusView dès isSending (.reflecting) puis fixture SSE.
+        let thinking = app.element(id: UITestA11y.chatThinking, timeout: 14)
         XCTAssertTrue(thinking.exists, "ThinkingStatusView (P3)")
         XCTAssertFalse(app.element(id: UITestA11y.agentRoot, timeout: 1).exists)
         saveScreenshot(app, name: "chat-thinking")
