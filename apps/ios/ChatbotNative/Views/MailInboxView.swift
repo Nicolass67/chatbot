@@ -16,6 +16,7 @@ struct MailInboxView: View {
     @State private var trashTarget: MailMessageSummary?
     @State private var showAssistant = false
     @State private var assistantContext: MailAssistantContext = .global
+    @State private var sheetContext: MailAssistantContext = .global
 
     private let categories: [(id: String, label: String)] = [
         ("primary", "Principal"),
@@ -30,6 +31,12 @@ struct MailInboxView: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
+    private func openMailAssistant(_ context: MailAssistantContext) {
+        assistantContext = context
+        sheetContext = context
+        showAssistant = true
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
@@ -42,8 +49,7 @@ struct MailInboxView: View {
                     accessibilityId: A11yID.Mail.assistant,
                     accessibilityLabelText: "Assistant Mail"
                 ) {
-                    showAssistant = true
-                    assistantContext = .global
+                    openMailAssistant(.global)
                 }
             }
             .navigationTitle("Mail")
@@ -91,8 +97,7 @@ struct MailInboxView: View {
             }
             .onChange(of: nav.presentMailAssistant) { _, present in
                 if present {
-                    assistantContext = nav.mailAssistantContext
-                    showAssistant = true
+                    openMailAssistant(nav.mailAssistantContext)
                     nav.presentMailAssistant = false
                 }
             }
@@ -107,8 +112,7 @@ struct MailInboxView: View {
                     }
                     nav.qaIntent = nil
                 case .mailAssistant:
-                    assistantContext = .global
-                    showAssistant = true
+                    openMailAssistant(.global)
                     nav.qaIntent = nil
                 default:
                     break
@@ -121,9 +125,9 @@ struct MailInboxView: View {
             .sheet(isPresented: $showAssistant) {
                 ContextualAssistantSheet(
                     scope: .mail,
-                    title: assistantContext.sheetTitle,
-                    contextLabel: assistantContext.label,
-                    contextRef: assistantContext.ref
+                    title: sheetContext.sheetTitle,
+                    contextLabel: sheetContext.label,
+                    contextRef: sheetContext.ref
                 )
                 .environmentObject(session)
                 .environment(nav)
@@ -484,7 +488,7 @@ struct MailThreadView: View {
                     } label: {
                         Label("Assistant", systemImage: "sparkles")
                     }
-                    .accessibilityIdentifier(A11yID.Mail.assistant)
+                    .accessibilityIdentifier("mail.menu.assistant")
                     Divider()
                     Button(role: .destructive) {
                         Task { await trashFromThread() }

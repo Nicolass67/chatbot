@@ -20,9 +20,10 @@ final class MailAssistantUITests: XCTestCase {
             "Mail root doit être visible"
         )
 
-        let assistant = app.element(id: UITestA11y.mailAssistant, timeout: 8)
-        XCTAssertTrue(assistant.exists, "FAB mail.assistant")
-        assistant.tap()
+        XCTAssertTrue(
+            app.tapAssistantFAB(id: UITestA11y.mailAssistant, label: "Assistant Mail"),
+            "FAB mail.assistant"
+        )
 
         let sheet = app.element(id: UITestA11y.assistantSheet, timeout: 8)
         XCTAssertTrue(
@@ -70,9 +71,8 @@ final class MailAssistantUITests: XCTestCase {
         app.staticTexts["Votre facture Free du mois"].tap()
         XCTAssertTrue(app.element(id: "mail.detail", timeout: 8).exists)
 
-        let fab = app.element(id: UITestA11y.mailAssistant, timeout: 8)
-        XCTAssertTrue(fab.exists, "FAB on mail detail")
-        fab.tap()
+        let fabOk = app.tapAssistantFAB(id: UITestA11y.mailAssistant, label: "Assistant Mail")
+        XCTAssertTrue(fabOk, "FAB on mail detail")
 
         let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
         XCTAssertTrue(

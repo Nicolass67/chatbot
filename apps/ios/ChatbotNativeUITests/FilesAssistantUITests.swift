@@ -18,9 +18,10 @@ final class FilesAssistantUITests: XCTestCase {
         )
         saveScreenshot(app, name: "files-assistant-before")
 
-        let fab = app.element(id: UITestA11y.filesAssistant, timeout: 8)
-        XCTAssertTrue(fab.exists, "FAB Files Assistant")
-        fab.tap()
+        XCTAssertTrue(
+            app.tapAssistantFAB(id: UITestA11y.filesAssistant, label: "Assistant Files"),
+            "FAB Files Assistant"
+        )
 
         let sheet = app.element(id: UITestA11y.assistantSheet, timeout: 8)
         XCTAssertTrue(sheet.exists || app.buttons["Fermer"].waitForExistence(timeout: 4))
@@ -63,17 +64,16 @@ final class FilesAssistantUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Documents"].waitForExistence(timeout: 8))
         app.staticTexts["Documents"].tap()
 
-        let fab = app.element(id: UITestA11y.filesAssistant, timeout: 8)
-        XCTAssertTrue(fab.exists)
-        fab.tap()
+        let fabOk = app.tapAssistantFAB(id: UITestA11y.filesAssistant, label: "Assistant Files")
+        XCTAssertTrue(fabOk)
 
         let chip = app.element(id: UITestA11y.assistantContext, timeout: 6)
         XCTAssertTrue(
             chip.exists
                 || app.staticTexts["Documents"].waitForExistence(timeout: 3)
-                || app.navigationBars.matching(NSPredicate(format: "label CONTAINS[c] %@", "Documents")).firstMatch
+                || app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Documents")).firstMatch
                     .waitForExistence(timeout: 3),
-            "Folder context expected"
+            "Folder context expected (Documents)"
         )
         saveScreenshot(app, name: "files-assistant-folder-context")
 

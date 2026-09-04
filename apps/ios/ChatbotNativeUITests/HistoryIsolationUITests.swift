@@ -12,9 +12,10 @@ final class HistoryIsolationUITests: XCTestCase {
         app.assertUITestSession()
 
         app.tapTab(UITestA11y.tabMail)
-        let assistant = app.element(id: UITestA11y.mailAssistant, timeout: 8)
-        XCTAssertTrue(assistant.exists, "Assistant Mail indisponible")
-        assistant.tap()
+        XCTAssertTrue(
+            app.tapAssistantFAB(id: UITestA11y.mailAssistant, label: "Assistant Mail"),
+            "Assistant Mail indisponible"
+        )
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 8)
         XCTAssertTrue(history.exists, "Bouton historique Assistant absent")
@@ -43,9 +44,10 @@ final class HistoryIsolationUITests: XCTestCase {
         app.assertUITestSession()
 
         app.tapTab(UITestA11y.tabFiles)
-        let assistant = app.element(id: UITestA11y.filesAssistant, timeout: 8)
-        XCTAssertTrue(assistant.exists, "Assistant Files indisponible")
-        assistant.tap()
+        XCTAssertTrue(
+            app.tapAssistantFAB(id: UITestA11y.filesAssistant, label: "Assistant Files"),
+            "Assistant Files indisponible"
+        )
 
         let history = app.element(id: UITestA11y.assistantHistory, timeout: 8)
         XCTAssertTrue(history.exists, "Bouton historique Assistant absent")

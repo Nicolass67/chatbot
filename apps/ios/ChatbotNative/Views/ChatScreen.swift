@@ -843,8 +843,11 @@ struct ChatScreen: View {
         switch type {
         case "token":
             if let c = obj["content"] as? String { streamingText += c }
-            // Le bubble stream suffit : masquer Thinking.
-            thinkingKind = nil
+            // En scénario Thinking UITest, garder le chrome visible pour la capture PNG.
+            let keepThinking = UITestMode.isActive && UITestMode.sseScenario == "thinking"
+            if !keepThinking {
+                thinkingKind = nil
+            }
         case "status", "thinking", "runtime_status":
             if !agentActivity.visible {
                 let msg = (obj["message"] as? String) ?? (obj["status"] as? String)

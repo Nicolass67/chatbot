@@ -61,6 +61,33 @@ extension XCUIApplication {
         tabBars.buttons[label].tap()
     }
 
+    /// FAB Assistant — id a11y + fallback label (Liquid Glass peut masquer l’identifier).
+    @discardableResult
+    func tapAssistantFAB(id: String, label: String, timeout: TimeInterval = 10) -> Bool {
+        let byId = element(id: id, timeout: min(timeout, 4))
+        if byId.exists {
+            if byId.isHittable {
+                byId.tap()
+                return true
+            }
+            byId.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            return true
+        }
+        let byLabel = buttons[label]
+        if byLabel.waitForExistence(timeout: timeout) {
+            byLabel.tap()
+            return true
+        }
+        let sparkle = buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@ OR identifier == %@", "Assistant", id)
+        ).firstMatch
+        if sparkle.waitForExistence(timeout: 3) {
+            sparkle.tap()
+            return true
+        }
+        return false
+    }
+
     /// Attend le composer Chat (cold start Simulator peut dépasser 10s).
     @discardableResult
     func ensureChatComposer(timeout: TimeInterval = 20) -> XCUIElement {

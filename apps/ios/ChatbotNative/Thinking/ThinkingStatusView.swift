@@ -80,5 +80,6 @@ struct ThinkingStatusView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(kind.label)
         .accessibilityIdentifier(A11yID.Chat.thinking)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }

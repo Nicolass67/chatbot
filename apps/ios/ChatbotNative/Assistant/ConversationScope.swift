@@ -115,10 +115,10 @@ struct ContextualAssistantButton: View {
     var action: () -> Void
 
     var body: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
+            .overlay(alignment: .bottomTrailing) {
                 Button {
                     AppHaptics.light()
                     action()
@@ -131,12 +131,13 @@ struct ContextualAssistantButton: View {
                         .clipShape(Circle())
                         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
                 }
+                .buttonStyle(.plain)
                 .accessibilityLabel(accessibilityLabelText)
                 .accessibilityIdentifier(accessibilityId)
+                .accessibilityAddTraits(.isButton)
                 .padding(.trailing, 18)
                 .padding(.bottom, 18)
+                .allowsHitTesting(true)
             }
-        }
-        .allowsHitTesting(true)
     }
 }

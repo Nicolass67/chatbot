@@ -40,9 +40,17 @@ struct FilesBrowserView: View {
     @State private var searching = false
     @State private var showAssistant = false
     @State private var assistantContext = FilesAssistantContext.global
+    /// Snapshot figé à l’ouverture du sheet (évite contexte stale SwiftUI).
+    @State private var sheetContext = FilesAssistantContext.global
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private func openFilesAssistant(_ context: FilesAssistantContext) {
+        assistantContext = context
+        sheetContext = context
+        showAssistant = true
     }
 
     var body: some View {
@@ -54,8 +62,7 @@ struct FilesBrowserView: View {
                     accessibilityId: A11yID.Files.assistant,
                     accessibilityLabelText: "Assistant Files"
                 ) {
-                    assistantContext = .global
-                    showAssistant = true
+                    openFilesAssistant(.global)
                 }
             }
             .navigationTitle("Files")
@@ -94,8 +101,7 @@ struct FilesBrowserView: View {
             }
             .onChange(of: nav.presentFilesAssistant) { _, present in
                 if present {
-                    assistantContext = nav.filesAssistantContext
-                    showAssistant = true
+                    openFilesAssistant(nav.filesAssistantContext)
                     nav.presentFilesAssistant = false
                 }
             }
@@ -122,8 +128,7 @@ struct FilesBrowserView: View {
                     // Prefers search hit / first file once a folder is open — intent marks request.
                     nav.qaIntent = nil
                 case .filesAssistant:
-                    assistantContext = .global
-                    showAssistant = true
+                    openFilesAssistant(.global)
                     nav.qaIntent = nil
                 default:
                     break
@@ -137,9 +142,9 @@ struct FilesBrowserView: View {
             .sheet(isPresented: $showAssistant) {
                 ContextualAssistantSheet(
                     scope: .files,
-                    title: assistantContext.sheetTitle,
-                    contextLabel: assistantContext.label,
-                    contextRef: assistantContext.ref
+                    title: sheetContext.sheetTitle,
+                    contextLabel: sheetContext.label,
+                    contextRef: sheetContext.ref
                 )
                 .environmentObject(session)
                 .environment(nav)
@@ -179,8 +184,7 @@ struct FilesBrowserView: View {
                         )
                     },
                     onAskAssistant: {
-                        assistantContext = .folder(rootId: root.id, path: folderPath, title: title)
-                        showAssistant = true
+                        openFilesAssistant(.folder(rootId: root.id, path: folderPath, title: title))
                     }
                 )
             } else {
@@ -195,8 +199,7 @@ struct FilesBrowserView: View {
                 fileId: fileId,
                 title: title,
                 onAskAssistant: {
-                    assistantContext = .file(fileId: fileId, name: title, rootId: rootId, path: folderPath)
-                    showAssistant = true
+                    openFilesAssistant(.file(fileId: fileId, name: title, rootId: rootId, path: folderPath))
                 }
             )
         }
@@ -826,7 +829,7 @@ struct FilePreviewView: View {
                         Image(systemName: "sparkles")
                     }
                     .accessibilityLabel("Assistant Files")
-                    .accessibilityIdentifier(A11yID.Files.assistant)
+                    .accessibilityIdentifier("files.toolbar.assistant")
                 }
                 if let shareURL {
                     ShareLink(item: shareURL) {
