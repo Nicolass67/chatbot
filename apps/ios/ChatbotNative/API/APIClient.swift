@@ -554,22 +554,56 @@ final class APIClient: @unchecked Sendable {
 
     func summarizeMail(threadId: String) async throws -> String {
         if UITestMode.isActive { return UITestFixtures.mailSummaryMarkdown }
+        var collected = ""
+        try await streamSummarizeMail(threadId: threadId) { collected += $0 }
+        return collected
+    }
+
+    /// Streaming réel résumé mail (SSE backend).
+    func streamSummarizeMail(
+        threadId: String,
+        onToken: @escaping @Sendable (String) -> Void
+    ) async throws {
+        if UITestMode.isActive {
+            onToken(UITestFixtures.mailSummaryMarkdown)
+            return
+        }
         var req = authorizedRequest(path: "api/mail/ai/summarize", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["threadId": threadId])
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        try throwIfNeeded(resp, data)
-        if let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let summary = obj["summary"] as? String {
-            return summary
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "threadId": threadId,
+            "stream": true,
+        ])
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIClientError.http((resp as? HTTPURLResponse)?.statusCode ?? -1, "")
         }
-        throw APIClientError.decode
+        var buffer = ""
+        for try await line in bytes.lines {
+            if line.hasPrefix("data:") {
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload.isEmpty || payload == "[DONE]" { continue }
+                if let data = payload.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let type = obj["type"] as? String
+                    if type == "token", let content = obj["content"] as? String {
+                        onToken(content)
+                        buffer += content
+                    } else if type == "error", let message = obj["message"] as? String {
+                        throw APIClientError.http(502, message)
+                    }
+                }
+            }
+        }
+        if buffer.isEmpty { throw APIClientError.decode }
     }
 
     struct MailSuggestReplyResult: Sendable {
         let draftId: String?
         let bodyText: String
         let subject: String?
+        let to: [String]
     }
 
     func suggestMailReply(threadId: String, instruction: String? = nil) async throws -> MailSuggestReplyResult {
@@ -577,32 +611,83 @@ final class APIClient: @unchecked Sendable {
             return MailSuggestReplyResult(
                 draftId: "uitest-draft-1",
                 bodyText: UITestFixtures.mailDraftBody,
-                subject: "Re: Facture Free"
+                subject: "Re: Facture Free",
+                to: ["uitest@example.com"]
+            )
+        }
+        return try await streamSuggestMailReply(threadId: threadId, instruction: instruction) { _ in }
+    }
+
+    func streamSuggestMailReply(
+        threadId: String,
+        instruction: String? = nil,
+        onToken: @escaping @Sendable (String) -> Void
+    ) async throws -> MailSuggestReplyResult {
+        if UITestMode.isActive {
+            let body = UITestFixtures.mailDraftBody
+            onToken(body)
+            return MailSuggestReplyResult(
+                draftId: "uitest-draft-1",
+                bodyText: body,
+                subject: "Re: Facture Free",
+                to: ["uitest@example.com"]
             )
         }
         var req = authorizedRequest(path: "api/mail/ai/suggest-reply", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["threadId": threadId]
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        var body: [String: Any] = ["threadId": threadId, "stream": true]
         if let instruction, !instruction.isEmpty { body["instruction"] = instruction }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        try throwIfNeeded(resp, data)
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = obj["bodyText"] as? String else {
-            throw APIClientError.decode
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIClientError.http((resp as? HTTPURLResponse)?.statusCode ?? -1, "")
         }
+        var streamed = ""
+        var draftId: String?
+        var subject: String?
+        var to: [String] = []
+        var finalBody: String?
+        for try await line in bytes.lines {
+            if line.hasPrefix("data:") {
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload.isEmpty || payload == "[DONE]" { continue }
+                if let data = payload.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let type = obj["type"] as? String
+                    if type == "token", let content = obj["content"] as? String {
+                        streamed += content
+                        onToken(content)
+                    } else if type == "done" {
+                        draftId = obj["draftId"] as? String
+                        subject = obj["subject"] as? String
+                        finalBody = obj["bodyText"] as? String
+                        if let draft = obj["draft"] as? [String: Any] {
+                            to = (draft["to"] as? [String]) ?? []
+                        }
+                    } else if type == "error", let message = obj["message"] as? String {
+                        throw APIClientError.http(502, message)
+                    }
+                }
+            }
+        }
+        let text = (finalBody?.isEmpty == false ? finalBody! : streamed)
+        guard !text.isEmpty else { throw APIClientError.decode }
         return MailSuggestReplyResult(
-            draftId: obj["draftId"] as? String,
+            draftId: draftId,
             bodyText: text,
-            subject: obj["subject"] as? String
+            subject: subject,
+            to: to
         )
     }
 
-    func updateEmailDraft(id: String, bodyText: String) async throws {
+    func updateEmailDraft(id: String, bodyText: String, to: [String]? = nil) async throws {
         if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/email/drafts/\(id)", method: "PATCH")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["bodyText": bodyText])
+        var payload: [String: Any] = ["bodyText": bodyText]
+        if let to { payload["to"] = to }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
     }

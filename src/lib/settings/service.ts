@@ -36,7 +36,7 @@ export const appSettingsSchema = z.object({
   agentMaxStepsFast: z.number().int().min(1).max(50).default(5),
   agentMaxStepsStandard: z.number().int().min(1).max(50).default(12),
   agentMaxStepsThorough: z.number().int().min(1).max(50).default(25),
-  agentMaxToolCalls: z.number().int().min(1).max(100).default(40),
+  agentMaxToolCalls: z.number().int().min(1).max(100).default(16),
   agentMaxExecutionTimeMs: z.number().int().min(10000).default(300000),
 });
 

@@ -9,6 +9,12 @@ import {
 } from "@/lib/email/draft";
 import { getOrCreateMailWorkspaceConversation } from "@/lib/mail/workspace";
 import { cleanPlainText } from "@/lib/mail/html-utils";
+import {
+  messageImpliesSelfRecipient,
+  resolveEmailRecipient,
+  type RecipientResolution,
+} from "@/lib/mail/resolve-recipient";
+import { getOAuthAccount } from "@/lib/integrations/oauth";
 
 function resolveModel(settings: Awaited<ReturnType<typeof getSettings>>, model?: string): string {
   const resolved = model?.trim() || settings.selectedModel;
@@ -48,18 +54,32 @@ export async function summarizeMailThread(
   thread: NormalizedEmailThread,
   model?: string
 ): Promise<string> {
+  let full = "";
+  await streamSummarizeMailThread(thread, model, (token) => {
+    full += token;
+  });
+  return finalizeSummaryText(full, thread);
+}
+
+export async function streamSummarizeMailThread(
+  thread: NormalizedEmailThread,
+  model: string | undefined,
+  onToken: (token: string) => void
+): Promise<string> {
   const settings = await getSettings();
   const runtime = getLocalAIRuntime();
   const resolvedModel = resolveModel(settings, model);
 
-  const response = await runtime.chat({
-    requestId: nanoid(),
-    model: resolvedModel,
-    messages: [
-      { role: "system", content: UNTRUSTED_SYSTEM },
-      {
-        role: "user",
-        content: `Tu rédiges un résumé d'email clair et bien mis en page, en français.
+  let full = "";
+  await runtime.stream(
+    {
+      requestId: nanoid(),
+      model: resolvedModel,
+      messages: [
+        { role: "system", content: UNTRUSTED_SYSTEM },
+        {
+          role: "user",
+          content: `Tu rédiges un résumé d'email clair et bien mis en page, en français.
 
 Objectif : résumer surtout le DERNIER message du fil. Utilise les messages antérieurs uniquement comme contexte (références, décisions déjà prises, continuité) — ne résume PAS toute la conversation à parts égales.
 
@@ -88,13 +108,32 @@ Règles :
 <email_context untrusted="true">
 ${formatThreadForLlm(thread)}
 </email_context>`,
+        },
+      ],
+      temperature: 0.35,
+      maxTokens: 1800,
+      stream: true,
+    },
+    {
+      onToken: (token) => {
+        full += token;
+        onToken(token);
       },
-    ],
-    temperature: 0.35,
-    maxTokens: 1800,
-  });
+      onDone: () => {},
+      onError: (err) => {
+        throw err;
+      },
+    }
+  );
 
-  const summary = cleanPlainText(response.content ?? "");
+  return finalizeSummaryText(full, thread);
+}
+
+function finalizeSummaryText(
+  raw: string,
+  thread: NormalizedEmailThread
+): string {
+  const summary = cleanPlainText(raw);
   if (/##\s*en\s*bref/i.test(summary) && summary.length >= 60) {
     return summary;
   }
@@ -118,7 +157,7 @@ ${formatThreadForLlm(thread)}
       "Résumé généré à partir de la réponse du modèle.",
     ].join("\n");
   }
-
+  if (summary.trim()) return summary;
   return buildStructuredFallbackSummary(thread, summary);
 }
 
@@ -182,6 +221,23 @@ export async function suggestMailReply(input: {
   model?: string;
   attachmentIds?: string[];
 }): Promise<{ draftId: string; bodyText: string; subject: string }> {
+  let bodyText = "";
+  await streamSuggestMailReply(input, (token) => {
+    bodyText += token;
+  });
+  return finalizeSuggestMailReply({ ...input, bodyText });
+}
+
+export async function streamSuggestMailReply(
+  input: {
+    userId: string;
+    thread: NormalizedEmailThread;
+    instruction?: string;
+    model?: string;
+    attachmentIds?: string[];
+  },
+  onToken: (token: string) => void
+): Promise<string> {
   const settings = await getSettings();
   const runtime = getLocalAIRuntime();
   const resolvedModel = resolveModel(settings, input.model);
@@ -195,29 +251,59 @@ export async function suggestMailReply(input: {
     input.instruction?.trim() ||
     "Rédige une réponse professionnelle et concise.";
 
-  const response = await runtime.chat({
-    requestId: nanoid(),
-    model: resolvedModel,
-    messages: [
-      { role: "system", content: UNTRUSTED_SYSTEM },
-      {
-        role: "user",
-        content: `${userInstruction}
+  let full = "";
+  await runtime.stream(
+    {
+      requestId: nanoid(),
+      model: resolvedModel,
+      messages: [
+        { role: "system", content: UNTRUSTED_SYSTEM },
+        {
+          role: "user",
+          content: `${userInstruction}
 
 Produis uniquement le corps de la réponse (pas de sujet, pas de formule d'envoi automatique).
 
 <email_context untrusted="true">
 ${formatThreadForLlm(input.thread)}
 </email_context>`,
+        },
+      ],
+      temperature: 0.5,
+      maxTokens: 2048,
+      stream: true,
+    },
+    {
+      onToken: (token) => {
+        full += token;
+        onToken(token);
       },
-    ],
-    temperature: 0.5,
-    maxTokens: 2048,
-  });
+      onDone: () => {},
+      onError: (err) => {
+        throw err;
+      },
+    }
+  );
 
-  const bodyText =
-    response.content?.trim() ||
-    [
+  return full;
+}
+
+async function finalizeSuggestMailReply(input: {
+  userId: string;
+  thread: NormalizedEmailThread;
+  instruction?: string;
+  model?: string;
+  attachmentIds?: string[];
+  bodyText: string;
+}): Promise<{ draftId: string; bodyText: string; subject: string }> {
+  const lastMessage = input.thread.messages[input.thread.messages.length - 1];
+  if (!lastMessage) {
+    throw new Error("Fil vide.");
+  }
+
+  let bodyText = input.bodyText.trim();
+  if (!bodyText) {
+    bodyText = [
       `Bonjour${lastMessage.from.name ? ` ${lastMessage.from.name.split(" ")[0]}` : ""},`,
       "",
       "Merci pour votre message, je l'ai bien reçu.",
@@ -226,6 +312,7 @@ ${formatThreadForLlm(input.thread)}
       "",
       "Cordialement,",
     ].join("\n");
+  }
 
   if (!bodyText.trim()) {
     throw new Error("Proposition de réponse vide.");
@@ -509,8 +596,18 @@ Contexte: fil=${input.hasThread ? "oui" : "non"} brouillon=${input.hasDraft ? "o
     };
   }
 
+  // Override système : « moi-même » ne dépend pas du LLM
+  const toSelf =
+    resolved.toSelf || messageImpliesSelfRecipient(input.message);
+  let recipientEmail = resolved.recipientEmail;
+  if (toSelf && input.accountEmail?.includes("@")) {
+    recipientEmail = input.accountEmail.trim().toLowerCase();
+  }
+
   return {
     ...resolved,
+    toSelf,
+    recipientEmail,
     reason: "Analyse IA",
   };
 }
@@ -524,18 +621,51 @@ export async function composeNewMailFromInstruction(input: {
   attachmentIds?: string[];
   toSelf?: boolean;
   recipientEmail?: string | null;
-}): Promise<{ draftId: string; bodyText: string; subject: string; to: string[] }> {
+}): Promise<{
+  draftId: string;
+  bodyText: string;
+  subject: string;
+  to: string[];
+  recipientResolution?: RecipientResolution;
+}> {
   const settings = await getSettings();
   const runtime = getLocalAIRuntime();
   const resolvedModel = resolveModel(settings, input.model);
+
+  const account =
+    input.accountEmail ??
+    (await getOAuthAccount(input.userId, "gmail"))?.accountEmail ??
+    undefined;
+
+  const resolution = await resolveEmailRecipient({
+    userId: input.userId,
+    message: input.instruction,
+    accountEmail: account,
+    explicitEmail: input.recipientEmail,
+    toSelfHint: input.toSelf === true || messageImpliesSelfRecipient(input.instruction),
+  });
+
+  let resolvedTo: string[] = [];
+  let recipientHintForLlm = "";
+  if (resolution.status === "self" || resolution.status === "resolved") {
+    resolvedTo = [resolution.email];
+    recipientHintForLlm = `\nDestinataire RÉSOLU par le système (OBLIGATOIRE, ne pas inventer d'autre adresse) : ${resolution.email}`;
+  } else if (resolution.status === "ambiguous") {
+    recipientHintForLlm = `\nPlusieurs destinataires possibles — laisse "to":[] dans le JSON. Candidats: ${resolution.candidates
+      .map((c) => `${c.displayName ?? "?"} <${c.email}>`)
+      .join("; ")}`;
+  } else {
+    recipientHintForLlm =
+      "\nDestinataire inconnu — laisse \"to\":[] . N'INVENTE JAMAIS d'adresse email.";
+  }
 
   const attachmentHint =
     input.attachmentNames && input.attachmentNames.length > 0
       ? `\nLes fichiers suivants SERONT joints au mail (ne dis pas que c'est impossible) : ${input.attachmentNames.join(", ")}. Tu peux les mentionner brièvement dans le corps si utile.`
       : "";
 
-  const accountHint = input.accountEmail
-    ? `\nAdresse Gmail de l'utilisateur : ${input.accountEmail}`
+  const accountHint = account
+    ? `\nAdresse Gmail de l'utilisateur : ${account}`
     : "";
 
   const response = await runtime.chat({
@@ -546,9 +676,9 @@ export async function composeNewMailFromInstruction(input: {
         role: "system",
         content: `${UNTRUSTED_SYSTEM}
 L'utilisateur veut composer un nouvel email. Réponds en JSON strict:
-{"to":["email@example.com"],"subject":"...","body":"..."}
-Si l'utilisateur écrit "moi" ou "mon adresse", utilise son adresse Gmail.
-Utilise [] pour "to" seulement si vraiment inconnu.${accountHint}${attachmentHint}`,
+{"to":[],"subject":"...","body":"..."}
+RÈGLE ABSOLUE : n'invente JAMAIS d'adresse email. Utilise uniquement le destinataire fourni par le système.
+Si "to" est déjà résolu, mets exactement cette adresse. Sinon laisse [].${accountHint}${recipientHintForLlm}${attachmentHint}`,
       },
       { role: "user", content: input.instruction },
     ],
@@ -559,7 +689,7 @@ Utilise [] pour "to" seulement si vraiment inconnu.${accountHint}${attachmentHin
   const raw = response.content?.trim() ?? "";
   let subject = "(sans objet)";
   let bodyText = raw;
-  let to: string[] = [];
+  let to: string[] = [...resolvedTo];
 
   const parsed = parseJsonObject(raw);
   if (parsed) {
@@ -569,16 +699,20 @@ Utilise [] pour "to" seulement si vraiment inconnu.${accountHint}${attachmentHin
     if (typeof parsed.body === "string" && parsed.body.trim()) {
       bodyText = parsed.body.trim();
     }
-    if (Array.isArray(parsed.to)) {
-      to = parsed.to.filter((e): e is string => typeof e === "string");
+    // Ignore LLM "to" unless system already resolved — never invent
+    if (to.length === 0 && Array.isArray(parsed.to)) {
+      const llmTo = parsed.to.filter(
+        (e): e is string =>
+          typeof e === "string" && e.includes("@") && !/@example\./i.test(e)
+      );
+      // N'accepte que si l'utilisateur a fourni un email littéral dans le message
+      if (
+        llmTo.length > 0 &&
+        llmTo.every((e) => input.instruction.toLowerCase().includes(e.toLowerCase()))
+      ) {
+        to = llmTo.map((e) => e.toLowerCase());
+      }
     }
-  }
-
-  if (to.length === 0 && input.recipientEmail) {
-    to = [input.recipientEmail];
-  }
-  if (to.length === 0 && input.toSelf && input.accountEmail) {
-    to = [input.accountEmail.toLowerCase()];
   }
 
   if (
@@ -609,6 +743,7 @@ Utilise [] pour "to" seulement si vraiment inconnu.${accountHint}${attachmentHin
     bodyText,
     subject,
     to,
+    recipientResolution: resolution,
   };
 }
 
@@ -617,14 +752,20 @@ async function applyRecipientFromIntent(input: {
   draftId: string;
   accountEmail?: string;
   intent: MailAssistantIntent;
+  message?: string;
 }): Promise<void> {
-  let recipient: string | null = input.intent.recipientEmail;
-  if (!recipient && input.intent.toSelf && input.accountEmail) {
-    recipient = input.accountEmail.toLowerCase();
+  const resolution = await resolveEmailRecipient({
+    userId: input.userId,
+    message: input.message ?? "",
+    accountEmail: input.accountEmail,
+    explicitEmail: input.intent.recipientEmail,
+    toSelfHint: input.intent.toSelf,
+  });
+  if (resolution.status === "self" || resolution.status === "resolved") {
+    await updateEmailDraft(input.draftId, input.userId, {
+      to: [resolution.email],
+    });
   }
-  if (!recipient) return;
-
-  await updateEmailDraft(input.draftId, input.userId, { to: [recipient] });
 }
 
 export async function mailAssistantChat(input: {
@@ -676,6 +817,7 @@ export async function mailAssistantChat(input: {
       draftId: input.draftId,
       accountEmail: input.accountEmail,
       intent,
+      message: input.message,
     });
     if (shouldAttach) {
       await attachFilesToEmailDraft(
@@ -739,14 +881,21 @@ export async function mailAssistantChat(input: {
       recipientEmail: intent.recipientEmail,
     });
     markAttached();
-    const pjNote =
-      attachmentsAdded.length > 0
-        ? ` ${attachmentsAdded.length} pièce(s) jointe(s) incluse(s).`
-        : "";
+    let reply: string;
+    if (result.recipientResolution?.status === "ambiguous") {
+      const opts = result.recipientResolution.candidates
+        .map((c) => `• ${c.displayName ?? c.email} <${c.email}>`)
+        .join("\n");
+      reply = `Brouillon prêt, mais plusieurs destinataires correspondent à « ${result.recipientResolution.query} » :\n${opts}\nChoisissez l'adresse dans le brouillon.`;
+    } else if (result.recipientResolution?.status === "unresolved" && result.recipientResolution.query) {
+      reply = `Brouillon prêt, mais aucune adresse connue pour « ${result.recipientResolution.query} ». Indiquez l'email exact.`;
+    } else if (result.to.length) {
+      reply = `Brouillon prêt pour ${result.to.join(", ")}.${attachmentsAdded.length > 0 ? ` ${attachmentsAdded.length} pièce(s) jointe(s) incluse(s).` : ""} Vérifiez puis cliquez sur Envoyer.`;
+    } else {
+      reply = `Brouillon créé.${attachmentsAdded.length > 0 ? ` ${attachmentsAdded.length} pièce(s) jointe(s) incluse(s).` : ""} Ajoutez le destinataire ou précisez l'adresse.`;
+    }
     return {
-      reply: result.to.length
-        ? `Brouillon prêt pour ${result.to.join(", ")}.${pjNote} Vérifiez puis cliquez sur Envoyer.`
-        : `Brouillon créé.${pjNote} Ajoutez le destinataire (Modifier) ou précisez l'adresse.`,
+      reply,
       draftId: result.draftId,
       intent,
       applied: { action: "compose_new", attachmentsAdded },

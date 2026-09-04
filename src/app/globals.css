@@ -1,37 +1,37 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ─── Design tokens — Soft Graphite (macOS-inspired) ──────────────
-   Warm-neutral charcoal layers. Soft white text. Sparse blue accent.
-   Soft dark ≠ high-contrast OLED. */
+/* ─── Design tokens — Ink Indigo (premium 2025/2026) ──────────────
+   Cool slate surfaces. Muted indigo accent. Dust-coral ambient only.
+   No Mist Teal / green / yellow brand identity. */
 :root {
-  /* Surfaces — subtle graphite ladder (slightly warm) */
-  --background: #18181a;
-  --sidebar: #1e1e21;
-  --foreground: #e2e2e6;
-  --surface: #232326;
-  --surface-elevated: #2a2a2e;
-  --surface-hover: #313135;
-  --surface-active: #38383d;
+  /* Surfaces — cool slate ladder */
+  --background: #0e1016;
+  --sidebar: #151822;
+  --foreground: #e6e8ef;
+  --surface: #1a1d28;
+  --surface-elevated: #222633;
+  --surface-hover: #2a2f3e;
+  --surface-active: #343a4c;
 
   /* Borders — soft separators, not hard lines */
-  --border: #34343a;
+  --border: #2e3344;
   --border-subtle: color-mix(in srgb, #ffffff 4.5%, transparent);
-  --border-strong: #484850;
+  --border-strong: #454c62;
 
-  /* Accent — Mist Teal (premium, distinctif, pas violet IA / bleu Apple générique) */
-  --accent: #7eb8c4;
-  --accent-hover: #96cbd4;
+  /* Accent — Ink Indigo (pas teal / violet néon / bleu Apple flashy) */
+  --accent: #9aa6d4;
+  --accent-hover: #b0bae0;
   --accent-muted: color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-subtle: color-mix(in srgb, var(--accent) 8%, transparent);
-  --accent-foreground: #0e1618;
+  --accent-foreground: #0e1016;
 
   /* Text hierarchy — soft white → quiet greys */
-  --muted: #a3a3aa;
-  --muted-foreground: #74747c;
+  --muted: #a0a6b8;
+  --muted-foreground: #6e7488;
 
-  /* Status — muted sage / clay (pas vert/jaune saturés) */
-  --success: #8aa8a4;
+  /* Status — sémantique uniquement */
+  --success: #7fa89e;
   --success-muted: color-mix(in srgb, var(--success) 12%, transparent);
   --warning: #b8a090;
   --warning-muted: color-mix(in srgb, var(--warning) 12%, transparent);
@@ -39,7 +39,7 @@
   --error-muted: color-mix(in srgb, var(--error) 12%, transparent);
 
   /* Message surfaces */
-  --user-message: #2b2b2f;
+  --user-message: #252a3a;
   --user-message-border: color-mix(in srgb, #ffffff 7%, transparent);
   --assistant-indicator: color-mix(in srgb, var(--accent) 40%, #6e6e76);
 

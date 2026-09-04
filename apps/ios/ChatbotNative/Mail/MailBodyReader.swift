@@ -275,23 +275,63 @@ struct MailSummaryBlock: View {
 struct MailDraftProposal: View {
     @Binding var draftText: String
     var draftId: String?
+    var toLabel: String = ""
+    var subjectLabel: String = ""
+    var statusLabel: String = "Brouillon"
     var isEditing: Bool
     var busy: Bool
+    var isStreaming: Bool = false
+    var candidates: [String] = []
+    var onSelectCandidate: ((String) -> Void)? = nil
     var onEditToggle: () -> Void
     var onRetry: () -> Void
     var onSend: () -> Void
+    var onAttach: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
             HStack {
-                Text("Brouillon")
+                Text(statusLabel)
                     .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mailAccent)
                 Spacer()
-                if busy {
+                if busy || isStreaming {
                     ProgressView()
                         .controlSize(.small)
                         .tint(AppTheme.mailAccent)
+                }
+            }
+
+            if !toLabel.isEmpty || !subjectLabel.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !toLabel.isEmpty {
+                        Label(toLabel, systemImage: "person")
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.muted)
+                    }
+                    if !subjectLabel.isEmpty {
+                        Label(subjectLabel, systemImage: "text.alignleft")
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.muted)
+                    }
+                }
+            }
+
+            if !candidates.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Plusieurs destinataires possibles")
+                        .font(CNFont.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                    ForEach(candidates, id: \.self) { email in
+                        Button {
+                            onSelectCandidate?(email)
+                        } label: {
+                            Text(email)
+                                .font(CNFont.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             }
 
@@ -310,7 +350,7 @@ struct MailDraftProposal: View {
                     .accessibilityLabel("Éditeur de brouillon")
                     .accessibilityIdentifier(A11yID.Mail.draftEditor)
             } else {
-                Text(draftText)
+                Text(draftText.isEmpty && isStreaming ? "Rédaction en cours…" : draftText)
                     .font(CNFont.body)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
@@ -323,10 +363,16 @@ struct MailDraftProposal: View {
             HStack(spacing: AppTheme.space8) {
                 Button(isEditing ? "Terminé" : "Modifier") { onEditToggle() }
                     .buttonStyle(.bordered)
+                    .disabled(isStreaming)
                     .accessibilityIdentifier(A11yID.Mail.draftEdit)
-                Button("Réécrire") { onRetry() }
+                if let onAttach {
+                    Button("Ajouter PJ") { onAttach() }
+                        .buttonStyle(.bordered)
+                        .disabled(busy || isStreaming)
+                }
+                Button("Réessayer") { onRetry() }
                     .buttonStyle(.bordered)
-                    .disabled(busy)
+                    .disabled(busy || isStreaming)
                     .accessibilityIdentifier(A11yID.Mail.draftRetry)
                 Spacer(minLength: 0)
                 Button {
@@ -338,7 +384,7 @@ struct MailDraftProposal: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.mailAccent)
-                .disabled(busy || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+                .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
                 .accessibilityIdentifier(A11yID.Mail.send)
             }
         }

@@ -26,6 +26,14 @@ struct MessageBubble: View {
         message.id == "streaming" || message.id.hasPrefix("streaming")
     }
 
+    private var hasUserText: Bool {
+        !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var userAttachments: [MessageAttachmentDTO] {
+        message.attachments ?? []
+    }
+
     var body: some View {
         VStack(alignment: isUser ? .trailing : .leading, spacing: AppTheme.space8) {
             if isEditing {
@@ -39,57 +47,75 @@ struct MessageBubble: View {
             }
 
             if isUser {
-                HStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 0) {
                     Spacer(minLength: 48)
-                    userContent
+                    VStack(alignment: .trailing, spacing: AppTheme.space8) {
+                        if hasUserText {
+                            userContent
+                        }
+                        if !userAttachments.isEmpty {
+                            AttachmentStrip(
+                                attachments: userAttachments,
+                                token: token,
+                                baseURL: baseURL,
+                                alignment: .trailing,
+                                onOpen: onOpenImage,
+                                onOpenDocument: onOpenDocument
+                            )
+                        }
+                    }
+                    .frame(maxWidth: 320, alignment: .trailing)
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 assistantCanvas
-            }
 
-            if let attachments = message.attachments, !attachments.isEmpty {
-                AttachmentStrip(
-                    attachments: attachments,
-                    token: token,
-                    baseURL: baseURL,
-                    onOpen: onOpenImage,
-                    onOpenDocument: onOpenDocument
-                )
-            }
+                if let attachments = message.attachments, !attachments.isEmpty {
+                    AttachmentStrip(
+                        attachments: attachments,
+                        token: token,
+                        baseURL: baseURL,
+                        alignment: .leading,
+                        onOpen: onOpenImage,
+                        onOpenDocument: onOpenDocument
+                    )
+                }
 
-            if !sources.isEmpty {
-                SourceChipsView(sources: sources)
-            }
+                if !sources.isEmpty {
+                    SourceChipsView(sources: sources)
+                }
 
-            if let mailHandoff {
-                HandoffBanner(
-                    title: "Ouvrir dans Mail",
-                    subtitle: mailHandoff.reason ?? mailHandoff.query ?? "Handoff mail",
-                    systemImage: "envelope.open"
-                ) { onMailHandoff?() }
-            }
+                if let mailHandoff {
+                    HandoffBanner(
+                        title: "Ouvrir dans Mail",
+                        subtitle: mailHandoff.reason ?? mailHandoff.query ?? "Handoff mail",
+                        systemImage: "envelope.open"
+                    ) { onMailHandoff?() }
+                }
 
-            if let filesHandoff {
-                HandoffBanner(
-                    title: "Ouvrir dans Files",
-                    subtitle: filesHandoff.reason ?? filesHandoff.query ?? "Handoff fichiers",
-                    systemImage: "folder"
-                ) { onFilesHandoff?() }
-            }
+                if let filesHandoff {
+                    HandoffBanner(
+                        title: "Ouvrir dans Files",
+                        subtitle: filesHandoff.reason ?? filesHandoff.query ?? "Handoff fichiers",
+                        systemImage: "folder"
+                    ) { onFilesHandoff?() }
+                }
 
-            if !filesFound.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(filesFound) { file in
-                        FileResultCard(
-                            file: file,
-                            onOpen: { onOpenFoundFile?(file) },
-                            onDownload: { onDownloadFoundFile?(file) },
-                            onReveal: { onRevealFoundFile?(file) }
-                        )
+                if !filesFound.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(filesFound) { file in
+                            FileResultCard(
+                                file: file,
+                                onOpen: { onOpenFoundFile?(file) },
+                                onDownload: { onDownloadFoundFile?(file) },
+                                onReveal: { onRevealFoundFile?(file) }
+                            )
+                        }
                     }
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 
     private var userContent: some View {
@@ -375,23 +401,33 @@ struct AttachmentStrip: View {
     let attachments: [MessageAttachmentDTO]
     let token: String?
     let baseURL: URL
+    var alignment: HorizontalAlignment = .leading
     let onOpen: (LightboxItem) -> Void
     var onOpenDocument: ((URL, String) -> Void)? = nil
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: AppTheme.space12) {
-                ForEach(attachments) { att in
-                    RemoteAttachmentCard(
-                        attachment: att,
-                        token: token,
-                        baseURL: baseURL,
-                        onOpen: onOpen,
-                        onOpenDocument: onOpenDocument
-                    )
+        let cards = HStack(spacing: AppTheme.space12) {
+            ForEach(attachments) { att in
+                RemoteAttachmentCard(
+                    attachment: att,
+                    token: token,
+                    baseURL: baseURL,
+                    onOpen: onOpen,
+                    onOpenDocument: onOpenDocument
+                )
+            }
+        }
+
+        Group {
+            if attachments.count <= 2 {
+                cards
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    cards
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
     }
 }
 

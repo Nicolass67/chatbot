@@ -48,8 +48,14 @@ struct ChatScreen: View {
     @State private var streamFilesFound: [FilesFoundFileDTO] = []
     @State private var draftCardId: String?
     @State private var draftCardText = ""
+    @State private var draftCardTo = ""
+    @State private var draftCardSubject = ""
+    @State private var draftCardStatus = "Brouillon"
+    @State private var draftCardCandidates: [String] = []
     @State private var draftCardEditing = false
     @State private var draftCardBusy = false
+    @State private var draftCardStreaming = false
+    @State private var draftInConversation = false
     @State private var lastSources: [SearchSourceDTO] = []
     @State private var lastMailHandoff: MailHandoffDTO?
     @State private var lastFilesHandoff: FilesHandoffDTO?
@@ -57,6 +63,8 @@ struct ChatScreen: View {
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
+    /// Distance au bas en dessous de laquelle le bouton « revenir en bas » est inutile.
+    private let scrollBottomProximityThreshold: CGFloat = 120
     @State private var scrollToken = 0
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
@@ -424,12 +432,55 @@ struct ChatScreen: View {
                             )
                             .id("streaming-files")
                         }
+                        if draftInConversation || draftCardId != nil || draftCardStreaming {
+                            MailDraftProposal(
+                                draftText: $draftCardText,
+                                draftId: draftCardId,
+                                toLabel: draftCardTo.isEmpty ? "" : "À : \(draftCardTo)",
+                                subjectLabel: draftCardSubject.isEmpty ? "" : "Objet : \(draftCardSubject)",
+                                statusLabel: draftCardStatus,
+                                isEditing: draftCardEditing,
+                                busy: draftCardBusy,
+                                isStreaming: draftCardStreaming,
+                                candidates: draftCardCandidates,
+                                onSelectCandidate: { email in
+                                    draftCardTo = email
+                                    draftCardCandidates = []
+                                    Task { await applyDraftRecipient(email) }
+                                },
+                                onEditToggle: { draftCardEditing.toggle() },
+                                onRetry: {
+                                    Task { await send(forcedText: "Réécris le brouillon de façon plus claire.", hideUserMessage: true) }
+                                },
+                                onSend: {
+                                    Task { await sendDraftCard() }
+                                },
+                                onAttach: {
+                                    showDocImporter = true
+                                }
+                            )
+                            .id("conversation-draft")
+                        }
                         Color.clear.frame(height: 8).id("bottom")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    let contentH = geometry.contentSize.height
+                    let visibleH = geometry.containerSize.height
+                    let offsetY = geometry.contentOffset.y
+                    let bottomInset = geometry.contentInsets.bottom
+                    return max(0, contentH + bottomInset - visibleH - offsetY)
+                } action: { _, distanceToBottom in
+                    let shouldShow = distanceToBottom > scrollBottomProximityThreshold
+                    if showScrollDown != shouldShow {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            showScrollDown = shouldShow
+                        }
+                    }
+                }
                 .onChange(of: streamingText) { _, text in
                     guard !showScrollDown, !text.isEmpty else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -442,11 +493,10 @@ struct ChatScreen: View {
                     showScrollDown = false
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 12).onChanged { _ in
-                        if isSending { showScrollDown = true }
-                    }
-                )
+                .onChange(of: draftCardText) { _, _ in
+                    guard draftInConversation || draftCardStreaming else { return }
+                    proxy.scrollTo("conversation-draft", anchor: .bottom)
+                }
             }
 
             if showScrollDown {
@@ -457,26 +507,6 @@ struct ChatScreen: View {
                 .padding(.trailing, 14)
                 .padding(.bottom, 10)
                 .transition(.opacity.combined(with: .scale))
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if draftCardId != nil {
-                MailDraftProposal(
-                    draftText: $draftCardText,
-                    draftId: draftCardId,
-                    isEditing: draftCardEditing,
-                    busy: draftCardBusy,
-                    onEditToggle: { draftCardEditing.toggle() },
-                    onRetry: {
-                        Task { await send(forcedText: "Réécris le brouillon de façon plus claire.") }
-                    },
-                    onSend: {
-                        Task { await sendDraftCard() }
-                    }
-                )
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(AppTheme.surface.opacity(0.96))
             }
         }
     }
@@ -560,15 +590,36 @@ struct ChatScreen: View {
         guard !isSending else { return }
         isSending = true
         error = nil
-        defer { isSending = false }
+        thinkingKind = .custom("Analyse du message…")
+        let summaryId = "mail-summary-\(UUID().uuidString)"
+        messages.append(MessageDTO(id: summaryId, role: "assistant", content: "", createdAt: nil))
+        defer {
+            isSending = false
+            thinkingKind = nil
+        }
         do {
-            let summary = try await client.summarizeMail(threadId: threadId)
-            let id = "mail-summary-\(UUID().uuidString)"
-            messages.append(
-                MessageDTO(id: id, role: "assistant", content: summary, createdAt: nil)
-            )
+            try await client.streamSummarizeMail(threadId: threadId) { token in
+                Task { @MainActor in
+                    if self.thinkingKind != nil { self.thinkingKind = nil }
+                    if let idx = self.messages.firstIndex(where: { $0.id == summaryId }) {
+                        let prev = self.messages[idx]
+                        self.messages[idx] = MessageDTO(
+                            id: prev.id,
+                            role: prev.role,
+                            content: prev.content + token,
+                            createdAt: prev.createdAt,
+                            attachments: prev.attachments
+                        )
+                    }
+                }
+            }
             AppHaptics.success()
+            scrollToken += 1
         } catch {
+            if let idx = messages.firstIndex(where: { $0.id == summaryId }),
+               messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                messages.remove(at: idx)
+            }
             self.error = error.localizedDescription
         }
     }
@@ -577,16 +628,46 @@ struct ChatScreen: View {
         guard !isSending else { return }
         isSending = true
         error = nil
-        defer { isSending = false }
+        thinkingKind = .custom("Préparation de la réponse…")
+        draftInConversation = true
+        draftCardStreaming = true
+        draftCardStatus = "Rédaction…"
+        draftCardText = ""
+        draftCardEditing = false
+        defer {
+            isSending = false
+            thinkingKind = nil
+            draftCardStreaming = false
+            draftCardStatus = "Brouillon"
+        }
         do {
-            let result = try await client.suggestMailReply(threadId: threadId)
+            let result = try await client.streamSuggestMailReply(threadId: threadId) { token in
+                Task { @MainActor in
+                    if self.thinkingKind != nil { self.thinkingKind = nil }
+                    self.draftCardText += token
+                }
+            }
             if let id = result.draftId, !id.isEmpty {
                 draftCardId = id
             }
-            draftCardText = result.bodyText
-            draftCardEditing = false
-            // Une seule présentation : carte draft (pas de message chat parallèle).
+            if !result.bodyText.isEmpty {
+                draftCardText = result.bodyText
+            }
+            draftCardTo = result.to.joined(separator: ", ")
+            draftCardSubject = result.subject ?? ""
+            draftInConversation = true
             AppHaptics.success()
+            scrollToken += 1
+        } catch {
+            draftInConversation = draftCardId != nil
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func applyDraftRecipient(_ email: String) async {
+        guard let draftId = draftCardId else { return }
+        do {
+            try await client.updateEmailDraft(id: draftId, bodyText: draftCardText, to: [email])
         } catch {
             self.error = error.localizedDescription
         }
@@ -650,6 +731,10 @@ struct ChatScreen: View {
             )
             draftCardId = nil
             draftCardText = ""
+            draftCardTo = ""
+            draftCardSubject = ""
+            draftCardCandidates = []
+            draftInConversation = false
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -1149,6 +1234,20 @@ struct ChatScreen: View {
 
         suppressAssistantNarration = false
 
+        // Feedback immédiat Mail Assistant (avant premier token)
+        let immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
+        let lower = text.lowercased()
+        if lower.contains("moi-même") || lower.contains("moi meme") || lower.contains("à moi") || lower.contains("a moi") {
+            immediateThinking = .custom("Recherche du destinataire…")
+        } else if lower.contains("mail") || lower.contains("email") || lower.contains("brouillon") || lower.contains("écris") || lower.contains("ecris") {
+            immediateThinking = .custom("Préparation du brouillon…")
+        } else if lower.contains("résum") || lower.contains("resum") {
+            immediateThinking = .custom("Analyse du message…")
+        } else if lower.contains("répond") || lower.contains("repond") {
+            immediateThinking = .custom("Préparation de la réponse…")
+        }
+        thinkingKind = immediateThinking
+
         if options?.regenerate != true {
             draft = ""
             if !isEdit && !hideUserMessage {
@@ -1189,7 +1288,14 @@ struct ChatScreen: View {
 
         isSending = true
         streamingText = ""
-        thinkingKind = chatMode == "agent" ? nil : .reflecting
+        // Ne pas écraser un statut Mail déjà posé (brouillon / destinataire / résumé).
+        if case .custom = thinkingKind {
+            // conserver
+        } else if chatMode == "agent" {
+            thinkingKind = nil
+        } else if thinkingKind == nil {
+            thinkingKind = .reflecting
+        }
         error = nil
         streamSources = []
         streamMailHandoff = nil
@@ -1573,9 +1679,15 @@ struct ChatScreen: View {
                 if let id, !id.isEmpty {
                     draftCardId = id
                     draftCardText = body
+                    draftCardTo = ((draft["to"] as? [String]) ?? []).joined(separator: ", ")
+                    draftCardSubject = (draft["subject"] as? String) ?? ""
+                    draftCardStatus = "Brouillon"
+                    draftInConversation = true
+                    draftCardStreaming = false
                     suppressAssistantNarration = true
                     streamingText = ""
                     draftCardEditing = false
+                    thinkingKind = nil
                 }
             }
         case "conversation_title":

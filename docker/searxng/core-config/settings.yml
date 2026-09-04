@@ -29,17 +29,20 @@ engines:
   - name: brave
     disabled: true
 
-  # Moteurs généralement utilisables sans clé API
+  # Moteurs généralement utilisables sans clé API — timeouts courts pour ne pas
+  # bloquer toute la requête sur un backend lent.
   - name: duckduckgo
     disabled: false
-    timeout: 15.0
+    timeout: 6.0
   - name: qwant
     disabled: false
-    timeout: 15.0
+    timeout: 6.0
   - name: wikipedia
     disabled: false
+    timeout: 4.0
     display_type:
       - infobox
       - list
   - name: mwmbl
     disabled: false
+    timeout: 5.0

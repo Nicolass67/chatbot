@@ -116,9 +116,13 @@ Règles temporelles :
 
 Règles générales :
 - Utilise web_search pour toute information factuelle externe
-- Effectue des recherches complémentaires si les résultats sont insuffisants
+- Préfère 1 recherche ciblée ; 2 maximum si la première est clairement insuffisante
+- Interdit : enchaîner plus de 3 recherches web_search pour une question ordinaire
+- Dès que tu as plusieurs sources distinctes et pertinentes : appelle finish
+- Ne relance PAS une recherche « pour vérifier » si les sources couvrent déjà la question
+- parallel: true pour plusieurs requêtes indépendantes dans le MÊME tour (évite la séquence await)
 - Marque les étapes done au fur et à mesure
-- Appelle finish uniquement quand tu as assez d'informations VÉRIFIÉES pour répondre
+- Appelle finish dès que tu as assez d'informations VÉRIFIÉES pour répondre
 - Réponds en français dans les champs texte`;
 }
 

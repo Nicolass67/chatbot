@@ -434,6 +434,8 @@ struct MailThreadView: View {
     @State private var replyDraftId: String?
     @State private var editingDraft = false
     @State private var aiBusy = false
+    @State private var aiStatus: String?
+    @State private var draftStreaming = false
     @State private var trashing = false
     @State private var showAssistant = false
     @State private var confirmSend = false
@@ -513,15 +515,28 @@ struct MailThreadView: View {
     private func threadContent(_ thread: MailThreadDTO) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
+                if let aiStatus {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small).tint(AppTheme.mailAccent)
+                        Text(aiStatus)
+                            .font(CNFont.caption.weight(.medium))
+                            .foregroundStyle(AppTheme.muted)
+                    }
+                    .padding(.vertical, 4)
+                }
                 if let summaryText {
                     MailSummaryBlock(text: summaryText)
                 }
-                if replyDraft != nil {
+                if replyDraft != nil || draftStreaming {
                     MailDraftProposal(
                         draftText: replyDraftBinding,
                         draftId: replyDraftId,
+                        toLabel: summary.from?.email.map { "À : \($0)" } ?? "",
+                        subjectLabel: summary.subject.map { "Objet : Re: \($0)" } ?? "",
+                        statusLabel: draftStreaming ? "Rédaction…" : "Brouillon",
                         isEditing: editingDraft,
                         busy: aiBusy,
+                        isStreaming: draftStreaming,
                         onEditToggle: { editingDraft.toggle() },
                         onRetry: { Task { await runSuggest() } },
                         onSend: { confirmSend = true }
@@ -598,9 +613,21 @@ struct MailThreadView: View {
 
     private func runSummarize() async {
         aiBusy = true
-        defer { aiBusy = false }
+        aiStatus = "Analyse du message…"
+        summaryText = summaryText ?? ""
+        defer {
+            aiBusy = false
+            aiStatus = nil
+        }
         do {
-            summaryText = try await client.summarizeMail(threadId: threadId)
+            var collected = ""
+            try await client.streamSummarizeMail(threadId: threadId) { token in
+                Task { @MainActor in
+                    collected += token
+                    self.aiStatus = nil
+                    self.summaryText = collected
+                }
+            }
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -609,12 +636,24 @@ struct MailThreadView: View {
 
     private func runSuggest() async {
         aiBusy = true
-        defer { aiBusy = false }
+        aiStatus = "Préparation de la réponse…"
+        draftStreaming = true
+        replyDraft = replyDraft ?? ""
+        editingDraft = false
+        defer {
+            aiBusy = false
+            aiStatus = nil
+            draftStreaming = false
+        }
         do {
-            let result = try await client.suggestMailReply(threadId: threadId)
+            let result = try await client.streamSuggestMailReply(threadId: threadId) { token in
+                Task { @MainActor in
+                    self.aiStatus = nil
+                    self.replyDraft = (self.replyDraft ?? "") + token
+                }
+            }
             replyDraft = result.bodyText
             replyDraftId = result.draftId
-            editingDraft = false
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription

@@ -46,6 +46,7 @@ import type { ToolContext } from "@/lib/tools/types";
 import type { WebSearchOutput } from "@/lib/tools/types";
 import type { SearchResult, WebSearchStatus } from "@/lib/tools/types";
 import { WebSearchError } from "@/lib/tools/web-search/tool";
+import { mergeUniqueSources, dedupeAndCapSources } from "@/lib/tools/web-search/source-dedupe";
 import { createTaintState } from "@/lib/policy";
 import { sanitizeToolStartPayload } from "@/lib/observability/sse-sanitize";
 import { compressToolResultForContext } from "@/lib/context/tool-result-compress";
@@ -320,7 +321,10 @@ async function finalizeStreamedAssistant(params: {
   }
 
   if (collectedSources.length > 0) {
-    input.onEvent({ type: "sources", sources: collectedSources });
+    input.onEvent({
+      type: "sources",
+      sources: dedupeAndCapSources(collectedSources, 12),
+    });
   }
 
   input.onEvent({ type: "done", messageId: assistantId });
@@ -330,7 +334,7 @@ async function finalizeStreamedAssistant(params: {
     settings,
     assistantId,
     fullContent,
-    collectedSources,
+    collectedSources: dedupeAndCapSources(collectedSources, 12),
     pendingAttachments,
     memoryIntent,
   }).catch((error) => {
@@ -772,13 +776,15 @@ export async function runChatOrchestrator(
       memoryIntent: analysis.memory,
       flushInitialMemorySaves,
       toolCtxBase,
-      emailEnabled:
+      emailEnabled: Boolean(
         emailEnabled &&
-        emailPolicyContext.emailConnected &&
-        mailAssistantActive,
+          emailPolicyContext.emailConnected &&
+          mailAssistantActive
+      ),
       emailToolCandidates: mailToolCandidates,
-      filesEnabled:
-        filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots),
+      filesEnabled: Boolean(
+        filesEnabled && emailPolicyContext.hasConfiguredRoots
+      ),
       fileToolCandidates: route.tools.candidates.filter((c) =>
         c.startsWith("file_")
       ),
@@ -1174,7 +1180,7 @@ async function runChatMode(params: {
 
       for (const result of toolResults) {
         contextMessages.push(result.message);
-        collectedSources.push(...result.sources);
+        mergeUniqueSources(collectedSources, result.sources, { maxTotal: 15 });
       }
 
       emitContextSnapshot();
@@ -1258,7 +1264,8 @@ async function streamFinalResponse(params: {
   }
 
   if (collectedSources.length > 0) {
-    input.onEvent({ type: "sources", sources: collectedSources });
+    const capped = dedupeAndCapSources(collectedSources, 12);
+    input.onEvent({ type: "sources", sources: capped });
   }
 
   input.onEvent({ type: "done", messageId: assistantId });
@@ -1268,7 +1275,7 @@ async function streamFinalResponse(params: {
     settings,
     assistantId,
     fullContent,
-    collectedSources,
+    collectedSources: dedupeAndCapSources(collectedSources, 12),
     pendingAttachments,
     memoryIntent,
   }).catch((error) => {

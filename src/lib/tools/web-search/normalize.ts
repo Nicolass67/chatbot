@@ -1,4 +1,5 @@
 import type { SearchResult } from "../types";
+import { canonicalizeUrl } from "./source-dedupe";
 
 export function extractDomain(url: string): string {
   try {
@@ -7,6 +8,8 @@ export function extractDomain(url: string): string {
     return url;
   }
 }
+
+export { canonicalizeUrl };
 
 export interface RawWebHit {
   title?: string;
@@ -40,8 +43,10 @@ export function normalizeWebHits(
 
   for (const hit of hits) {
     const normalized = normalizeWebHit(hit);
-    if (!normalized || seen.has(normalized.url)) continue;
-    seen.add(normalized.url);
+    if (!normalized) continue;
+    const key = canonicalizeUrl(normalized.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
     results.push(normalized);
     if (results.length >= maxResults) break;
   }

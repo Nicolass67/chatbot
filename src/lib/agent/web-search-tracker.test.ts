@@ -29,21 +29,33 @@ describe("WebSearchTracker", () => {
     }
     const stop = tracker.shouldStopForResearch();
     expect(stop.stop).toBe(true);
-    expect(stop.kind).toBe("failure");
   });
 
-  it("arrête quand assez de sources sont collectées", () => {
+  it("arrête après une recherche avec assez de sources uniques", () => {
     const tracker = new WebSearchTracker();
-    for (const q of ["alpha gpu france", "beta gpu prix", "gamma gpu stock", "delta gpu comparatif"]) {
+    tracker.record({
+      query: "alpha gpu france",
+      status: "success",
+      usableResultCount: 5,
+      uniqueAdded: 5,
+    });
+    const stop = tracker.shouldStopForResearch();
+    expect(stop.stop).toBe(true);
+    expect(stop.kind).toBe("sufficient");
+  });
+
+  it("arrête au plus tard après 3 recherches", () => {
+    const tracker = new WebSearchTracker();
+    for (const q of ["q1", "q2", "q3"]) {
       tracker.record({
         query: q,
         status: "success",
-        usableResultCount: 5,
+        usableResultCount: 2,
+        uniqueAdded: 2,
       });
     }
     const stop = tracker.shouldStopForResearch();
     expect(stop.stop).toBe(true);
-    expect(stop.kind).toBe("sufficient");
   });
 
   it("ignore les requêtes dédupliquées", () => {

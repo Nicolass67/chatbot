@@ -55,6 +55,9 @@ export class SearxngProvider implements WebSearchProvider {
       url.searchParams.set("q", query);
       url.searchParams.set("format", "json");
       url.searchParams.set("language", "fr-FR");
+      url.searchParams.set("pageno", "1");
+      // Limite l'agrégation aux moteurs locaux rapides (évite d'attendre tous les backends)
+      url.searchParams.set("engines", "duckduckgo,qwant,wikipedia,mwmbl");
 
       const response = await fetch(url, {
         method: "GET",

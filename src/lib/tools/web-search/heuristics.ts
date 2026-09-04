@@ -1,6 +1,7 @@
 import { routeRequestSync, routeToWebSearchIntent } from "@/lib/request-router";
 import type { RouteDecision } from "@/lib/request-router/types";
 import type { SearchResult } from "../types";
+import { dedupeAndCapSources } from "./source-dedupe";
 
 export interface WebSearchIntent {
   settingEnabled: boolean;
@@ -81,15 +82,7 @@ export function capSourcesForSynthesis(
   results: SearchResult[],
   max = 12
 ): SearchResult[] {
-  const seen = new Set<string>();
-  const capped: SearchResult[] = [];
-  for (const r of results) {
-    if (seen.has(r.url)) continue;
-    seen.add(r.url);
-    capped.push(r);
-    if (capped.length >= max) break;
-  }
-  return capped;
+  return dedupeAndCapSources(results, max);
 }
 
 export function formatSearchResultsBlock(

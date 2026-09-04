@@ -5,6 +5,8 @@ export interface WebSearchRecord {
   query: string;
   status: WebSearchStatus;
   usableResultCount: number;
+  /** Nouvelles URLs uniques ajoutées (si fourni). */
+  uniqueAdded?: number;
   error?: string;
   deduplicated?: boolean;
 }
@@ -24,12 +26,17 @@ function isInfrastructureFailure(status: WebSearchStatus): boolean {
   );
 }
 
-/** Suit les recherches Web et décide quand arrêter la boucle Agent. */
+/**
+ * Suit les recherches Web et décide quand arrêter la boucle Agent.
+ * Objectif : minimum de recherches pour un contexte utile — pas d'accumulation
+ * de dizaines/centaines de sources.
+ */
 export class WebSearchTracker {
   private records: WebSearchRecord[] = [];
   private consecutiveFailures = 0;
   private consecutiveEmpty = 0;
   private totalUsable = 0;
+  private uniqueSourceCount = 0;
   private uniqueQueryCount = 0;
 
   record(entry: WebSearchRecord): void {
@@ -53,6 +60,11 @@ export class WebSearchTracker {
 
     this.consecutiveEmpty = 0;
     this.totalUsable += entry.usableResultCount;
+    const added =
+      typeof entry.uniqueAdded === "number"
+        ? entry.uniqueAdded
+        : entry.usableResultCount;
+    this.uniqueSourceCount += Math.max(0, added);
   }
 
   private countUniqueQueries(): number {
@@ -69,6 +81,7 @@ export class WebSearchTracker {
       totalSearches: this.records.length,
       uniqueQueries: this.uniqueQueryCount,
       totalUsable: this.totalUsable,
+      uniqueSources: this.uniqueSourceCount,
       consecutiveFailures: this.consecutiveFailures,
       consecutiveEmpty: this.consecutiveEmpty,
     };
@@ -87,7 +100,22 @@ export class WebSearchTracker {
       };
     }
 
-    if (this.totalUsable >= 25) {
+    // Hard caps — une recherche ordinaire ne doit pas enchaîner indéfiniment
+    if (this.records.length >= 3) {
+      return {
+        stop: true,
+        kind: this.uniqueSourceCount > 0 || this.totalUsable > 0
+          ? "sufficient"
+          : "failure",
+        reason:
+          this.uniqueSourceCount > 0 || this.totalUsable > 0
+            ? "Limite de recherches Web atteinte — synthèse avec les sources disponibles."
+            : "Aucune source Web exploitable après plusieurs recherches.",
+      };
+    }
+
+    // Assez de sources distinctes après 1 seule recherche réussie
+    if (this.uniqueQueryCount >= 1 && this.uniqueSourceCount >= 5) {
       return {
         stop: true,
         kind: "sufficient",
@@ -95,11 +123,21 @@ export class WebSearchTracker {
       };
     }
 
-    if (this.uniqueQueryCount >= 4 && this.totalUsable >= 15) {
+    // Deux angles distincts avec un minimum de hits
+    if (this.uniqueQueryCount >= 2 && this.uniqueSourceCount >= 4) {
       return {
         stop: true,
         kind: "sufficient",
         reason: "Sources Web suffisantes après plusieurs recherches.",
+      };
+    }
+
+    // Fallback sur total brut (si uniqueAdded non fourni)
+    if (this.totalUsable >= 8 && this.uniqueQueryCount >= 1) {
+      return {
+        stop: true,
+        kind: "sufficient",
+        reason: "Sources Web suffisantes collectées.",
       };
     }
 
@@ -116,8 +154,7 @@ export class WebSearchTracker {
       return {
         stop: true,
         kind: "failure",
-        reason:
-          "Recherches Web successives sans résultat exploitable.",
+        reason: "Recherches Web successives sans résultat exploitable.",
       };
     }
 

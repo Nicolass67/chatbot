@@ -12,6 +12,7 @@ import type { AppSettings } from "@/lib/settings/service";
 import { getRegisteredTools } from "@/lib/tools/registry";
 import type { ToolContext } from "@/lib/tools/types";
 import { formatSearchResultsBlock, capSourcesForSynthesis } from "@/lib/tools/web-search/heuristics";
+import { mergeUniqueSources } from "@/lib/tools/web-search/source-dedupe";
 import { routeRequest, routeToWebSearchIntent, type RouteDecision } from "@/lib/request-router";
 import { evaluateWebSearchAvailability } from "@/lib/tools/web-search/web-search-availability";
 import type { ChatMessage, RuntimeUsage } from "@/lib/runtime/types";
@@ -198,9 +199,11 @@ async function runMandatoryRouteWebSearch(
 ): Promise<{
   observation: AgentObservation | null;
   toolResult: import("./executor").ToolExecutionResult | null;
+  uniqueAdded: number;
 }> {
   const query = route.web.searchQuery;
   logResearchQuery(query);
+  const sourcesBefore = collectedSources.length;
 
   onEvent({
     type: "agent_status",
@@ -256,8 +259,10 @@ async function runMandatoryRouteWebSearch(
         onEvent({ type: "files_found", files });
       },
       onSources: (sources) => {
-        collectedSources.push(...sources);
-        onEvent({ type: "sources", sources });
+        mergeUniqueSources(collectedSources, sources, {
+          maxTotal: MAX_COLLECTED_SOURCES,
+        });
+        onEvent({ type: "sources", sources: [...collectedSources] });
       },
     },
   });
@@ -274,7 +279,11 @@ async function runMandatoryRouteWebSearch(
       }
     : null;
 
-  return { observation, toolResult: result ?? null };
+  return {
+    observation,
+    toolResult: result ?? null,
+    uniqueAdded: Math.max(0, collectedSources.length - sourcesBefore),
+  };
 }
 
 function applyWebResultToFreshness(
@@ -297,9 +306,11 @@ function applyWebResultToFreshness(
 
 function checkWebSearchStop(
   tracker: WebSearchTracker,
-  requiresFresh: boolean
+  _requiresFresh: boolean
 ): WebSearchStopDecision {
-  if (!requiresFresh) return { stop: false };
+  // Toujours appliquer le critère d'arrêt — pas seulement en mode "fresh".
+  // Sinon l'agent peut enchaîner des dizaines de recherches inutiles.
+  void _requiresFresh;
   return tracker.shouldStopForResearch();
 }
 
@@ -319,7 +330,8 @@ function trackWebSearchResult(
     sources: SearchResult[];
     error?: string;
     deduplicated?: boolean;
-  }
+  },
+  uniqueAdded?: number
 ): void {
   if (result.tool !== "web_search") return;
 
@@ -352,10 +364,14 @@ function trackWebSearchResult(
     query: getWebSearchQuery(result.input),
     status,
     usableResultCount: result.sources.length,
+    uniqueAdded,
     error: result.error,
     deduplicated: result.deduplicated,
   });
 }
+
+/** Plafond structurel des sources conservées pour UI / DB / contexte. */
+const MAX_COLLECTED_SOURCES = 15;
 
 function shouldSkipDeciderLoop(
   researchState: ResearchFlowState,
@@ -558,7 +574,11 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           tracker.recordToolCall("web_search");
         }
         if (mandatoryRun.toolResult) {
-          trackWebSearchResult(webSearchTracker, mandatoryRun.toolResult);
+          trackWebSearchResult(
+            webSearchTracker,
+            mandatoryRun.toolResult,
+            mandatoryRun.uniqueAdded
+          );
           freshnessState = applyWebResultToFreshness(
             freshnessState,
             mandatoryRun.toolResult,
@@ -594,6 +614,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     let consecutiveParseFailures = 0;
     const MAX_PARSE_FAILURES = 2;
+    let sufficientWebEvidence = false;
 
     const skipDeciderLoop = shouldSkipDeciderLoop(
       researchState,
@@ -760,13 +781,15 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       }
 
       if (decision.type === "tool_calls") {
+        let callsToRun = decision.calls;
         if (
           webSearchStopped &&
-          decision.calls.some((c) => c.tool === "web_search")
+          callsToRun.some((c) => c.tool === "web_search")
         ) {
+          const nonWeb = callsToRun.filter((c) => c.tool !== "web_search");
           execCtx.observations.push({
             tool: "system",
-            input: decision.calls,
+            input: callsToRun,
             output: {
               stopped: true,
               reason:
@@ -778,16 +801,24 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
               "Recherches Web arrêtées — sources suffisantes pour synthèse.",
             timestamp: new Date().toISOString(),
           });
-          continue;
+          // Assez de sources : passer à la synthèse au lieu de reboucler.
+          if (nonWeb.length === 0 && collectedSources.length > 0) {
+            sufficientWebEvidence = true;
+            break;
+          }
+          if (nonWeb.length === 0) {
+            continue;
+          }
+          callsToRun = nonWeb;
         }
 
         if (
           webStopReason &&
-          decision.calls.some((c) => c.tool === "web_search")
+          callsToRun.some((c) => c.tool === "web_search")
         ) {
           execCtx.observations.push({
             tool: "system",
-            input: decision.calls,
+            input: callsToRun,
             output: { stopped: true, reason: webStopReason },
             summary: webStopReason,
             timestamp: new Date().toISOString(),
@@ -801,8 +832,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         }
 
         const results = await executeToolCalls({
-          calls: decision.calls,
-          parallel: decision.parallel ?? decision.calls.length > 1,
+          calls: callsToRun,
+          parallel: decision.parallel ?? callsToRun.length > 1,
           stepId: decision.stepId,
           plan,
           conversationId: input.conversationId,
@@ -846,8 +877,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
               input.onEvent({ type: "files_found", files });
             },
             onSources: (sources) => {
-              collectedSources.push(...sources);
-              input.onEvent({ type: "sources", sources });
+              mergeUniqueSources(collectedSources, sources, {
+                maxTotal: MAX_COLLECTED_SOURCES,
+              });
+              input.onEvent({ type: "sources", sources: [...collectedSources] });
             },
           },
         });
@@ -863,7 +896,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           }
 
           if (result.tool === "web_search") {
-            trackWebSearchResult(webSearchTracker, result);
+            // uniqueAdded approximé : taille du batch (déjà dédupliqué à l'URL)
+            const uniqueAdded = result.deduplicated ? 0 : result.sources.length;
+            trackWebSearchResult(webSearchTracker, result, uniqueAdded);
             researchState = recordWebSearchOutcome(
               researchState,
               !result.error,
@@ -879,7 +914,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             );
             execCtx.freshnessState = freshnessState;
 
-            if (!webSearchStopped && freshnessState.requiresFreshWebData) {
+            if (!webSearchStopped) {
               const stop = checkWebSearchStop(
                 webSearchTracker,
                 freshnessState.requiresFreshWebData
@@ -902,6 +937,15 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                   summary: webStopReason ?? stop.reason ?? "",
                   timestamp: new Date().toISOString(),
                 });
+                // Passer à la synthèse dès que le critère d'arrêt est atteint
+                if (
+                  applied.webSearchStopped &&
+                  stop.kind === "sufficient" &&
+                  collectedSources.length > 0
+                ) {
+                  sufficientWebEvidence = true;
+                  break;
+                }
               }
             }
           }
@@ -919,7 +963,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           execCtx.observations.push(observation);
         }
 
-        if (webStopReason) {
+        if (webStopReason || sufficientWebEvidence) {
           tracker.setPlan(plan);
           break;
         }
@@ -988,6 +1032,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       collectedSources,
       Math.min(input.settings.webSearchMaxResults * 2, 10)
     );
+    // Conservé pour UI/DB : même ensemble compact que la synthèse (pas 100+ bruts)
+    const sourcesForPersist = synthesisSources.length > 0
+      ? synthesisSources
+      : capSourcesForSynthesis(collectedSources, MAX_COLLECTED_SOURCES);
     const sourcesBlock =
       synthesisSources.length > 0
         ? formatSearchResultsBlock(
@@ -1198,7 +1246,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       content: fullContent,
     });
 
-    for (const source of collectedSources) {
+    for (const source of sourcesForPersist) {
       await db.insert(messageSources).values({
         id: nanoid(),
         messageId: assistantId,
@@ -1209,8 +1257,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       });
     }
 
-    if (collectedSources.length > 0) {
-      input.onEvent({ type: "sources", sources: collectedSources });
+    if (sourcesForPersist.length > 0) {
+      input.onEvent({ type: "sources", sources: sourcesForPersist });
     }
 
     await db
