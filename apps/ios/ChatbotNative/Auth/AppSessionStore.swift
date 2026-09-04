@@ -14,9 +14,12 @@ final class AppSessionStore: NSObject, ObservableObject {
     @Published var isUnlocked = true
     @Published var biometricLockEnabled: Bool = UserDefaults.standard.bool(forKey: "biometricLockEnabled")
 
-    /// Origin publique (Info.plist `ChatbotPublicBaseURL` via Public.xcconfig / Local.xcconfig).
+    /// Host placeholder (Public.xcconfig / builds sans injection CI).
+    static let placeholderHost = "your-worker.example.workers.dev"
+
+    /// Origin publique (Info.plist `ChatbotPublicBaseURL` via Public.xcconfig / Local.xcconfig / Flash CI).
     let baseURL: URL = {
-        let placeholder = URL(string: "https://your-worker.example.workers.dev")!
+        let placeholder = URL(string: "https://\(AppSessionStore.placeholderHost)")!
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "ChatbotPublicBaseURL") as? String
         else { return placeholder }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -25,6 +28,12 @@ final class AppSessionStore: NSObject, ObservableObject {
         }
         return url
     }()
+
+    /// True si Info.plist n’a pas d’origin réelle (clé absente ou placeholder).
+    var isMisconfiguredBaseURL: Bool {
+        guard let host = baseURL.host?.lowercased() else { return true }
+        return host == Self.placeholderHost || host.contains("your-worker.example")
+    }
 
     private var authSession: ASWebAuthenticationSession?
 
@@ -116,6 +125,12 @@ final class AppSessionStore: NSObject, ObservableObject {
 
     func login() {
         lastError = nil
+        if isMisconfiguredBaseURL {
+            lastError =
+                "Origin non configurée (\(Self.placeholderHost)). Réinstalle l’IPA Flash avec la bonne URL."
+            isBusy = false
+            return
+        }
         isBusy = true
         var components = URLComponents(
             url: baseURL.appendingPathComponent("api/auth/app-session/start"),

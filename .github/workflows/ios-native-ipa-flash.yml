@@ -149,18 +149,39 @@ jobs:
             echo "Refusing IPA: secret-looking strings found in app bundle" >&2
             exit 1
           fi
+          # Force-inject origin into the built Info.plist (XcodeGen / expand can drop the key).
+          /usr/libexec/PlistBuddy -c "Add :ChatbotPublicBaseURL string ${FLASH_URL}" "$APP_PATH/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :ChatbotPublicBaseURL ${FLASH_URL}" "$APP_PATH/Info.plist"
           PLIST_URL=$(/usr/libexec/PlistBuddy -c 'Print :ChatbotPublicBaseURL' "$APP_PATH/Info.plist" 2>/dev/null || true)
           echo "Info.plist ChatbotPublicBaseURL=${PLIST_URL}"
+          if [ -z "$PLIST_URL" ]; then
+            echo "::error::ChatbotPublicBaseURL missing from Info.plist after inject"
+            exit 1
+          fi
           if echo "$PLIST_URL" | grep -qi 'your-worker.example'; then
             echo "::error::IPA still contains placeholder base URL"
             exit 1
           fi
+          case "$PLIST_URL" in
+            *"${FLASH_HOST}"*) ;;
+            *)
+              echo "::error::Info.plist host mismatch (want ${FLASH_HOST}, got ${PLIST_URL})"
+              exit 1
+              ;;
+          esac
           /usr/libexec/PlistBuddy -c "Add :QAGitSHA string ${QA_GIT_SHA_SHORT}" "$APP_PATH/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Set :QAGitSHA ${QA_GIT_SHA_SHORT}" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${FLASH_BUILD}" "$APP_PATH/Info.plist" || true
           rm -rf Payload ChatbotNative-unsigned.ipa
           mkdir Payload
           cp -R "$APP_PATH" Payload/
+          # Re-verify packaged Payload (not just pre-copy APP_PATH)
+          PAYLOAD_URL=$(/usr/libexec/PlistBuddy -c 'Print :ChatbotPublicBaseURL' "Payload/ChatbotNative.app/Info.plist")
+          echo "Payload ChatbotPublicBaseURL=${PAYLOAD_URL}"
+          if [ -z "$PAYLOAD_URL" ] || echo "$PAYLOAD_URL" | grep -qi 'your-worker.example'; then
+            echo "::error::Packaged IPA Info.plist still missing/placeholder base URL"
+            exit 1
+          fi
           zip -qr ChatbotNative-unsigned.ipa Payload
           ls -lh ChatbotNative-unsigned.ipa
           MARKETING=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist" 2>/dev/null || echo "3.0.0")
@@ -173,7 +194,8 @@ jobs:
             "marketing": "${MARKETING}",
             "bundle_id": "${BUNDLE_ID}",
             "workflow": "ipa-flash",
-            "base_url_host": "${FLASH_HOST}"
+            "base_url_host": "${FLASH_HOST}",
+            "base_url": "${FLASH_URL}"
           }
           EOF
           cat qa-meta.json

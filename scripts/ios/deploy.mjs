@@ -195,11 +195,17 @@ function verifyMeta(expectedSha) {
   if (meta.workflow && meta.workflow !== "qa" && meta.workflow !== "ipa-flash") {
     issues.push(`workflow invalide (${meta.workflow}) — attendu qa|ipa-flash`);
   }
+  const host = String(meta.base_url_host || "").toLowerCase();
+  if (!host) {
+    issues.push("base_url_host manquant dans qa-meta.json (IPA potentiellement sans origin)");
+  } else if (host.includes("your-worker.example")) {
+    issues.push(`base_url_host placeholder interdit: ${meta.base_url_host}`);
+  }
   if (issues.length) {
     throw new Error(`REFUSE install — qa-meta.json invalide:\n- ${issues.join("\n- ")}`);
   }
   console.log(
-    `[ios:deploy] meta OK sha=${meta.git_sha.slice(0, 7)} build=${meta.build} bundle=${meta.bundle_id} run=${meta.run_id}`
+    `[ios:deploy] meta OK sha=${meta.git_sha.slice(0, 7)} build=${meta.build} bundle=${meta.bundle_id} host=${meta.base_url_host || "?"} run=${meta.run_id}`
   );
   return meta;
 }

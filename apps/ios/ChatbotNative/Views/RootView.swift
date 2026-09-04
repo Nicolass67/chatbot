@@ -101,7 +101,13 @@ struct LoginView: View {
                 }
                 .appearFade()
 
-                if let err = session.lastError {
+                if session.isMisconfiguredBaseURL {
+                    SoftErrorBanner(
+                        message: "Build incorrect : origin \(AppSessionStore.placeholderHost). Réinstalle l’IPA Flash."
+                    )
+                    .padding(.horizontal, AppTheme.space32)
+                    .appearFade()
+                } else if let err = session.lastError {
                     SoftErrorBanner(message: err)
                         .padding(.horizontal, AppTheme.space32)
                         .appearFade()
@@ -126,7 +132,7 @@ struct LoginView: View {
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous))
                     .shadow(color: AppTheme.accent.opacity(0.22), radius: 16, y: 6)
                 }
-                .disabled(session.isBusy)
+                .disabled(session.isBusy || session.isMisconfiguredBaseURL)
                 .padding(.horizontal, AppTheme.space32)
                 .accessibilityIdentifier(A11yID.Auth.login)
                 .accessibilityLabel("Se connecter avec Cloudflare Access")

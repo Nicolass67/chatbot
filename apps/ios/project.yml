@@ -59,6 +59,8 @@ targets:
         NSFaceIDUsageDescription: Verrouiller l’accès local à Chatbot sur cet iPhone.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
+        # Origin publique — surchargée par Local.xcconfig / Flash.xcconfig / CI.
+        ChatbotPublicBaseURL: "$(CHATBOT_PUBLIC_BASE_URL)"
   ChatbotNativeTests:
     type: bundle.unit-test
     platform: iOS
