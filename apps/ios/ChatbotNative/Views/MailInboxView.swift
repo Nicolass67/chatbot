@@ -263,7 +263,10 @@ struct MailInboxView: View {
             .refreshable { scheduleLoad() }
             .task {
                 await loadOAuth()
-                scheduleLoad()
+                // Ne pas recharger la boîte à chaque réapparition d’onglet.
+                if messages.isEmpty {
+                    scheduleLoad()
+                }
             }
             .onChange(of: nav.mailDeepLink) { _, link in
                 handleMailDeepLink(link)

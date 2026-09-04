@@ -157,24 +157,33 @@ struct MainTabView: View {
 
     var body: some View {
         @Bindable var nav = nav
-        TabView(selection: $nav.selectedTab) {
-            Tab(AppTab.chat.title, systemImage: AppTab.chat.systemImage, value: AppTab.chat) {
+        VStack(spacing: 0) {
+            ZStack {
+                // Toujours montés : évite destroy/@State wipe + rejeu des `.task` à chaque switch.
                 ChatRootView()
-            }
-            .accessibilityIdentifier(A11yID.Navigation.tabChat)
+                    .opacity(nav.selectedTab == .chat ? 1 : 0)
+                    .allowsHitTesting(nav.selectedTab == .chat)
+                    .accessibilityHidden(nav.selectedTab != .chat)
+                    .zIndex(nav.selectedTab == .chat ? 1 : 0)
 
-            Tab(AppTab.mail.title, systemImage: AppTab.mail.systemImage, value: AppTab.mail) {
                 MailInboxView()
-            }
-            .accessibilityIdentifier(A11yID.Navigation.tabMail)
+                    .opacity(nav.selectedTab == .mail ? 1 : 0)
+                    .allowsHitTesting(nav.selectedTab == .mail)
+                    .accessibilityHidden(nav.selectedTab != .mail)
+                    .zIndex(nav.selectedTab == .mail ? 1 : 0)
 
-            Tab(AppTab.files.title, systemImage: AppTab.files.systemImage, value: AppTab.files) {
                 FilesBrowserView()
+                    .opacity(nav.selectedTab == .files ? 1 : 0)
+                    .allowsHitTesting(nav.selectedTab == .files)
+                    .accessibilityHidden(nav.selectedTab != .files)
+                    .zIndex(nav.selectedTab == .files ? 1 : 0)
             }
-            .accessibilityIdentifier(A11yID.Navigation.tabFiles)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            PrimaryTabBar(selection: $nav.selectedTab)
         }
+        .background(AppTheme.background.ignoresSafeArea())
         .tint(AppTheme.accent)
-        .tabBarMinimizeBehavior(.onScrollDown)
         .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
@@ -184,6 +193,66 @@ struct MainTabView: View {
                 .chatbotSheetAppearance(appearance.mode)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+/// Tab bar dédiée — hors TabView pour garder Chat/Mail/Files en vie.
+private struct PrimaryTabBar: View {
+    @Binding var selection: AppTab
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTab.allCases) { tab in
+                Button {
+                    guard selection != tab else { return }
+                    AppHaptics.light()
+                    selection = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 20, weight: selection == tab ? .semibold : .regular))
+                            .symbolRenderingMode(.hierarchical)
+                        Text(tab.title)
+                            .font(.system(size: 10, weight: selection == tab ? .semibold : .medium))
+                    }
+                    .foregroundStyle(selection == tab ? AppTheme.accent : AppTheme.mutedForeground)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                    .padding(.bottom, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(selection == tab ? .isSelected : [])
+                .accessibilityIdentifier(tabA11y(tab))
+            }
+        }
+        .padding(.horizontal, 8)
+        .background {
+            Group {
+                if reduceTransparency {
+                    AppTheme.surfaceElevated
+                } else {
+                    Rectangle().fill(.ultraThinMaterial)
+                }
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(AppTheme.borderSubtle)
+                    .frame(height: 0.5)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func tabA11y(_ tab: AppTab) -> String {
+        switch tab {
+        case .chat: return A11yID.Navigation.tabChat
+        case .mail: return A11yID.Navigation.tabMail
+        case .files: return A11yID.Navigation.tabFiles
         }
     }
 }

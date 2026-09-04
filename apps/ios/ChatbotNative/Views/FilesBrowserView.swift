@@ -157,7 +157,11 @@ struct FilesBrowserView: View {
                 }
             }
             .refreshable { await loadRoots() }
-            .task { await loadRoots() }
+            .task {
+                if roots.isEmpty {
+                    await loadRoots()
+                }
+            }
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
             }

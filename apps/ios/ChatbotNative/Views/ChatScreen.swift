@@ -203,14 +203,22 @@ struct ChatScreen: View {
             reasoningEffort = conversation.reasoningEffort ?? ""
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
             persistActiveConversation()
-            await loadMessages()
-            await loadSettings()
+            // Skip reload si le fil est déjà en mémoire (switch d’onglet).
+            if messages.isEmpty {
+                await loadMessages()
+            }
+            if !settingsHydrated {
+                await loadSettings()
+            }
             await refreshRuntimeStatus()
         }
         .task {
-            // Observation périodique de l’état réel (pas une source de vérité arbitraire).
+            // Observation périodique — pause quand l’onglet Chat n’est pas visible.
             while !Task.isCancelled {
-                await refreshRuntimeStatus()
+                let chatVisible = forcedScope != nil || nav.selectedTab == .chat
+                if chatVisible {
+                    await refreshRuntimeStatus()
+                }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
