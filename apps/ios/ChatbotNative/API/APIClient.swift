@@ -120,7 +120,13 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        // Append each path segment separately — appendingPathComponent("a/b") percent-encodes `/`.
+        let segments = path.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        var url = baseURL
+        for segment in segments {
+            url = url.appendingPathComponent(segment)
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("ios", forHTTPHeaderField: "X-Client")
@@ -559,6 +565,18 @@ final class APIClient: @unchecked Sendable {
 
     func fetchMailThread(id: String) async throws -> MailThreadDTO {
         if UITestMode.isActive { return UITestFixtures.mailThread(id: id) }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw APIClientError.decode }
+        do {
+            return try await fetchMailThreadOnce(id: trimmed)
+        } catch let APIClientError.http(code, _) where code == 500 || code == 502 || code == 503 {
+            // Retry once — Gmail/provider flakes on large threads.
+            try await Task.sleep(nanoseconds: 350_000_000)
+            return try await fetchMailThreadOnce(id: trimmed)
+        }
+    }
+
+    private func fetchMailThreadOnce(id: String) async throws -> MailThreadDTO {
         let req = authorizedRequest(path: "api/mail/threads/\(id)")
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)

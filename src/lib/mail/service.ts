@@ -94,7 +94,7 @@ export function toPublicThread(thread: NormalizedEmailThread) {
     id: thread.id,
     subject: thread.subject,
     participants: thread.participants,
-    messages: thread.messages.map((m) => ({
+    messages: (thread.messages ?? []).map((m) => ({
       id: m.id,
       threadId: m.threadId,
       from: m.from,
@@ -107,7 +107,7 @@ export function toPublicThread(thread: NormalizedEmailThread) {
       bodyHtml: m.bodyHtml,
       isUnread: m.isUnread,
       hasAttachments: m.hasAttachments,
-      attachments: m.attachments.map((a) => ({
+      attachments: (m.attachments ?? []).map((a) => ({
         id: a.id,
         filename: a.filename,
         mimeType: a.mimeType,

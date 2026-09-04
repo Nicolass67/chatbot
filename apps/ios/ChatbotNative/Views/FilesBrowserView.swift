@@ -52,9 +52,18 @@ struct FilesBrowserView: View {
     @State private var searching = false
     @State private var pendingDeepLink: FilesDeepLink?
     @State private var indexStatus: FilesIndexStatus = .idle
+    @State private var showAssistant = false
+    @State private var sheetContext: FilesAssistantContext = .global
+    @State private var assistantDetent: PresentationDetent = .large
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private func openFilesAssistant(_ context: FilesAssistantContext) {
+        sheetContext = context
+        assistantDetent = .large
+        showAssistant = true
     }
 
     var body: some View {
@@ -64,6 +73,9 @@ struct FilesBrowserView: View {
                 VStack(spacing: 0) {
                     filesIndexBanner
                     content
+                }
+                ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                    openFilesAssistant(.global)
                 }
             }
             .navigationTitle("Files")
@@ -95,7 +107,11 @@ struct FilesBrowserView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
-            .searchable(text: $searchQuery, prompt: "Rechercher un fichier")
+            .searchable(
+                text: $searchQuery,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Rechercher un fichier"
+            )
             .onChange(of: searchQuery) { _, q in
                 Task { await runSearch(q) }
             }
@@ -110,8 +126,8 @@ struct FilesBrowserView: View {
             }
             .onChange(of: nav.presentFilesAssistant) { _, present in
                 guard present else { return }
+                openFilesAssistant(nav.filesAssistantContext)
                 nav.presentFilesAssistant = false
-                nav.openFilesAssistant(nav.filesAssistantContext)
             }
             .onChange(of: nav.qaIntent) { _, intent in
                 guard let intent else { return }
@@ -134,7 +150,7 @@ struct FilesBrowserView: View {
                 case .filesFile:
                     nav.qaIntent = nil
                 case .filesAssistant:
-                    nav.openFilesAssistant(.global)
+                    openFilesAssistant(.global)
                     nav.qaIntent = nil
                 default:
                     break
@@ -144,6 +160,23 @@ struct FilesBrowserView: View {
             .task { await loadRoots() }
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
+            }
+            .sheet(isPresented: $showAssistant) {
+                ContextualAssistantSheet(
+                    scope: .files,
+                    title: sheetContext.sheetTitle,
+                    contextLabel: sheetContext.label,
+                    contextRef: sheetContext.ref,
+                    persistenceKey: sheetContext.persistenceKey
+                )
+                .environmentObject(session)
+                .environment(nav)
+                .presentationDetents([.medium, .large], selection: $assistantDetent)
+                .presentationDragIndicator(.visible)
+                .onAppear { assistantDetent = .large }
+            }
+            .onChange(of: showAssistant) { _, presented in
+                if presented { assistantDetent = .large }
             }
         }
     }
@@ -501,6 +534,7 @@ struct FilesBrowserView: View {
 
 struct FileFolderView: View {
     @EnvironmentObject private var session: AppSessionStore
+    @Environment(AppNavigation.self) private var nav
     let root: FileRootDTO
     let path: String
     let title: String
@@ -525,9 +559,15 @@ struct FileFolderView: View {
     @State private var pendingPropose: FilesProposeResult?
     @State private var confirming = false
     @State private var uploading = false
+    @State private var showAssistant = false
+    @State private var assistantDetent: PresentationDetent = .large
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var folderAssistantContext: FilesAssistantContext {
+        .folder(rootId: root.id, path: path, title: title)
     }
 
     private var breadcrumb: String {
@@ -582,6 +622,10 @@ struct FileFolderView: View {
                     list
                 }
             }
+            ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                assistantDetent = .large
+                showAssistant = true
+            }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -624,6 +668,20 @@ struct FileFolderView: View {
                 }
                 .accessibilityLabel("Options du dossier")
             }
+        }
+        .sheet(isPresented: $showAssistant) {
+            ContextualAssistantSheet(
+                scope: .files,
+                title: folderAssistantContext.sheetTitle,
+                contextLabel: folderAssistantContext.label,
+                contextRef: folderAssistantContext.ref,
+                persistenceKey: folderAssistantContext.persistenceKey
+            )
+            .environmentObject(session)
+            .environment(nav)
+            .presentationDetents([.medium, .large], selection: $assistantDetent)
+            .presentationDragIndicator(.visible)
+            .onAppear { assistantDetent = .large }
         }
         .alert("Nouveau dossier", isPresented: $showMkdir) {
             TextField("Nom", text: $mkdirName)

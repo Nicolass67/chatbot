@@ -68,7 +68,6 @@ struct SettingsHubView: View {
         }
         .chatbotSheetAppearance(appearance.mode)
         .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
-        .id(appearance.mode)
     }
 }
 

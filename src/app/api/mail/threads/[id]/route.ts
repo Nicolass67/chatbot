@@ -21,7 +21,7 @@ export const GET = withAuth(
     const userId = auth.userId ?? "local";
 
     try {
-      const thread = await getMailThread(userId, id);
+      const thread = await getMailThread(userId, decodeURIComponent(id));
       return Response.json(toPublicThread(thread));
     } catch (error) {
       if (error instanceof EmailNotConnectedError) {
@@ -30,7 +30,14 @@ export const GET = withAuth(
       if (error instanceof EmailProviderError && error.code === "NOT_FOUND") {
         return apiErrorResponse("NOT_FOUND", "Fil introuvable.");
       }
-      throw error;
+      console.error("[mail/threads] getMailThread failed", {
+        id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return apiErrorResponse(
+        "INTERNAL",
+        error instanceof Error ? error.message : "Impossible de charger ce fil."
+      );
     }
   }
 );

@@ -164,19 +164,11 @@ final class AppNavigation {
         selectedTab = .mail
     }
 
-    /// Files : plus d’assistant contextuel — redirige vers le Chat général (conversation persistante).
+    /// Files Assistant sheet (in-place, comme Mail — pas de redirect Chat).
     func openFilesAssistant(_ context: FilesAssistantContext = .global) {
-        presentFilesAssistant = false
-        selectedTab = .chat
-        switch context {
-        case .global:
-            chatComposerPrefill = "Retrouve un fichier : "
-        case .folder(_, let path, let title):
-            let label = path.isEmpty ? title : path
-            chatComposerPrefill = "À propos du dossier « \(label) » : "
-        case .file(_, let name, _, _):
-            chatComposerPrefill = "À propos du fichier « \(name) » : "
-        }
+        filesAssistantContext = context
+        presentFilesAssistant = true
+        selectedTab = .files
     }
 
     /// Ancien API — redirige vers Assistant **dans** Mail (plus vers Chat général).

@@ -498,8 +498,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     const searchCache = new SearchQueryCache();
     const sourceBudget = resolveSourceBudget({
-      searchType: route.webSearch?.searchType,
-      researchRequired: route.webSearch?.required === true,
+      searchType: route.web.searchType,
+      researchRequired:
+        route.web.mode === "required" || route.web.searchType === "research",
       webSearchMaxResults: input.settings.webSearchMaxResults,
     });
     const maxCollectedSources = Math.min(

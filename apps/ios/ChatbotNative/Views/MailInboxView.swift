@@ -28,7 +28,7 @@ struct MailInboxView: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var error: String?
     @State private var path = NavigationPath()
-    @State private var category: String = "primary"
+    @State private var category: String = "inbox"
     @State private var unreadOnly = false
     @State private var sort: MailSortOption = .newest
     @State private var search = ""
@@ -54,6 +54,7 @@ struct MailInboxView: View {
     private let sortWindowMax = 150
 
     private let categories: [(id: String, label: String)] = [
+        ("inbox", "Boîte"),
         ("primary", "Principal"),
         ("promotions", "Promotions"),
         ("social", "Réseaux"),
@@ -217,11 +218,14 @@ struct MailInboxView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
-            .searchable(text: $search, prompt: "Rechercher dans Gmail…")
+            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Rechercher dans Gmail…")
             .onSubmit(of: .search) { scheduleLoad() }
             .onChange(of: search) { _, q in
                 if q.isEmpty { scheduleLoad() }
             }
+            .onChange(of: unreadOnly) { _, _ in scheduleLoad() }
+            .onChange(of: category) { _, _ in scheduleLoad() }
+            .onChange(of: sort) { _, _ in scheduleLoad() }
             .refreshable { scheduleLoad() }
             .task {
                 await loadOAuth()
@@ -332,18 +336,33 @@ struct MailInboxView: View {
                     Text("Non lus").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: unreadOnly) { _, _ in scheduleLoad() }
+                .accessibilityLabel("Filtre boîte ou non lus")
 
                 Menu {
-                    Picker("Catégorie", selection: $category) {
+                    Section("Catégorie") {
                         ForEach(categories, id: \.id) { cat in
-                            Text(cat.label).tag(cat.id)
+                            Button {
+                                category = cat.id
+                            } label: {
+                                if category == cat.id {
+                                    Label(cat.label, systemImage: "checkmark")
+                                } else {
+                                    Text(cat.label)
+                                }
+                            }
                         }
                     }
-                    Divider()
-                    Picker("Tri", selection: $sort) {
+                    Section("Tri") {
                         ForEach(MailSortOption.allCases) { option in
-                            Text(option.title).tag(option)
+                            Button {
+                                sort = option
+                            } label: {
+                                if sort == option {
+                                    Label(option.title, systemImage: "checkmark")
+                                } else {
+                                    Text(option.title)
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -357,8 +376,7 @@ struct MailInboxView: View {
                     .frame(minHeight: 34)
                     .background(AppTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                 }
-                .onChange(of: category) { _, _ in scheduleLoad() }
-                .onChange(of: sort) { _, _ in scheduleLoad() }
+                .accessibilityLabel("Catégorie et tri")
             }
             .padding(.horizontal, 14)
 
@@ -530,8 +548,8 @@ struct MailInboxView: View {
                     pageToken: pageToken
                 )
                 guard gen == loadGeneration, !Task.isCancelled else { return }
-                // Gmail renvoie déjà du plus récent ; re-tri déterministe pour stabilité.
-                messages = sortedMessages(page.messages, by: .newest)
+                // Appliquer le tri local même pour « plus récents » (ordre déterministe).
+                messages = sortedMessages(page.messages, by: activeSort)
                 nextPageToken = page.nextPageToken
                 resultSizeEstimate = page.resultSizeEstimate
                 sortedWindow = []
@@ -898,8 +916,17 @@ struct MailThreadView: View {
             thread = try await client.fetchMailThread(id: threadId)
             error = nil
             try? await client.markMailRead(id: summary.id)
+        } catch is CancellationError {
+            return
         } catch {
-            self.error = error.localizedDescription
+            if case APIClientError.http(let code, _) = error, code >= 500 {
+                self.error = "Le serveur n’a pas pu ouvrir ce mail (HTTP \(code)). Réessaie."
+            } else {
+                self.error = error.localizedDescription
+            }
+            if case APIClientError.unauthorized = error {
+                await session.logout()
+            }
         }
     }
 

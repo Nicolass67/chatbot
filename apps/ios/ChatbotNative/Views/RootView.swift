@@ -182,7 +182,6 @@ struct MainTabView: View {
                 .environmentObject(appearance)
                 .environment(nav)
                 .chatbotSheetAppearance(appearance.mode)
-                .id(appearance.mode)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }

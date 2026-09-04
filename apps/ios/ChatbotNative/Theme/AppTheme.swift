@@ -1,47 +1,48 @@
 import SwiftUI
 import UIKit
 
-/// Ink Indigo — identité premium (recherche 2025/2026 : indigo ardoise + corail mat désaturé).
-/// Pas de teal / vert / jaune comme identité principale. Accent indigo cool, surfaces froides.
+/// Soft Graphite / Ice Blue — identité premium froide.
+/// Dark mode : accent light-blue moderne. Jamais de jaune / ambre d’identité.
 enum AppTheme {
     // MARK: - Semantic colors (Light + Dark)
 
-    static let background = Color.cn(light: 0xF3F4F8, dark: 0x0E1016)
-    static let sidebar = Color.cn(light: 0xE8EAF0, dark: 0x151822)
-    static let foreground = Color.cn(light: 0x14161F, dark: 0xE6E8EF)
-    static let surface = Color.cn(light: 0xFFFFFF, dark: 0x1A1D28)
-    static let surfaceElevated = Color.cn(light: 0xFFFFFF, dark: 0x222633)
-    static let surfaceHover = Color.cn(light: 0xE4E7EF, dark: 0x2A2F3E)
-    static let surfaceActive = Color.cn(light: 0xD8DCE8, dark: 0x343A4C)
+    static let background = Color.cn(light: 0xF3F5F9, dark: 0x0B0F14)
+    static let sidebar = Color.cn(light: 0xE8ECF3, dark: 0x121820)
+    static let foreground = Color.cn(light: 0x12161E, dark: 0xE8EEF6)
+    static let surface = Color.cn(light: 0xFFFFFF, dark: 0x161C26)
+    static let surfaceElevated = Color.cn(light: 0xFFFFFF, dark: 0x1E2633)
+    static let surfaceHover = Color.cn(light: 0xE2E8F2, dark: 0x273142)
+    static let surfaceActive = Color.cn(light: 0xD5DDEA, dark: 0x314054)
 
-    /// Accent Indigo ardoise — distinct Mist Teal / violet néon / bleu Apple flashy.
-    static let accent = Color.cn(light: 0x4A5680, dark: 0x9AA6D4)
-    static let accentHover = Color.cn(light: 0x3D476C, dark: 0xB0BAE0)
-    static let accentForeground = Color.cn(light: 0xFFFFFF, dark: 0x0E1016)
+    /// Accent light-blue moderne (clair + sombre) — remplace indigo/jaune parasite.
+    static let accent = Color.cn(light: 0x3B82F6, dark: 0x7DD3FC)
+    static let accentHover = Color.cn(light: 0x2563EB, dark: 0xA5E4FF)
+    static let accentForeground = Color.cn(light: 0xFFFFFF, dark: 0x0B0F14)
     static let accentSubtle = accent.opacity(0.14)
 
-    static let muted = Color.cn(light: 0x5A5F70, dark: 0xA0A6B8)
-    static let mutedForeground = Color.cn(light: 0x858A9A, dark: 0x6E7488)
+    static let muted = Color.cn(light: 0x5A6478, dark: 0x9AA8BC)
+    static let mutedForeground = Color.cn(light: 0x8490A4, dark: 0x6B7A90)
 
-    static let userMessage = Color.cn(light: 0xE8EBF5, dark: 0x252A3A)
+    static let userMessage = Color.cn(light: 0xE8F1FE, dark: 0x1A2838)
     static let danger = Color.cn(light: 0xB85C58, dark: 0xC97D79)
     /// Succès sémantique uniquement (pas identité).
     static let success = Color.cn(light: 0x4F7A72, dark: 0x7FA89E)
-    /// Alerte froide (ardoise) — jamais jaune / ambre d’identité.
-    static let warning = Color.cn(light: 0x6B738A, dark: 0x9AA3B8)
+    /// Alerte froide — jamais jaune / ambre d’identité.
+    static let warning = Color.cn(light: 0x64748B, dark: 0x94A3B8)
 
-    static let border = Color.cn(light: 0xD0D4E0, dark: 0x2E3344)
-    static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF0A)
-    static let glassBorder = Color.cn(light: 0x00000018, dark: 0xFFFFFF18)
-    static let codeBg = Color.cn(light: 0xEBEDF4, dark: 0x12141C)
+    static let border = Color.cn(light: 0xCDD5E3, dark: 0x2A3545)
+    /// 0xRRGGBBAA — alpha dans l’octet bas (Color.cn le parse correctement).
+    static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF14)
+    static let glassBorder = Color.cn(light: 0x00000018, dark: 0x7DD3FC33)
+    static let codeBg = Color.cn(light: 0xEBF0F7, dark: 0x0F141C)
     static let assistantBar = accent
-    static let ambientCool = Color.cn(light: 0x8A94B8, dark: 0x3A4260)
-    /// Chaleur secondaire très désaturée (corail gris) — pas jaune.
-    static let ambientWarm = Color.cn(light: 0xA89894, dark: 0x2E2A2C)
+    static let ambientCool = Color.cn(light: 0x7EB6FF, dark: 0x1E3A5F)
+    /// Chaleur secondaire très désaturée — pas jaune.
+    static let ambientWarm = Color.cn(light: 0xA8B0BC, dark: 0x1A222C)
 
     /// Scopes
-    static let mailAccent = Color.cn(light: 0x4A6280, dark: 0x8AADC8)
-    static let filesAccent = Color.cn(light: 0x7A6A8A, dark: 0xB0A0C0)
+    static let mailAccent = Color.cn(light: 0x3B82F6, dark: 0x7DD3FC)
+    static let filesAccent = Color.cn(light: 0x0EA5E9, dark: 0x67E8F9)
 
     // MARK: - Spacing (4-pt)
 
@@ -99,19 +100,33 @@ extension Color {
         self.init(.sRGB, red: r, green: g, blue: b, opacity: opacity)
     }
 
-    /// Adaptive light/dark from hex (alpha nibble optional in light/dark as RGB only).
+    /// Adaptive light/dark. Accepts 0xRRGGBB or 0xRRGGBBAA (alpha in low byte).
     static func cn(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { traits in
             let hex = traits.userInterfaceStyle == .dark ? dark : light
-            let r = CGFloat((hex >> 16) & 0xFF) / 255
-            let g = CGFloat((hex >> 8) & 0xFF) / 255
-            let b = CGFloat((hex >> 0) & 0xFF) / 255
-            return UIColor(red: r, green: g, blue: b, alpha: 1)
+            return UIColor.cnHex(hex)
         })
     }
 }
 
-/// Fond Ink Indigo — ambient indigo + corail mat discret.
+private extension UIColor {
+    /// Parse 0xRRGGBB (opaque) or 0xRRGGBBAA. Never treat AA as blue (was causing yellow borders in dark).
+    static func cnHex(_ hex: UInt32) -> UIColor {
+        if hex > 0x00FF_FFFF {
+            let r = CGFloat((hex >> 24) & 0xFF) / 255
+            let g = CGFloat((hex >> 16) & 0xFF) / 255
+            let b = CGFloat((hex >> 8) & 0xFF) / 255
+            let a = CGFloat(hex & 0xFF) / 255
+            return UIColor(red: r, green: g, blue: b, alpha: a)
+        }
+        let r = CGFloat((hex >> 16) & 0xFF) / 255
+        let g = CGFloat((hex >> 8) & 0xFF) / 255
+        let b = CGFloat(hex & 0xFF) / 255
+        return UIColor(red: r, green: g, blue: b, alpha: 1)
+    }
+}
+
+/// Fond Ice Blue — ambient bleu clair moderne.
 struct AmbientBackground: View {
     @Environment(\.colorScheme) private var scheme
 
