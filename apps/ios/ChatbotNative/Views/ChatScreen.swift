@@ -69,9 +69,10 @@ struct ChatScreen: View {
     @State private var showScrollDown = false
     /// Pendant un scroll programmé (envoi / stream / bouton), ignore le flicker de pastille.
     @State private var suppressScrollDownUntil: Date = .distantPast
-    /// Distance au bas en dessous de laquelle le bouton « revenir en bas » est inutile.
-    private let scrollBottomProximityThreshold: CGFloat = 140
-    private let scrollBottomHideThreshold: CGFloat = 48
+    /// Afficher « bas » seulement après une vraie remontée (≈ 2–3 bulles), pas en bas de fil.
+    private let scrollBottomProximityThreshold: CGFloat = 520
+    /// Redescente : masquer plus tôt que le seuil d’apparition (hystérésis).
+    private let scrollBottomHideThreshold: CGFloat = 160
     @State private var scrollToken = 0
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
@@ -470,12 +471,9 @@ struct ChatScreen: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(
-                    DragGesture(minimumDistance: 10).onChanged { value in
+                    DragGesture(minimumDistance: 10).onChanged { _ in
                         Keyboard.dismiss()
-                        // Remonter dans l’historique pendant le stream → coupe l’auto-scroll.
-                        if value.translation.height > 14, !showScrollDown {
-                            showScrollDown = true
-                        }
+                        // Ne pas forcer showScrollDown ici : la géométrie (seuil ~520pt) décide.
                     }
                 )
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -488,7 +486,6 @@ struct ChatScreen: View {
                     let farFromBottom = distanceToBottom > scrollBottomProximityThreshold
                     let nearBottom = distanceToBottom <= scrollBottomHideThreshold
 
-                    // Même pendant un scroll programmé : si l’utilisateur a quitté le bas, on le laisse.
                     if farFromBottom {
                         if !showScrollDown {
                             withAnimation(.easeInOut(duration: 0.18)) {
@@ -500,7 +497,7 @@ struct ChatScreen: View {
 
                     if Date() < suppressScrollDownUntil { return }
 
-                    // Redescente en bas → réactive le suivi auto du stream.
+                    // Redescente en bas → cacher le bouton et réactiver l’auto-scroll.
                     if nearBottom, showScrollDown {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             showScrollDown = false
