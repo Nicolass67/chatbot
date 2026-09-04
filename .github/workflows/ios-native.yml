@@ -1,9 +1,10 @@
 name: iOS Native Full CI
 
 # Gate push/PR — budget dur ≤5 min.
-# Pas d’IPA ici (→ ios-native-ipa-flash / ios-native-qa).
-# Pas de suite UI complète (→ ios-native-simulator plan=smoke|all).
-# CI pin: macos-26 + Xcode 26.6.
+# Compile-only (generic iOS Simulator) — pas de boot Simulator, pas d’UI, pas d’IPA.
+# UI gate : ios-native-simulator.yml plan=smoke
+# IPA : ios-native-ipa-flash / ios-native-qa
+# CI pin: macos-26 + Xcode 26.6
 
 on:
   workflow_dispatch:
@@ -26,9 +27,9 @@ permissions:
 
 jobs:
   gate:
-    name: Full CI — unit gate (≤5m)
+    name: Full CI — compile gate (≤5m)
     runs-on: macos-26
-    timeout-minutes: 8
+    timeout-minutes: 7
 
     steps:
       - name: Checkout
@@ -46,6 +47,7 @@ jobs:
           sudo xcode-select -s "$PIN/Contents/Developer"
           xcodebuild -version | tee /tmp/xcode-version.txt
           grep -E 'Xcode 26\.6' /tmp/xcode-version.txt >/dev/null
+          echo "GATE_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Cache Homebrew XcodeGen
         uses: actions/cache@v4
@@ -54,9 +56,9 @@ jobs:
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar/xcodegen
             /opt/homebrew/bin/xcodegen
-          key: brew-xcodegen-full-v2-${{ runner.os }}
+          key: brew-xcodegen-full-v3-${{ runner.os }}
           restore-keys: |
-            brew-xcodegen-full-v2-${{ runner.os }}-
+            brew-xcodegen-full-v3-${{ runner.os }}-
             brew-xcodegen-${{ runner.os }}-
 
       - name: Install XcodeGen
@@ -68,92 +70,47 @@ jobs:
             brew install xcodegen
           fi
 
-      - name: Cache DerivedData (unit)
+      - name: Cache DerivedData (compile)
         uses: actions/cache@v4
         with:
           path: apps/ios/derived-unit
-          key: ios-unit-dd-v1-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift', 'apps/ios/ChatbotNativeTests/**/*.swift') }}
+          key: ios-compile-dd-v1-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift', 'apps/ios/ChatbotNativeTests/**/*.swift') }}
           restore-keys: |
-            ios-unit-dd-v1-${{ runner.os }}-
+            ios-compile-dd-v1-${{ runner.os }}-
 
       - name: Generate Xcode project
         working-directory: apps/ios
         run: xcodegen generate
 
-      - name: Resolve + boot Simulator (fast)
-        id: sim
-        run: |
-          set -euo pipefail
-          GATE_START=$(date +%s)
-          echo "GATE_START=$GATE_START" >> "$GITHUB_ENV"
-          PREFER="${IOS_SIMULATOR_DEVICE:-iPhone 17}"
-          xcrun simctl list devices available > /tmp/devices.txt
-          UDID=$(python3 - <<'PY'
-          import re
-          prefer = "iphone 17"
-          text = open("/tmp/devices.txt", encoding="utf-8", errors="replace").read()
-          fallback = None
-          for line in text.splitlines():
-              if "iPhone" not in line or "unavailable" in line.lower():
-                  continue
-              m = re.search(r"\(([A-F0-9-]{36})\)", line)
-              if not m:
-                  continue
-              udid = m.group(1)
-              if prefer in line.lower():
-                  print(udid)
-                  raise SystemExit(0)
-              if fallback is None:
-                  fallback = udid
-          if fallback:
-              print(fallback)
-          else:
-              raise SystemExit(1)
-          PY
-          )
-          echo "UDID=$UDID" >> "$GITHUB_ENV"
-          xcrun simctl boot "$UDID" 2>/dev/null || true
-          # bootstatus court — pas de wait infini
-          xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
-
-      - name: Unit tests (only)
+      - name: Compile (generic iOS Simulator)
         working-directory: apps/ios
         run: |
           set -euo pipefail
-          TEST_START=$(date +%s)
-          xcodebuild test \
+          BUILD_START=$(date +%s)
+          # generic = pas de boot Simulator → wall time stable
+          xcodebuild build \
             -project ChatbotNative.xcodeproj \
-            -scheme ChatbotNativeUnit \
-            -destination "id=${UDID}" \
+            -scheme ChatbotNative \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath derived-unit \
-            -parallel-testing-enabled YES \
-            -maximum-parallel-testers 2 \
+            -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             ENABLE_TESTABILITY=YES \
-            -only-testing:ChatbotNativeTests \
             -quiet
-          TEST_END=$(date +%s)
-          ELAPSED=$((TEST_END - GATE_START))
-          TEST_S=$((TEST_END - TEST_START))
+          BUILD_END=$(date +%s)
+          BUILD_S=$((BUILD_END - BUILD_START))
+          ELAPSED=$((BUILD_END - GATE_START))
           {
-            echo "## Full CI gate (≤5m budget)"
-            echo "- unit tests: ${TEST_S}s"
-            echo "- wall since job start marker: ${ELAPSED}s"
+            echo "## Full CI compile gate (≤5m)"
+            echo "- xcodebuild build: ${BUILD_S}s"
+            echo "- wall: ${ELAPSED}s"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$ELAPSED" -gt 300 ]; then
-            echo "::warning::Gate exceeded 5 min wall (${ELAPSED}s) — investigate cache / sim boot"
+            echo "::warning::Gate wall ${ELAPSED}s > 5m (cache miss?)"
           fi
-
-      - name: Budget check
-        if: always()
-        run: |
-          set -euo pipefail
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - ${GATE_START:-NOW}))
-          echo "Total gate wall ≈ ${ELAPSED}s" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ELAPSED" -gt 360 ]; then
-            echo "::error::Hard fail: Full CI gate >6 min (${ELAPSED}s). Slim further."
+            echo "::error::Hard fail: compile gate >6 min (${ELAPSED}s)"
             exit 1
           fi

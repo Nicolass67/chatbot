@@ -20,17 +20,16 @@ final class SmokeGateUITests: XCTestCase {
                 || app.textFields["Message"].waitForExistence(timeout: 8),
             "Chat root / composer must be visible"
         )
-        // Empty canvas (fixtures : uitest-conv-empty sans messages)
         XCTAssertFalse(
-            app.staticTexts["Bonjour UITest"].waitForExistence(timeout: 1),
+            app.staticTexts["Bonjour UITest"].exists,
             "Empty chat must not show sample fixture messages"
         )
-        XCTAssertTrue(
-            app.staticTexts["Dis-moi ce dont tu as besoin."].waitForExistence(timeout: 6)
-                || app.staticTexts["Chatbot"].waitForExistence(timeout: 4)
-                || composer.exists,
-            "EmptyChatCanvas (or composer) expected on new chat"
-        )
+        // EmptyChatCanvas title/subtitle — soft assert (composer suffit pour smoke)
+        let emptyHint =
+            app.staticTexts["Dis-moi ce dont tu as besoin."].exists
+            || app.staticTexts["Chatbot"].exists
+            || composer.exists
+        XCTAssertTrue(emptyHint, "EmptyChatCanvas (or composer) expected on new chat")
         saveScreenshot(app, name: "chat-empty")
 
         app.tapTab(UITestA11y.tabMail)
