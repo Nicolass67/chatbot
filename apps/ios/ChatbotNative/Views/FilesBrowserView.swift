@@ -305,7 +305,7 @@ struct FilesBrowserView: View {
             }
         }
         selection.remove(fileIds: deletedIds)
-        selection.bumpContent()
+        selection.bumpContent(removedFileIds: deletedIds)
         if failed.isEmpty {
             AppHaptics.success()
             if selection.isEmpty { selection.endSelecting() }
@@ -352,7 +352,7 @@ struct FilesBrowserView: View {
             }
         }
         selection.remove(fileIds: movedIds)
-        selection.bumpContent()
+        selection.bumpContent(removedFileIds: movedIds)
         if failed.isEmpty {
             AppHaptics.success()
             if selection.isEmpty { selection.endSelecting() }
@@ -958,7 +958,7 @@ struct FileFolderView: View {
             showAssistant = false
         }
         .onChange(of: selection.contentEpoch) { _, _ in
-            Task { await load(reset: true) }
+            applyRemovedFileIds(selection.lastRemovedFileIds)
         }
         .task {
             // Même logique que les roots : restaurer le cache process avant tout réseau
@@ -1198,6 +1198,22 @@ struct FileFolderView: View {
         return "doc.fill"
     }
 
+    private func applyRemovedFileIds(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        let before = entries.count
+        entries.removeAll { entry in
+            guard let id = entry.fileId else { return false }
+            return ids.contains(id)
+        }
+        guard entries.count != before else { return }
+        TabMemoryCache.saveFolder(
+            rootId: root.id,
+            path: path,
+            entries: entries,
+            nextCursor: nextCursor
+        )
+    }
+
     private func load(reset: Bool) async {
         if reset {
             loading = true
@@ -1332,20 +1348,13 @@ struct FileFolderView: View {
                 confirmationToken: proposal.confirmationToken,
                 confirm: true
             )
-            entries.removeAll { $0.fileId == fileId }
+            applyRemovedFileIds([fileId])
             selection.remove(fileIds: [fileId])
-            selection.bumpContent()
-            TabMemoryCache.saveFolder(
-                rootId: root.id,
-                path: path,
-                entries: entries,
-                nextCursor: nextCursor
-            )
+            // Pas de bumpContent : la liste est déjà à jour localement (évite un reload).
             AppHaptics.success()
         } catch {
             AppHaptics.warning()
             openError = error.localizedDescription
-            await load(reset: true)
         }
     }
 

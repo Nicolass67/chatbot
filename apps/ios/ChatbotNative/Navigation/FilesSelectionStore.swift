@@ -16,7 +16,10 @@ struct FilesSelectedItem: Identifiable, Hashable, Sendable {
 final class FilesSelectionStore {
     var isSelecting = false
     private(set) var items: [FilesSelectedItem] = []
+    /// Incrémente pour synchroniser les dossiers ouverts (prune local, sans reload).
     private(set) var contentEpoch: Int = 0
+    /// Derniers fileIds à retirer des listes ouvertes (lu par chaque dossier de la pile).
+    private(set) var lastRemovedFileIds: Set<String> = []
 
     var count: Int { items.count }
     var isEmpty: Bool { items.isEmpty }
@@ -46,7 +49,9 @@ final class FilesSelectionStore {
         items = []
     }
 
-    func bumpContent() {
+    /// Signale aux dossiers ouverts de retirer ces fichiers de la liste (sans `load` / flash chargement).
+    func bumpContent(removedFileIds: Set<String> = []) {
+        lastRemovedFileIds = removedFileIds
         contentEpoch &+= 1
     }
 
