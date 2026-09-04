@@ -115,24 +115,36 @@ struct MailAttachmentDTO: Identifiable, Codable, Hashable {
     let sizeBytes: Int?
 }
 
+private struct MailAttachmentPreviewItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+}
+
 struct MailAttachmentRow: View {
     @EnvironmentObject private var session: AppSessionStore
     let messageId: String
     let attachment: MailAttachmentDTO
     @State private var busy = false
     @State private var error: String?
-    @State private var shareURL: URL?
+    @State private var localURL: URL?
+    @State private var previewItem: MailAttachmentPreviewItem?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var displayName: String {
+        attachment.filename ?? "Pièce jointe"
     }
 
     var body: some View {
         HStack(spacing: AppTheme.space10) {
             Image(systemName: iconName)
                 .foregroundStyle(AppTheme.mailAccent)
+                .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(attachment.filename ?? "Pièce jointe")
+                Text(displayName)
                     .font(CNFont.callout.weight(.medium))
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
@@ -145,19 +157,31 @@ struct MailAttachmentRow: View {
             Spacer(minLength: 0)
             if busy {
                 ProgressView().controlSize(.small).tint(AppTheme.mailAccent)
-            } else if let shareURL {
-                ShareLink(item: shareURL) {
-                    Image(systemName: "square.and.arrow.up")
-                        .foregroundStyle(AppTheme.mailAccent)
-                        .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
-                }
             } else {
-                Button("Ouvrir") {
-                    Task { await download() }
+                HStack(spacing: 4) {
+                    Button {
+                        Task { await openPreview() }
+                    } label: {
+                        Text("Ouvrir")
+                            .font(CNFont.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.mailAccent)
+                            .padding(.horizontal, 8)
+                            .frame(minHeight: AppTheme.touchMin)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Ouvrir \(displayName)")
+
+                    Button {
+                        Task { await downloadAndShare() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(AppTheme.mailAccent)
+                            .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Télécharger \(displayName)")
                 }
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.mailAccent)
-                .frame(minHeight: AppTheme.touchMin)
             }
         }
         .padding(AppTheme.space12)
@@ -167,6 +191,30 @@ struct MailAttachmentRow: View {
             RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
                 .stroke(AppTheme.borderSubtle, lineWidth: 1)
         )
+        .sheet(item: $previewItem) { item in
+            NavigationStack {
+                QuickLookPreview(url: item.url) {
+                    previewItem = nil
+                }
+                .navigationTitle(item.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Fermer") { previewItem = nil }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            NativeShare.present(url: item.url, title: item.title)
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("Partager")
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .alert("Pièce jointe", isPresented: Binding(
             get: { error != nil },
             set: { if !$0 { error = nil } }
@@ -180,29 +228,58 @@ struct MailAttachmentRow: View {
     private var iconName: String {
         let mime = (attachment.mimeType ?? "").lowercased()
         let name = (attachment.filename ?? "").lowercased()
-        if mime.hasPrefix("image/") || name.hasSuffix(".png") || name.hasSuffix(".jpg") { return "photo" }
+        if mime.hasPrefix("image/") || name.hasSuffix(".png") || name.hasSuffix(".jpg")
+            || name.hasSuffix(".jpeg") || name.hasSuffix(".heic") || name.hasSuffix(".webp") {
+            return "photo"
+        }
         if mime.contains("pdf") || name.hasSuffix(".pdf") { return "doc.richtext" }
+        if name.hasSuffix(".doc") || name.hasSuffix(".docx") { return "doc.text" }
+        if name.hasSuffix(".xls") || name.hasSuffix(".xlsx") || name.hasSuffix(".csv") {
+            return "tablecells"
+        }
         return "paperclip"
     }
 
-    private func download() async {
+    private func openPreview() async {
         busy = true
         defer { busy = false }
         do {
-            let data = try await client.downloadMailAttachment(
-                messageId: messageId,
-                attachmentId: attachment.id
-            )
-            let name = attachment.filename ?? "attachment.bin"
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mail-att", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let url = dir.appendingPathComponent(name)
-            try data.write(to: url, options: .atomic)
-            shareURL = url
+            let url = try await ensureLocalFile()
+            previewItem = MailAttachmentPreviewItem(url: url, title: displayName)
+            AppHaptics.light()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func downloadAndShare() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let url = try await ensureLocalFile()
+            NativeShare.present(url: url, title: displayName)
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func ensureLocalFile() async throws -> URL {
+        if let localURL, FileManager.default.fileExists(atPath: localURL.path) {
+            return localURL
+        }
+        let data = try await client.downloadMailAttachment(
+            messageId: messageId,
+            attachmentId: attachment.id
+        )
+        let name = attachment.filename ?? "attachment.bin"
+        let safe = name.replacingOccurrences(of: "/", with: "_")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mail-att", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(attachment.id)-\(safe)")
+        try data.write(to: url, options: .atomic)
+        localURL = url
+        return url
     }
 }
 
