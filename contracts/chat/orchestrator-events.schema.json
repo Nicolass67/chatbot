@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chatbot.local/contracts/chat/orchestrator-events.schema.json",
+  "title": "OrchestratorEvent",
+  "description": "SSE data payload for POST /api/chat. Unknown type values must be ignored by clients.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "token" } } },
+      "then": {
+        "required": ["type", "content"],
+        "properties": {
+          "type": { "const": "token" },
+          "content": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "done" } } },
+      "then": {
+        "required": ["type", "messageId"],
+        "properties": {
+          "type": { "const": "done" },
+          "messageId": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "error" } } },
+      "then": {
+        "required": ["type", "message"],
+        "properties": {
+          "type": { "const": "error" },
+          "message": { "type": "string" },
+          "code": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "assistant_start" } } },
+      "then": {
+        "required": ["type", "messageId"],
+        "properties": {
+          "type": { "const": "assistant_start" },
+          "messageId": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "mail_handoff" } } },
+      "then": {
+        "required": ["type", "intent", "reason"],
+        "properties": {
+          "type": { "const": "mail_handoff" },
+          "intent": { "type": "string" },
+          "reason": { "type": "string" },
+          "query": { "type": "string" },
+          "threadId": { "type": "string" },
+          "label": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "files_handoff" } } },
+      "then": {
+        "required": ["type", "intent", "reason"],
+        "properties": {
+          "type": { "const": "files_handoff" },
+          "intent": { "type": "string" },
+          "reason": { "type": "string" },
+          "query": { "type": "string" },
+          "rootId": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

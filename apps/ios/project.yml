@@ -1,0 +1,124 @@
+name: ChatbotNative
+options:
+  bundleIdPrefix: fr.nicolazer
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+  objectVersion: 77
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: targeted
+    TARGETED_DEVICE_FAMILY: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native
+    MARKETING_VERSION: "3.0.0"
+    CURRENT_PROJECT_VERSION: "26"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_ALLOWED: "NO"
+    CHATBOT_PUBLIC_BASE_URL: "https://your-worker.example.workers.dev"
+configFiles:
+  Debug: Public.xcconfig
+  Release: Public.xcconfig
+targets:
+  ChatbotNative:
+    type: application
+    platform: iOS
+    sources:
+      - path: ChatbotNative
+        excludes:
+          - "**/*.md"
+    settings:
+      base:
+        PRODUCT_NAME: ChatbotNative
+        INFOPLIST_FILE: ChatbotNative/Info.plist
+        GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_TESTABILITY: "YES"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+        PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native
+    info:
+      path: ChatbotNative/Info.plist
+      properties:
+        CFBundleDisplayName: Chatbot
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleURLName: fr.nicolazer.chatbot.native
+            CFBundleURLSchemes:
+              - chatbot-native
+        NSPhotoLibraryUsageDescription: Joindre des images aux messages du chat.
+        NSFaceIDUsageDescription: Verrouiller l’accès local à Chatbot sur cet iPhone.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+  ChatbotNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ChatbotNativeTests
+    dependencies:
+      - target: ChatbotNative
+    settings:
+      base:
+        PRODUCT_NAME: ChatbotNativeTests
+        PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: "NO"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ChatbotNative.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ChatbotNative"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  ChatbotNativeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ChatbotNativeUITests
+    dependencies:
+      - target: ChatbotNative
+    settings:
+      base:
+        PRODUCT_NAME: ChatbotNativeUITests
+        PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: "NO"
+        TEST_TARGET_NAME: ChatbotNative
+schemes:
+  ChatbotNative:
+    build:
+      targets:
+        ChatbotNative: all
+        ChatbotNativeTests: [test]
+        ChatbotNativeUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ChatbotNativeTests
+        - ChatbotNativeUITests
+    archive:
+      config: Release
+  ChatbotNativeUnit:
+    build:
+      targets:
+        ChatbotNative: all
+        ChatbotNativeTests: [test]
+    test:
+      config: Debug
+      targets:
+        - ChatbotNativeTests
+  ChatbotNativeUI:
+    build:
+      targets:
+        ChatbotNative: [test]
+        ChatbotNativeUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - ChatbotNativeUITests

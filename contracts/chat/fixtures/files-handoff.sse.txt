@@ -1,0 +1,8 @@
+data: {"type":"assistant_start","messageId":"msg_files_1"}
+
+data: {"type":"files_handoff","intent":"search","query":"facture","rootId":"rootabcd12","reason":"Recherche fichiers demandée.","url":"/files?intent=search&q=facture&root=rootabcd12"}
+
+data: {"type":"token","content":"Ouvrez Files pour affiner."}
+
+data: {"type":"done","messageId":"msg_files_1"}
+

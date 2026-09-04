@@ -1,0 +1,12 @@
+data: {"type":"agent_start","runId":"run_1"}
+
+data: {"type":"agent_status","phase":"planning"}
+
+data: {"type":"assistant_start","messageId":"msg_agent_1"}
+
+data: {"type":"token","content":"Plan exécuté."}
+
+data: {"type":"agent_done","runId":"run_1","stats":{"steps":1}}
+
+data: {"type":"done","messageId":"msg_agent_1"}
+

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chatbot.local/contracts/errors/api-error.schema.json",
+  "title": "ApiErrorBody",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error", "code"],
+  "properties": {
+    "error": { "type": "string", "minLength": 1 },
+    "code": {
+      "type": "string",
+      "enum": [
+        "AUTH_REQUIRED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "VALIDATION_ERROR",
+        "FEATURE_DISABLED",
+        "EMAIL_NOT_CONNECTED",
+        "PROVIDER_ERROR",
+        "AI_ERROR",
+        "RATE_LIMITED",
+        "INVALID_STATE",
+        "EXPIRED",
+        "ALREADY_USED",
+        "POLICY_DENIED",
+        "HASH_MISMATCH",
+        "DRAFT_NOT_FOUND",
+        "DRAFT_NOT_VALIDATED",
+        "MESSAGE_NOT_FOUND",
+        "SEND_FAILED",
+        "TRASH_FAILED",
+        "ABORTED",
+        "INTERNAL"
+      ]
+    },
+    "details": { "type": "object", "additionalProperties": true }
+  }
+}

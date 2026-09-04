@@ -1,0 +1,45 @@
+# Configuration SearXNG pour le chatbot local.
+# Documentation : https://docs.searxng.org/admin/settings/settings_engines.html
+#
+# use_default_settings charge les moteurs upstream ; on surcharge disabled/display ici.
+# Objectif : moteurs utilisables depuis Docker sans API commerciale.
+
+use_default_settings: true
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "change-me-in-production-use-openssl-rand-hex-32"
+  limiter: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "fr"
+  formats:
+    - html
+    - json
+
+engines:
+  # Scrapers souvent bloqués / CAPTCHA depuis Docker
+  - name: google cse
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
+
+  # Moteurs généralement utilisables sans clé API
+  - name: duckduckgo
+    disabled: false
+    timeout: 15.0
+  - name: qwant
+    disabled: false
+    timeout: 15.0
+  - name: wikipedia
+    disabled: false
+    display_type:
+      - infobox
+      - list
+  - name: mwmbl
+    disabled: false

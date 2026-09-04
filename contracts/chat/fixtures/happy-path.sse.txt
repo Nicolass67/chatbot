@@ -1,0 +1,8 @@
+data: {"type":"assistant_start","messageId":"msg_assistant_1"}
+
+data: {"type":"token","content":"Bonjour"}
+
+data: {"type":"token","content":" !"}
+
+data: {"type":"done","messageId":"msg_assistant_1"}
+

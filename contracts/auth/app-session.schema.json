@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chatbot.local/contracts/auth/app-session.schema.json",
+  "title": "AppSessionExchange",
+  "description": "Target contract for phase C — not implemented in phase B.",
+  "type": "object",
+  "oneOf": [
+    {
+      "title": "CreateSessionResponse",
+      "type": "object",
+      "required": ["accessToken", "expiresAt", "tokenType"],
+      "properties": {
+        "accessToken": { "type": "string", "minLength": 20 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "tokenType": { "const": "Bearer" },
+        "userId": { "type": "string" }
+      }
+    },
+    {
+      "title": "Error",
+      "type": "object",
+      "required": ["error", "code"],
+      "properties": {
+        "error": { "type": "string" },
+        "code": {
+          "type": "string",
+          "enum": ["AUTH_REQUIRED", "FORBIDDEN", "INTERNAL"]
+        }
+      }
+    }
+  ]
+}

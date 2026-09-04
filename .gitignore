@@ -1,0 +1,101 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# Cloudflare Tunnel (secrets locaux — jamais dans Git)
+deploy/cloudflared/config.yml
+deploy/cloudflared/tunnel.env
+deploy/boot/machine.env
+deploy/cloudflared/*.json
+.cloudflared/
+
+# local data (SQLite + attachments — copy this folder to backup)
+/data/
+/data/attachments/
+
+# SQLite temp files
+*.db-shm
+*.db-wal
+
+# logs and caches
+logs/
+*.log
+.cache/
+.turbo/
+.eslintcache
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Capacitor / iOS (artefacts locaux — le dossier ios/ source sera versionné quand généré)
+ios/App/Pods/
+ios/App/build/
+ios/DerivedData/
+apps/ios/derived/
+*.ipa
+*.mobileprovision
+.capacitor/
+
+# iOS autonomous QA screenshots (garder .gitkeep)
+artifacts/ios/**
+!artifacts/ios/.gitkeep
+artifacts/ios-simulator/
+sidestore-prep/
+scripts/tmp-thread.json
+
+# Cursor MCP (local machine paths — keep mcp.json.example)
+.cursor/mcp.json
+
+# Local privacy overrides (never commit real hosts / Freebox / CF IDs)
+capacitor.local.json
+apps/ios/Local.xcconfig
+workers/chatbot/wrangler.local.jsonc
+
+# isideload CLI build artifacts
+scripts/ios/tools/isideload-cli/target/
+scripts/ios/tools/bin/
+apps/ios/QA.xcconfig
+
+
+.build-home/
+
+
+# Cloudflare API (local)
+deploy/cloudflare-api.env
+

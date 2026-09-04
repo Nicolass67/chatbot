@@ -1,0 +1,285 @@
+name: iOS Native Fast Simulator
+
+# Fast Simulator QA — UI tests + PNG screenshots (no IPA).
+# Orchestrated by: npm.cmd run ios:sim
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ios-native-simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  IOS_SIMULATOR_DEVICE: ${{ vars.IOS_SIMULATOR_DEVICE }}
+  IOS_SIMULATOR_OS: ${{ vars.IOS_SIMULATOR_OS }}
+
+jobs:
+  simulator-ui:
+    name: Fast Simulator UI
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6 (pinned)
+        run: |
+          set -euo pipefail
+          PIN="/Applications/Xcode_26.6.app"
+          if [ ! -d "$PIN" ]; then
+            echo "::error::Pinned Xcode 26.6 not found at $PIN"
+            ls /Applications | grep -i Xcode || true
+            exit 1
+          fi
+          sudo xcode-select -s "$PIN/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -version | grep -E 'Xcode 26\.6' || {
+            echo "::error::Expected Xcode 26.6 after pin"
+            exit 1
+          }
+          echo "XCODE_VERSION=$(xcodebuild -version | head -1)" >> "$GITHUB_ENV"
+
+      - name: Cache Homebrew XcodeGen
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/xcodegen
+            /opt/homebrew/bin/xcodegen
+          key: brew-xcodegen-sim-${{ runner.os }}-${{ hashFiles('.github/workflows/ios-native-simulator.yml') }}
+          restore-keys: |
+            brew-xcodegen-sim-${{ runner.os }}-
+            brew-xcodegen-${{ runner.os }}-
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
+
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: apps/ios/derived-sim
+          key: ios-sim-derived-${{ runner.os }}-${{ hashFiles('apps/ios/project.yml', 'apps/ios/ChatbotNative/**/*.swift', 'apps/ios/ChatbotNativeUITests/**/*.swift') }}
+          restore-keys: |
+            ios-sim-derived-${{ runner.os }}-
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Resolve Simulator destination
+        id: sim
+        run: |
+          set -euo pipefail
+          echo "## Simulator selection" >> "$GITHUB_STEP_SUMMARY"
+          xcrun simctl list runtimes | tee /tmp/runtimes.txt | head -n 40 >> "$GITHUB_STEP_SUMMARY" || true
+          xcrun simctl list devices available | tee /tmp/devices.txt >/dev/null
+
+          PREFER_NAME="${IOS_SIMULATOR_DEVICE:-iPhone 17}"
+          PREFER_OS="${IOS_SIMULATOR_OS:-}"
+          export PREFER_NAME PREFER_OS
+
+          SELECTED=$(python3 <<'PY'
+          import os, re
+          prefer = (os.environ.get("PREFER_NAME") or "iPhone 17").lower()
+          osprefer = (os.environ.get("PREFER_OS") or "").strip()
+          text = open("/tmp/devices.txt", encoding="utf-8", errors="replace").read()
+          current_os = None
+          fallback = None
+          for line in text.splitlines():
+              m = re.match(r"--\s+iOS\s+([0-9.]+)\s+--", line)
+              if m:
+                  current_os = m.group(1)
+                  continue
+              if "iPhone" not in line or "unavailable" in line.lower():
+                  continue
+              um = re.search(r"\(([A-F0-9-]{36})\)", line)
+              if not um:
+                  continue
+              udid = um.group(1)
+              name = re.sub(r"\s*\([A-F0-9-]{36}\).*", "", line).strip()
+              if osprefer and current_os and not current_os.startswith(osprefer):
+                  continue
+              row = f"{udid}|{current_os or '?'}|{name}"
+              if prefer and prefer not in name.lower():
+                  if fallback is None:
+                      fallback = row
+                  continue
+              print(row)
+              raise SystemExit(0)
+          if fallback:
+              print(fallback)
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          )
+
+          UDID=$(echo "$SELECTED" | cut -d'|' -f1)
+          SIM_OS=$(echo "$SELECTED" | cut -d'|' -f2)
+          SIM_NAME=$(echo "$SELECTED" | cut -d'|' -f3-)
+
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          echo "SIM_OS=$SIM_OS" >> "$GITHUB_ENV"
+          echo "SIM_NAME=$SIM_NAME" >> "$GITHUB_ENV"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "- Xcode: ${XCODE_VERSION}"
+            echo "- Preferred name: ${PREFER_NAME}"
+            echo "- Device: ${SIM_NAME}"
+            echo "- iOS runtime: ${SIM_OS}"
+            echo "- UDID: ${UDID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Booting simulator $UDID..."
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b || true
+
+      - name: UI tests (Simulator)
+        id: uitest
+        working-directory: apps/ios
+        env:
+          # TEST_RUNNER_* is forwarded into the XCTest host (prefix stripped).
+          TEST_RUNNER_CHATBOT_SIM_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/simulator
+          CHATBOT_SIM_SCREENSHOT_DIR: ${{ github.workspace }}/artifacts/simulator
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ github.workspace }}/artifacts/simulator"
+          RESULT_DIR="${RUNNER_TEMP}/ios-sim-results"
+          mkdir -p "$RESULT_DIR"
+          BUILD_START=$(date +%s)
+
+          set +e
+          xcodebuild test \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNativeUI \
+            -destination "id=${UDID}" \
+            -derivedDataPath derived-sim \
+            -resultBundlePath "$RESULT_DIR/ChatbotUI.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -only-testing:ChatbotNativeUITests/SimulatorMVPUITests \
+            2>&1 | tee /tmp/xcodebuild-sim.log
+          XC_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          BUILD_END=$(date +%s)
+          echo "UI_TEST_SECONDS=$((BUILD_END - BUILD_START))" >> "$GITHUB_ENV"
+          echo "XC_STATUS=$XC_STATUS" >> "$GITHUB_ENV"
+          echo "UI step wall: $((BUILD_END - BUILD_START))s" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$XC_STATUS" -ne 0 ]; then
+            echo "::error::UI tests failed (exit $XC_STATUS)"
+            exit "$XC_STATUS"
+          fi
+
+      - name: Extract screenshots from xcresult (fallback)
+        if: always()
+        run: |
+          set -euo pipefail
+          DIR="${{ github.workspace }}/artifacts/simulator"
+          mkdir -p "$DIR"
+          # Prefer TEST_RUNNER writes; also harvest /tmp mirror
+          if [ -d /tmp/chatbot-sim-screenshots ]; then
+            cp -f /tmp/chatbot-sim-screenshots/*.png "$DIR/" 2>/dev/null || true
+          fi
+          RESULT="${RUNNER_TEMP}/ios-sim-results/ChatbotUI.xcresult"
+          if [ -d "$RESULT" ] && [ ! -f "$DIR/chat-empty.png" ]; then
+            echo "Exporting attachments from xcresult..."
+            xcrun xcresulttool export attachments \
+              --path "$RESULT" \
+              --output-path "$DIR/xcattachments" 2>/tmp/xcresult-export.txt || true
+            cat /tmp/xcresult-export.txt || true
+            if [ -d "$DIR/xcattachments" ]; then
+              find "$DIR/xcattachments" -type f \( -name '*.png' -o -name '*.jpeg' \) | while read -r f; do
+                lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
+                dest=""
+                case "$lower" in
+                  *chat-empty*) dest="chat-empty.png" ;;
+                  *mail-inbox*) dest="mail-inbox.png" ;;
+                  *files-root*) dest="files-root.png" ;;
+                esac
+                if [ -n "$dest" ]; then
+                  cp -f "$f" "$DIR/$dest"
+                else
+                  cp -f "$f" "$DIR/$(basename "$f")"
+                fi
+              done
+            fi
+          fi
+          ls -la "$DIR" || true
+
+      - name: Verify required screenshots
+        id: shots
+        run: |
+          set -euo pipefail
+          DIR="${{ github.workspace }}/artifacts/simulator"
+          echo "## Screenshots" >> "$GITHUB_STEP_SUMMARY"
+          ls -la "$DIR" || true
+          REQUIRED=(chat-empty.png mail-inbox.png files-root.png)
+          MISSING=0
+          for f in "${REQUIRED[@]}"; do
+            if [ -f "$DIR/$f" ]; then
+              echo "- PASS $f ($(wc -c < "$DIR/$f") bytes)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- FAIL missing $f" >> "$GITHUB_STEP_SUMMARY"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::error::Required screenshots missing"
+            exit 1
+          fi
+          meta="${DIR}/sim-meta.json"
+          cat > "$meta" <<EOF
+          {
+            "git_sha": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "xcode": "${XCODE_VERSION}",
+            "device": "${SIM_NAME}",
+            "ios": "${SIM_OS}",
+            "udid": "${UDID}",
+            "ui_test_seconds": ${UI_TEST_SECONDS:-0},
+            "workflow": "simulator"
+          }
+          EOF
+          cat "$meta" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "## Result"
+            echo "SIMULATOR: PASS"
+            echo "BUILD+UI TEST: PASS (${UI_TEST_SECONDS:-?}s)"
+            echo "SCREENSHOTS: PASS"
+            echo "Device: ${SIM_NAME} / iOS ${SIM_OS}"
+            echo "Xcode: ${XCODE_VERSION}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload simulator screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshots
+          path: artifacts/simulator/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload xcresult
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-xcresult
+          path: ${{ runner.temp }}/ios-sim-results
+          if-no-files-found: ignore
+          retention-days: 14

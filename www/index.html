@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#18181a" />
+    <title>Chatbot</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #18181a;
+        color: #e4e4e7;
+        padding: 1.5rem;
+        text-align: center;
+      }
+      .wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        max-width: 28rem;
+      }
+      .wheel {
+        width: 2.25rem;
+        height: 2.25rem;
+        border-radius: 9999px;
+        border: 2.5px solid rgba(255, 255, 255, 0.12);
+        border-top-color: #5b8fd4;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.125rem;
+        font-weight: 600;
+      }
+      p {
+        margin: 0;
+        line-height: 1.5;
+        opacity: 0.75;
+        font-size: 0.9375rem;
+      }
+      code {
+        font-size: 0.8em;
+        word-break: break-all;
+        opacity: 0.55;
+      }
+      button {
+        margin-top: 0.5rem;
+        padding: 0.75rem 1.25rem;
+        border: 0;
+        border-radius: 0.75rem;
+        background: #5b8fd4;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+      .offline-only {
+        display: none;
+      }
+      body.is-offline .boot-only {
+        display: none;
+      }
+      body.is-offline .offline-only {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="boot-only">
+        <div class="wheel" aria-hidden="true"></div>
+        <h1>Chargement…</h1>
+        <p>Connexion au serveur</p>
+      </div>
+      <div class="offline-only">
+        <h1>Backend injoignable</h1>
+        <p>
+          Cette coquille Capacitor charge l’application distante. Le serveur
+          Next.js (via Cloudflare) n’est pas joignable pour le moment.
+        </p>
+        <p><code id="origin">https://your-worker.example.workers.dev</code></p>
+        <button type="button" id="retry">Réessayer</button>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var ORIGIN = "https://your-worker.example.workers.dev";
+        var retry = document.getElementById("retry");
+        if (retry) {
+          retry.onclick = function () {
+            window.location.href = ORIGIN + "/chat/new";
+          };
+        }
+        // Fallback local uniquement si server.url Capacitor a échoué.
+        var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        var timer = setTimeout(function () {
+          if (ctrl) ctrl.abort();
+          document.body.classList.add("is-offline");
+        }, 12000);
+        fetch(ORIGIN + "/api/health", {
+          method: "GET",
+          mode: "cors",
+          signal: ctrl ? ctrl.signal : undefined,
+        })
+          .then(function (r) {
+            clearTimeout(timer);
+            if (r.ok) {
+              window.location.replace(ORIGIN + "/chat/new");
+            } else {
+              document.body.classList.add("is-offline");
+            }
+          })
+          .catch(function () {
+            clearTimeout(timer);
+            document.body.classList.add("is-offline");
+          });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+// Tracked defaults (placeholders). Optional Local.xcconfig overrides for this machine.
+CHATBOT_PUBLIC_BASE_URL = https:/$()/your-worker.example.workers.dev
+#include? "Local.xcconfig"

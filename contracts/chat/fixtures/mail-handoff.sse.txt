@@ -1,0 +1,8 @@
+data: {"type":"assistant_start","messageId":"msg_mail_1"}
+
+data: {"type":"mail_handoff","intent":"read_thread","threadId":"threadabc123456789","reason":"Ouverture du fil email demandé.","url":"/mail/thread/threadabc123456789"}
+
+data: {"type":"token","content":"Je vous oriente vers le fil."}
+
+data: {"type":"done","messageId":"msg_mail_1"}
+

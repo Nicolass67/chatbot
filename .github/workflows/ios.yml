@@ -1,0 +1,91 @@
+name: iOS IPA (unsigned)
+
+# Shell Capacitor — FALLBACK GELÉ (Mobile 2.0).
+# Plus de build automatique sur push : uniquement workflow_dispatch.
+# Client iOS principal = SwiftUI native (apps/ios, ios-native.yml).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: |
+          # npm ci can fail across npm major versions on nested optional deps;
+          # install is sufficient for Capacitor sync + Xcode (no native Node addons needed).
+          npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Verify Capacitor config (source)
+        run: npm run cap:verify
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Verify Capacitor config (after sync)
+        run: npm run cap:verify
+
+      - name: Install CocoaPods
+        working-directory: ios/App
+        run: pod install
+
+      - name: Build (no code signing)
+        working-directory: ios/App
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath derived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="ios/App/derived/Build/Products/Release-iphoneos/App.app"
+          test -d "$APP_PATH"
+          # Refuse accidental embedding of env files
+          if grep -RIl "OAUTH_TOKEN_ENCRYPTION_KEY\|GOOGLE_OAUTH_CLIENT_SECRET\|CLOUDFLARE_TUNNEL_TOKEN\|HEALTH_CHECK_TOKEN" "$APP_PATH" 2>/dev/null; then
+            echo "Refusing IPA: secret-looking strings found in app bundle" >&2
+            exit 1
+          fi
+          rm -rf Payload Chatbot-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr Chatbot-unsigned.ipa Payload
+          ls -lh Chatbot-unsigned.ipa
+          echo "IPA_BYTES=$(wc -c < Chatbot-unsigned.ipa)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Built unsigned IPA for SideStore (no Apple signing secrets)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbot-ios-unsigned
+          path: Chatbot-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

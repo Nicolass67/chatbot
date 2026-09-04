@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info:
+  title: Chatbot Client Surface
+  version: "1"
+  description: >
+    Surface minimale Web/iOS. Source de vérité détaillée — docs/CLIENT-API.md.
+    Ne couvre pas les routes internal (health, perf).
+paths:
+  /api/meta/client-api:
+    get:
+      summary: Versions and feature flags
+      responses:
+        "200":
+          description: OK
+  /api/chat:
+    post:
+      summary: Chat SSE stream (OrchestratorEvent)
+      responses:
+        "200":
+          description: text/event-stream
+  /api/conversations:
+    get:
+      summary: List conversations
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Create conversation
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    ApiError:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string

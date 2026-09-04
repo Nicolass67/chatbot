@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "chatbot-ios-qa": {
+      "command": "C:\\Users\\your-user\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": ["D:\\path\\to\\Chatbot\\scripts\\ios\\mcp_server.py"],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

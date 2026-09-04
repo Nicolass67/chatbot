@@ -1,0 +1,18 @@
+﻿[package]
+name = "chatbot-isideload-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Non-interactive isideload wrapper for Chatbot ios:deploy"
+
+[[bin]]
+name = "chatbot-isideload-cli"
+path = "src/main.rs"
+
+[dependencies]
+isideload = { version = "0.3.17", features = ["fs-storage"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+idevice = { version = "0.1", default-features = false, features = ["usbmuxd", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

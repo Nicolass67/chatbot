@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chatbot.local/contracts/handoffs/mail-handoff.schema.json",
+  "title": "MailHandoff",
+  "type": "object",
+  "required": ["intent", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "intent": {
+      "type": "string",
+      "enum": ["none", "list", "search", "read_thread", "analyze", "draft"]
+    },
+    "reason": { "type": "string", "minLength": 1 },
+    "query": { "type": "string" },
+    "threadId": { "type": "string" },
+    "label": { "type": "string" },
+    "url": { "type": "string", "description": "Deprecated Web path" }
+  }
+}

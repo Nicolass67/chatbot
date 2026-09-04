@@ -1,0 +1,834 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* ─── Design tokens — Soft Graphite (macOS-inspired) ──────────────
+   Warm-neutral charcoal layers. Soft white text. Sparse blue accent.
+   Soft dark ≠ high-contrast OLED. */
+:root {
+  /* Surfaces — subtle graphite ladder (slightly warm) */
+  --background: #18181a;
+  --sidebar: #1e1e21;
+  --foreground: #e2e2e6;
+  --surface: #232326;
+  --surface-elevated: #2a2a2e;
+  --surface-hover: #313135;
+  --surface-active: #38383d;
+
+  /* Borders — soft separators, not hard lines */
+  --border: #3d3d43;
+  --border-subtle: color-mix(in srgb, #ffffff 6.5%, transparent);
+  --border-strong: #505057;
+
+  /* Accent — soft macOS blue, desaturated; use sparingly */
+  --accent: #5b8fd4;
+  --accent-hover: #74a3e0;
+  --accent-muted: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-subtle: color-mix(in srgb, var(--accent) 8%, transparent);
+  --accent-foreground: #eef3fa;
+
+  /* Text hierarchy — soft white → quiet greys */
+  --muted: #a3a3aa;
+  --muted-foreground: #74747c;
+
+  /* Status — muted, integrated */
+  --success: #6baf8c;
+  --success-muted: color-mix(in srgb, var(--success) 12%, transparent);
+  --warning: #c9a06c;
+  --warning-muted: color-mix(in srgb, var(--warning) 12%, transparent);
+  --error: #c97d79;
+  --error-muted: color-mix(in srgb, var(--error) 12%, transparent);
+
+  /* Message surfaces */
+  --user-message: #2b2b2f;
+  --user-message-border: color-mix(in srgb, #ffffff 7%, transparent);
+  --assistant-indicator: color-mix(in srgb, var(--accent) 40%, #6e6e76);
+
+  /* Typography */
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* Radius — slightly more continuous (macOS Tahoe) */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5625rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 0.9375rem;
+  --radius-2xl: 1.125rem;
+  --radius-full: 9999px;
+
+  /* Shadows — soft depth, not harsh */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.18);
+  --shadow-md: 0 6px 20px rgb(0 0 0 / 0.24);
+  --shadow-lg: 0 12px 36px rgb(0 0 0 / 0.32);
+  --shadow-popover: 0 10px 32px rgb(0 0 0 / 0.36);
+
+  /* Liquid Glass — CSS approx of Apple Regular (blur+tint, no WebGL) */
+  --glass-blur: 20px;
+  --glass-saturate: 1.45;
+  --glass-bg: color-mix(in srgb, var(--surface) 28%, transparent);
+  --glass-bg-thick: color-mix(in srgb, var(--surface-elevated) 36%, transparent);
+  --glass-bg-sidebar: color-mix(in srgb, var(--sidebar) 30%, transparent);
+  --glass-border: color-mix(in srgb, #ffffff 18%, transparent);
+  --glass-border-soft: color-mix(in srgb, #ffffff 11%, transparent);
+  --glass-highlight: inset 0 1px 0 color-mix(in srgb, #ffffff 22%, transparent),
+    inset 0 -0.5px 0 color-mix(in srgb, #ffffff 5%, transparent);
+  --glass-shadow: var(--glass-highlight), 0 8px 28px rgb(0 0 0 / 0.28),
+    0 1px 0 color-mix(in srgb, #ffffff 6%, transparent);
+
+  /* Motion */
+  --duration-fast: 100ms;
+  --duration-normal: 180ms;
+  --duration-slow: 280ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --sidebar-width: 256px;
+  --content-max-width: 44rem;
+  --composer-max-width: 46rem;
+
+  /* Mobile — touch + stacking */
+  --touch-min: 2.75rem; /* 44px */
+  --z-chrome: 20;
+  --z-drawer-scrim: 30;
+  --z-drawer: 40;
+  --z-modal: 45;
+  --z-fab: 50;
+
+  /* Code — one step below canvas */
+  --code-bg: #151517;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-muted: var(--accent-muted);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-success: var(--success);
+  --color-success-muted: var(--success-muted);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-error: var(--error);
+  --color-error-muted: var(--error-muted);
+  --color-user-message: var(--user-message);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
+}
+
+/* ─── Base ──────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  background-color: var(--background);
+  /* iOS WKWebView: fill under status bar / home indicator */
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  background-image:
+    radial-gradient(
+      ellipse 95% 58% at 0% -5%,
+      color-mix(in srgb, var(--accent) 28%, transparent),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 70% 48% at 100% 105%,
+      color-mix(in srgb, #a8b4c8 12%, transparent),
+      transparent 52%
+    ),
+    radial-gradient(
+      ellipse 50% 36% at 68% 22%,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 68%
+    );
+  background-attachment: fixed;
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Liquid Glass utilities (navigation / chrome only) ───────────
+   Apple WWDC25: glass on toolbars/sidebars/menus — never content lists.
+   Regular variant: translucent + adaptive tint. No glass-on-glass stacks.
+   Perf: backdrop-filter only (no shaders / displacement maps). */
+.glass,
+.glass-thick,
+.glass-sidebar {
+  isolation: isolate;
+  border: 1px solid var(--glass-border-soft);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.glass {
+  background: var(--glass-bg);
+}
+
+.glass-thick {
+  background: var(--glass-bg-thick);
+  border-color: var(--glass-border);
+}
+
+.glass-sidebar {
+  background: var(--glass-bg-sidebar);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-hairline {
+  border: 1px solid var(--glass-border-soft);
+  box-shadow: var(--glass-highlight);
+}
+
+@media (max-width: 768px) {
+  :root {
+    --glass-blur: 10px;
+    --glass-saturate: 1.25;
+  }
+
+  .touch-target {
+    min-height: var(--touch-min);
+    min-width: var(--touch-min);
+  }
+}
+
+/* Content canvas samples the same ambient field the glass floats over */
+.ambient-canvas {
+  background-color: transparent;
+  background-image: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-thick,
+  .glass-sidebar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: var(--shadow-md);
+  }
+
+  .glass {
+    background: var(--surface);
+  }
+
+  .glass-thick {
+    background: var(--surface-elevated);
+  }
+
+  .glass-sidebar {
+    background: var(--sidebar);
+    box-shadow: none;
+  }
+
+  .ambient-canvas,
+  body {
+    background-image: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body {
+    background-attachment: scroll;
+  }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus,
+select:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Prevent iOS zoom on input focus */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Hide native number input spinners */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+@keyframes copy-check-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4) rotate(-20deg);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.12) rotate(4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.copy-check-pop {
+  animation: copy-check-pop var(--duration-normal) var(--ease-out) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-check-pop {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─── Utilities ─────────────────────────────────────────────────── */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+.safe-x {
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
+}
+
+/* Shared mobile chrome header height (inside glass surface) */
+.mobile-chrome-header {
+  min-height: calc(var(--touch-min) + 0.5rem);
+}
+
+.reading-column {
+  max-width: var(--content-max-width);
+  margin-inline: auto;
+  width: 100%;
+}
+
+.composer-column {
+  max-width: var(--composer-max-width);
+  margin-inline: auto;
+  width: 100%;
+}
+
+.attachment-scroll-slider {
+  height: 0.25rem;
+  appearance: none;
+  background: var(--surface-active);
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+.attachment-scroll-slider::-webkit-slider-runnable-track {
+  height: 0.25rem;
+  border-radius: 9999px;
+  background: var(--surface-active);
+}
+
+.attachment-scroll-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-top: -0.3125rem;
+  border-radius: 9999px;
+  border: 2px solid var(--background);
+  background: var(--muted);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+}
+
+.attachment-scroll-slider::-webkit-slider-thumb:hover {
+  background: var(--foreground);
+}
+
+.attachment-scroll-slider::-moz-range-track {
+  height: 0.25rem;
+  border-radius: 9999px;
+  background: var(--surface-active);
+}
+
+.attachment-scroll-slider::-moz-range-thumb {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  border: 2px solid var(--background);
+  background: var(--muted);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+}
+
+/* ─── Messages ──────────────────────────────────────────────────── */
+.user-message-bubble {
+  background: var(--user-message);
+  border: 1px solid var(--user-message-border);
+  border-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.assistant-message {
+  position: relative;
+  padding-left: var(--space-4);
+}
+
+.assistant-message::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--assistant-indicator);
+}
+
+/* ─── Markdown ──────────────────────────────────────────────────── */
+.markdown-body {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: var(--text-base);
+  line-height: 1.65;
+}
+
+.markdown-body :where(p) {
+  margin-block: 0.65em;
+}
+
+.markdown-body :where(p:first-child) {
+  margin-top: 0;
+}
+
+.markdown-body :where(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :where(strong) {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.markdown-body :where(em) {
+  font-style: italic;
+}
+
+.markdown-body :where(a) {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body :where(a:hover) {
+  color: var(--foreground);
+}
+
+.markdown-body :where(h1, h2, h3, h4) {
+  color: var(--foreground);
+  font-weight: 600;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+.markdown-body :where(h1) { font-size: 1.35em; }
+.markdown-body :where(h2) { font-size: 1.2em; }
+.markdown-body :where(h3) { font-size: 1.05em; }
+
+.markdown-body :where(ul, ol) {
+  margin-block: 0.65em;
+  padding-left: 1.35em;
+}
+
+.markdown-body :where(li) {
+  margin-block: 0.25em;
+}
+
+.markdown-body :where(blockquote) {
+  margin-block: 0.75em;
+  padding-left: 1em;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.markdown-body :where(table) {
+  display: block;
+  overflow-x: auto;
+  margin-block: 0.75em;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.markdown-body :where(th, td) {
+  border: 1px solid var(--border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+
+.markdown-body :where(th) {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.markdown-body :where(pre) {
+  margin-block: 0.75em;
+}
+
+.markdown-body :where(pre code) {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+
+.markdown-body :where(:not(pre) > code) {
+  background: var(--surface);
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.markdown-body .katex {
+  font-size: 1.05em;
+  color: inherit;
+}
+
+.markdown-body .katex-display {
+  margin: 0.75em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.highlight-theme,
+.prose-chat pre {
+  background: var(--code-bg) !important;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+/* ─── Activity indicators ───────────────────────────────────────── */
+.activity-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--accent-subtle) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: activity-shimmer 2s ease-in-out infinite;
+}
+
+@keyframes activity-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.web-search-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--accent-subtle) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: activity-shimmer 2s ease-in-out infinite;
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────── */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: var(--radius-full);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border-strong);
+  }
+}
+
+/* ─── Toast animations ─────────────────────────────────────────── */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Assistant FAB : ouverture (keyframes = fiables à l’entrée) */
+@keyframes assistant-fab-in {
+  from {
+    opacity: 0;
+    transform: scale(0.18) translateZ(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateZ(0);
+  }
+}
+
+@keyframes assistant-fab-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes assistant-fab-content-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.assistant-fab-panel-in {
+  transform-origin: bottom right;
+  animation: assistant-fab-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.assistant-fab-backdrop-in {
+  animation: assistant-fab-backdrop-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.assistant-fab-content-in {
+  animation: assistant-fab-content-in 280ms cubic-bezier(0.22, 1, 0.36, 1) 70ms both;
+}
+
+.assistant-fab-panel-out {
+  transform-origin: bottom right;
+  opacity: 0;
+  transform: scale(0.18) translateZ(0);
+  transition:
+    opacity 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.assistant-fab-backdrop-out {
+  opacity: 0;
+  transition: opacity 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-fab-panel-in,
+  .assistant-fab-backdrop-in,
+  .assistant-fab-content-in {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+  }
+
+  .assistant-fab-panel-out,
+  .assistant-fab-backdrop-out {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.toast-enter {
+  animation: toast-in var(--duration-normal) var(--ease-out) forwards;
+}
+
+.toast-exit {
+  animation: toast-out var(--duration-fast) var(--ease-in-out) forwards;
+}
+
+/* ─── Email body (plein largeur du panneau de lecture) ─────────── */
+.mail-plain-body {
+  width: 100%;
+  max-width: none;
+  padding: 0.25rem 0.15rem 1rem;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (min-width: 1024px) {
+  .mail-plain-body {
+    padding-top: 0.5rem;
+  }
+}
+
+.mail-html-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  padding: 0.75rem;
+  overflow-x: auto;
+  line-height: 1.55;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  font-size: var(--text-sm);
+}
+
+@media (min-width: 1024px) {
+  .mail-html-body {
+    padding: 1rem 1.25rem;
+  }
+}
+
+.mail-html-body img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.mail-html-body a {
+  color: var(--accent-hover) !important;
+  text-decoration: underline;
+}
+
+/* Contraindre les wrappers, pas chaque cellule (casse les mails Google). */
+.mail-html-body > table,
+.mail-html-body > center,
+.mail-html-body > div {
+  max-width: 100% !important;
+}
+
+.mail-html-body table {
+  max-width: 100% !important;
+}
+
+.mail-html-body center {
+  display: block;
+  max-width: 100%;
+  text-align: left;
+}
+
+.mail-html-body td,
+.mail-html-body th,
+.mail-html-body div,
+.mail-html-body p,
+.mail-html-body span,
+.mail-html-body font,
+.mail-html-body h1,
+.mail-html-body h2,
+.mail-html-body h3,
+.mail-html-body h4 {
+  background-color: transparent !important;
+  color: inherit !important;
+}
+
+.mail-html-body [bgcolor] {
+  background-color: transparent !important;
+}

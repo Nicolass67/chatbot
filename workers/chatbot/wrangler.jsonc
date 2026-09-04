@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chatbot",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-04",
+  "compatibility_flags": ["allow_custom_ports", "cots_on_external_fetch"],
+  "workers_dev": true,
+  "vars": {
+    "FREEBOX_APP_ID": "fr.chatbot.woltest.20250901b",
+    "FREEBOX_API_DOMAIN": "your-name.freeboxos.fr",
+    "FREEBOX_HTTPS_PORT": "443",
+    "FREEBOX_WOL_MAC": "00:00:00:00:00:00",
+    "BOOT_REQUEST_TTL_SECONDS": "300"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "BOOT_KV",
+      "id": "<BOOT_KV_ID>"
+    }
+  ],
+  "vpc_services": [
+    {
+      "binding": "PRIVATE_API",
+      "service_id": "<VPC_SERVICE_ID>",
+      "remote": true
+    }
+  ]
+}

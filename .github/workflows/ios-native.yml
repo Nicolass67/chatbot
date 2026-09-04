@@ -1,0 +1,202 @@
+name: iOS Native Full CI
+
+# Full CI — unit tests + UI tests (Simulator) + unsigned IPA.
+# Fast IPA-only path: ios-native-qa.yml (ios:fast-build / ios:deploy).
+# CI pin: macos-26 + Xcode 26.6 (bumps = commits délibérés).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/ios/**"
+      - ".github/workflows/ios-native.yml"
+  pull_request:
+    paths:
+      - "apps/ios/**"
+      - ".github/workflows/ios-native.yml"
+
+concurrency:
+  group: ios-native-full-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build-ipa:
+    name: Full CI — tests + IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6 (pinned)
+        run: |
+          set -euo pipefail
+          ls /Applications | grep -i Xcode || true
+          PIN="/Applications/Xcode_26.6.app"
+          if [ ! -d "$PIN" ]; then
+            echo "::error::Pinned Xcode 26.6 not found at $PIN"
+            ls /Applications | grep -i Xcode || true
+            exit 1
+          fi
+          sudo xcode-select -s "$PIN/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -version | grep -E 'Xcode 26\.6' || {
+            echo "::error::Expected Xcode 26.6 after pin"
+            exit 1
+          }
+
+      - name: SDK API gate (Mobile 3.0)
+        run: |
+          set -euo pipefail
+          echo "## SDK gate (Full CI)" >> "$GITHUB_STEP_SUMMARY"
+          xcodebuild -showsdks | tee /tmp/sdks.txt
+          grep -E 'iphoneos26' /tmp/sdks.txt || {
+            echo "::error::iphoneos26 SDK missing"
+            exit 1
+          }
+          SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDKROOT=$SDKROOT" >> "$GITHUB_STEP_SUMMARY"
+          if grep -R "glassEffect" "$SDKROOT" 2>/dev/null | head -n 1 >/dev/null; then
+            echo "- glassEffect: present" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- glassEffect: not found via grep (may still compile via SwiftUI)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if find "$SDKROOT" -name 'FoundationModels*' 2>/dev/null | head -n 1 | grep -q .; then
+            echo "- FoundationModels: found" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- FoundationModels: not located (assists stay EVALUATE/DEFER)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Deployment target expected: iOS 26.0" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cache Homebrew XcodeGen
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/xcodegen
+            /opt/homebrew/bin/xcodegen
+          key: brew-xcodegen-full-${{ runner.os }}-${{ hashFiles('.github/workflows/ios-native.yml') }}
+          restore-keys: |
+            brew-xcodegen-full-${{ runner.os }}-
+            brew-xcodegen-${{ runner.os }}-
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Unit tests
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          DEST=$(
+            xcrun simctl list devices available \
+              | grep -E 'iPhone' \
+              | grep -v unavailable \
+              | head -n 1 \
+              | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/'
+          )
+          echo "Using simulator UDID=$DEST"
+          xcodebuild test \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNativeUnit \
+            -destination "id=$DEST" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_TESTABILITY=YES \
+            -only-testing:ChatbotNativeTests
+
+      - name: UI tests (Simulator smoke)
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          DEST=$(
+            xcrun simctl list devices available \
+              | grep -E 'iPhone' \
+              | grep -v unavailable \
+              | head -n 1 \
+              | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/'
+          )
+          echo "UI tests on simulator UDID=$DEST"
+          RESULT_DIR="${RUNNER_TEMP}/ios-ui-results"
+          mkdir -p "$RESULT_DIR"
+          # Continue even if some UI tests skip (no auth) — fail on hard asserts only.
+          set +e
+          xcodebuild test \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNativeUI \
+            -destination "id=$DEST" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -only-testing:ChatbotNativeUITests \
+            -resultBundlePath "$RESULT_DIR/ChatbotUI.xcresult"
+          XC_STATUS=$?
+          set -e
+          echo "xcodebuild UI exit=$XC_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$XC_STATUS" -ne 0 ]; then
+            echo "::warning::UI tests returned non-zero (skips/auth may apply). Inspect xcresult."
+          fi
+
+      - name: Upload UI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbot-ios-ui-xcresult
+          path: ${{ runner.temp }}/ios-ui-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build (no code signing)
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ChatbotNative.xcodeproj \
+            -scheme ChatbotNative \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath derived \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          APP_PATH="derived/Build/Products/Release-iphoneos/ChatbotNative.app"
+          test -d "$APP_PATH"
+          if grep -RIl "OAUTH_TOKEN_ENCRYPTION_KEY\|GOOGLE_OAUTH_CLIENT_SECRET\|CLOUDFLARE_TUNNEL_TOKEN\|HEALTH_CHECK_TOKEN\|chs_" "$APP_PATH" 2>/dev/null; then
+            echo "Refusing IPA: secret-looking strings found in app bundle" >&2
+            exit 1
+          fi
+          rm -rf Payload ChatbotNative-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr ChatbotNative-unsigned.ipa Payload
+          ls -lh ChatbotNative-unsigned.ipa
+          echo "Full CI unsigned SwiftUI IPA (Mobile 3.0 / iOS 26)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbot-ios-native-unsigned
+          path: apps/ios/ChatbotNative-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

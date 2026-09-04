@@ -1,0 +1,140 @@
+import SwiftUI
+
+enum ConversationScope: String, Codable, Hashable, Sendable, CaseIterable {
+    case general
+    case mail
+    case files
+
+    var historyTitle: String {
+        switch self {
+        case .general: return "Conversations"
+        case .mail: return "Conversations Mail"
+        case .files: return "Conversations Files"
+        }
+    }
+
+    var emptyHistoryMessage: String {
+        switch self {
+        case .general: return "Aucune conversation générale pour l’instant."
+        case .mail: return "Aucune conversation concernant vos mails."
+        case .files: return "Aucune conversation concernant vos fichiers."
+        }
+    }
+}
+
+struct ActiveContextHint: Hashable, Sendable {
+    var fileId: String?
+    var mailThreadId: String?
+    var rootId: String?
+    var label: String?
+
+    func asDictionary() -> [String: Any] {
+        var d: [String: Any] = [:]
+        if let fileId { d["fileId"] = fileId }
+        if let mailThreadId { d["mailThreadId"] = mailThreadId }
+        if let rootId { d["rootId"] = rootId }
+        if let label { d["label"] = label }
+        return d
+    }
+
+    var isEmpty: Bool {
+        fileId == nil && mailThreadId == nil && rootId == nil && (label?.isEmpty ?? true)
+    }
+}
+
+enum FilesAssistantContext: Equatable {
+    case global
+    case folder(rootId: String, path: String, title: String)
+    case file(fileId: String, name: String, rootId: String, path: String)
+
+    var sheetTitle: String {
+        switch self {
+        case .global: return "Files Assistant"
+        case .folder(_, _, let title): return "Assistant · \(title)"
+        case .file(_, let name, _, _): return "Assistant · \(name)"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .global: return "Tous vos fichiers"
+        case .folder(_, let path, let title): return path.isEmpty ? title : path
+        case .file(_, let name, _, _): return name
+        }
+    }
+
+    var ref: ActiveContextHint {
+        switch self {
+        case .global:
+            return ActiveContextHint(label: "Files")
+        case .folder(let rootId, let path, let title):
+            return ActiveContextHint(rootId: rootId, label: path.isEmpty ? title : path)
+        case .file(let fileId, let name, let rootId, _):
+            return ActiveContextHint(fileId: fileId, rootId: rootId, label: name)
+        }
+    }
+}
+
+enum MailAssistantContext: Equatable {
+    case global
+    case thread(threadId: String, subject: String, from: String?)
+
+    var sheetTitle: String {
+        switch self {
+        case .global: return "Mail Assistant"
+        case .thread(_, let subject, _):
+            let s = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty ? "Assistant · Mail" : "Assistant · \(String(s.prefix(40)))"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .global: return "Boîte mail"
+        case .thread(_, let subject, let from):
+            let s = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.isEmpty { return from ?? "Mail" }
+            return s
+        }
+    }
+
+    var ref: ActiveContextHint {
+        switch self {
+        case .global:
+            return ActiveContextHint(label: "Mail")
+        case .thread(let threadId, let subject, _):
+            return ActiveContextHint(mailThreadId: threadId, label: subject)
+        }
+    }
+}
+
+/// Bouton signature Assistant contextuel (FAB).
+struct ContextualAssistantButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    AppHaptics.light()
+                    action()
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentForeground)
+                        .frame(width: 52, height: 52)
+                        .background(AppTheme.accent)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+                }
+                .accessibilityLabel("Ouvrir l’assistant")
+                .accessibilityIdentifier(A11yID.Assistant.open)
+                .padding(.trailing, 18)
+                .padding(.bottom, 18)
+            }
+        }
+        .allowsHitTesting(true)
+    }
+}

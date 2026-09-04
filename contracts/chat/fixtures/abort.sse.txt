@@ -1,0 +1,6 @@
+data: {"type":"assistant_start","messageId":"msg_abort_1"}
+
+data: {"type":"token","content":"En cours"}
+
+data: {"type":"error","message":"Requête annulée","code":"ABORTED"}
+

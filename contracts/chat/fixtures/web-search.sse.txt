@@ -1,0 +1,12 @@
+data: {"type":"assistant_start","messageId":"msg_ws_1"}
+
+data: {"type":"tool_start","tool":"web_search","input":{"query":"actu IA"}}
+
+data: {"type":"tool_done","tool":"web_search","summary":"3 résultats","sourceCount":3}
+
+data: {"type":"sources","sources":[{"title":"Exemple","url":"https://example.com","snippet":"…"}]}
+
+data: {"type":"token","content":"Voici ce que j'ai trouvé."}
+
+data: {"type":"done","messageId":"msg_ws_1"}
+

@@ -1,0 +1,7 @@
+# Generated / local
+ChatbotNative.xcodeproj/
+derived/
+*.ipa
+Payload/
+*.xcuserstate
+xcuserdata/

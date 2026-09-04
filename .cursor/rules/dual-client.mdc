@@ -1,0 +1,27 @@
+---
+description: Maintenir Web React + contrats API + iOS SwiftUI sans oublier un client
+globs: contracts/**/*,src/app/api/**/*,src/lib/agent/**/*,src/lib/mail/handoff.ts,src/lib/files/handoff.ts,src/lib/http/**/*,src/lib/auth/**/*,apps/ios/**/*,docs/CLIENT-API.md,AGENTS.md
+alwaysApply: false
+---
+
+# Dual-client (Web + SwiftUI + Capacitor)
+
+Quand tu modifies le **comportement** chat, mail, files, auth API ou les événements SSE :
+
+1. Mettre à jour le **backend** (`src/lib`, routes) si besoin.
+2. Mettre à jour **`contracts/`** (schemas, fixtures) et bump `VERSION` si breaking.
+3. Mettre à jour le **client Web** React.
+4. Mettre à jour **`apps/ios`** (SwiftUI) si la surface client est impactée.
+5. Ne pas inventer une UI Web uniquement pour « matcher » iOS, ni l’inverse.
+
+## Interdits
+
+- Logique métier dans le client (PathGuard, tokens OAuth, SQLite).
+- Contourner Cloudflare Access pour le login.
+- Utiliser `X-Client` / `X-App-Version` comme autorisation.
+- Confondre `HEALTH_CHECK_TOKEN` et Bearer app `chs_`.
+- Retirer Capacitor avant parity D+E+F.
+
+## Handoffs
+
+Préférer `threadId` / `rootId` / `query` / `intent` ; `url` Next = dérivé Web optionnel.

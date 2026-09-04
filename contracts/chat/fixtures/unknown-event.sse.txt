@@ -1,0 +1,8 @@
+data: {"type":"assistant_start","messageId":"msg_unk_1"}
+
+data: {"type":"future_event_v2","payload":{"ok":true}}
+
+data: {"type":"token","content":"OK"}
+
+data: {"type":"done","messageId":"msg_unk_1"}
+

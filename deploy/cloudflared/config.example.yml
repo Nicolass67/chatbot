@@ -1,0 +1,16 @@
+# Copier vers config.yml et adapter (config.yml est gitignored).
+# Alternative recommandée : tunnel géré depuis le dashboard Cloudflare + token
+# (voir docs/DEPLOYMENT.md).
+
+tunnel: chatbot
+credentials-file: C:\Users\VOTRE_USER\.cloudflared\TUNNEL_ID.json
+
+ingress:
+  - hostname: chatbot.votre-domaine.fr
+    service: http://localhost:3000
+    originRequest:
+      # SSE / streaming long — évite le buffering côté cloudflared
+      disableChunkedEncoding: false
+      connectTimeout: 30s
+      keepAliveTimeout: 90s
+  - service: http_status:404

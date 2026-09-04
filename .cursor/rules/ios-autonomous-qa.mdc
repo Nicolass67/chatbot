@@ -1,0 +1,34 @@
+---
+description: Boucle QA iOS autonome (device + simulator)
+globs:
+  - apps/ios/**
+  - scripts/ios/**
+  - docs/IOS-AUTONOMOUS-QA.md
+alwaysApply: false
+---
+
+# iOS Autonomous QA
+
+Quand l’utilisateur dit « L'iPhone est à jour » ou « Teste P6 sur l’iPhone » :
+
+## Smoke obligatoire AVANT produit
+
+1. `node scripts/ios/qa.mjs device-info` — vérifier iOS major ≥ 27
+2. `mount` → `media-support`
+3. `screenshot post-update` puis **lire** `artifacts/ios/latest.png`
+4. `tap` / `swipe` / `type` — noter PASS ou BLOCKED_BY_OS (jamais inventer)
+5. `launch`
+6. Publier matrice PHYSICAL DEVICE CONTROL YES/NO
+
+## Ensuite seulement
+
+- Campagne `autonomous` ou scénarios P6/Files/Chat
+- Deep links `qa/mail`, `qa/files/documents`, `qa/assistant/mail` (auth requise)
+- Distinguer **SIMULATOR VERIFIED** vs **PHYSICAL DEVICE VERIFIED**
+
+## Outils
+
+- CLI: `scripts/ios/qa.mjs`
+- MCP: `chatbot-ios-qa` (`ios_screenshot`, `ios_hid_tap`, `ios_autonomous`, …)
+- A11y: `A11yID.swift`
+- UITests SIMULATOR: `ChatbotNativeUITests`
