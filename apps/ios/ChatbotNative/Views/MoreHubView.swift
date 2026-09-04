@@ -4,7 +4,6 @@ import SwiftUI
 struct SettingsHubView: View {
     @EnvironmentObject private var appearance: AppearanceStore
     @Environment(AppNavigation.self) private var nav
-    @EnvironmentObject private var appearance: AppearanceStore
     @State private var path = NavigationPath()
 
     var body: some View {
