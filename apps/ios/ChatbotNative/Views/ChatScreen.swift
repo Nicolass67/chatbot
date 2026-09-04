@@ -67,8 +67,11 @@ struct ChatScreen: View {
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
+    /// Pendant un scroll programmé (envoi / stream / bouton), ignore le flicker de pastille.
+    @State private var suppressScrollDownUntil: Date = .distantPast
     /// Distance au bas en dessous de laquelle le bouton « revenir en bas » est inutile.
-    private let scrollBottomProximityThreshold: CGFloat = 120
+    private let scrollBottomProximityThreshold: CGFloat = 140
+    private let scrollBottomHideThreshold: CGFloat = 48
     @State private var scrollToken = 0
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
@@ -395,32 +398,9 @@ struct ChatScreen: View {
                             )
                             .id("streaming")
                         } else if streamingText.isEmpty && !streamFilesFound.isEmpty && streamingAssistantId == nil {
-                            MessageBubble(
-                                message: MessageDTO(
-                                    id: "streaming",
-                                    role: "assistant",
-                                    content: "",
-                                    createdAt: nil
-                                ),
-                                token: session.token,
-                                baseURL: session.baseURL,
-                                isEditing: false,
-                                filesFound: streamFilesFound,
-                                onCopy: {},
-                                onEdit: {},
-                                onRegenerate: {},
-                                onOpenImage: { _ in },
-                                onOpenFoundFile: { file in
-                                    openFoundFilePreview(file)
-                                },
-                                onDownloadFoundFile: { file in
-                                    Task { await downloadFoundFile(file) }
-                                },
-                                onRevealFoundFile: { file in
-                                    revealFoundFileFolder(file)
-                                }
-                            )
-                            .id("streaming-files")
+                            // Plus de bulle « streaming-files » séparée : on matérialise
+                            // immédiatement un message assistant pour éviter flash/double carte.
+                            Color.clear.frame(height: 0).id("streaming-files-placeholder")
                         } else if isSending,
                                   streamingText.isEmpty,
                                   streamFilesFound.isEmpty,
@@ -456,6 +436,9 @@ struct ChatScreen: View {
                                 },
                                 onAttach: {
                                     showDocImporter = true
+                                },
+                                onDiscard: {
+                                    discardDraftCard()
                                 }
                             )
                             .id("conversation-draft")
@@ -482,7 +465,18 @@ struct ChatScreen: View {
                     let bottomInset = geometry.contentInsets.bottom
                     return max(0, contentH + bottomInset - visibleH - offsetY)
                 } action: { _, distanceToBottom in
-                    let shouldShow = distanceToBottom > scrollBottomProximityThreshold
+                    // Pendant auto-scroll (stream / envoi / bouton), ne pas basculer la pastille.
+                    if Date() < suppressScrollDownUntil { return }
+                    if isSending && !showScrollDown && distanceToBottom < scrollBottomProximityThreshold * 2 {
+                        // Suivi du stream : rester collé bas sans flicker.
+                        return
+                    }
+                    let shouldShow: Bool
+                    if showScrollDown {
+                        shouldShow = distanceToBottom > scrollBottomHideThreshold
+                    } else {
+                        shouldShow = distanceToBottom > scrollBottomProximityThreshold
+                    }
                     if showScrollDown != shouldShow {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             showScrollDown = shouldShow
@@ -491,18 +485,21 @@ struct ChatScreen: View {
                 }
                 .onChange(of: streamingText) { _, text in
                     guard !showScrollDown, !text.isEmpty else { return }
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: messages.count) { _, _ in
                     guard !showScrollDown else { return }
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.32)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: scrollToken) { _, _ in
                     showScrollDown = false
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.6)
                     withAnimation(.easeOut(duration: 0.35)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
@@ -646,12 +643,26 @@ struct ChatScreen: View {
             AppHaptics.success()
             scrollToken += 1
         } catch {
+            if Self.isUserCancellation(error) {
+                if let idx = messages.firstIndex(where: { $0.id == summaryId }),
+                   messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    messages.remove(at: idx)
+                }
+                return
+            }
             if let idx = messages.firstIndex(where: { $0.id == summaryId }),
                messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 messages.remove(at: idx)
             }
-            self.error = error.localizedDescription
+            self.error = friendlyStreamError(error)
         }
+    }
+
+    private func friendlyStreamError(_ error: Error) -> String {
+        if case APIClientError.decode = error {
+            return "Le résumé est vide — réessaie dans un instant."
+        }
+        return error.localizedDescription
     }
 
     private func runMailReplyProduct(threadId: String) async {
@@ -689,8 +700,16 @@ struct ChatScreen: View {
             AppHaptics.success()
             scrollToken += 1
         } catch {
+            if Self.isUserCancellation(error) {
+                draftInConversation = draftCardId != nil
+                return
+            }
             draftInConversation = draftCardId != nil
-            self.error = error.localizedDescription
+            if case APIClientError.decode = error {
+                self.error = "Impossible de préparer la réponse — réessaie."
+            } else {
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -784,12 +803,7 @@ struct ChatScreen: View {
             } else {
                 throw APIClientError.decode
             }
-            persistActiveConversation()
-            Keyboard.dismiss()
-            nav.dismissAssistantSheets()
-            onRequestClose?()
-            // Laisse la sheet se fermer avant le share sheet système.
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            // Partager AVANT de fermer le chat — sinon le share n’a plus de presentateur.
             NativeShare.present(url: tmp, title: file.filename)
             AppHaptics.success()
         } catch {
@@ -811,17 +825,25 @@ struct ChatScreen: View {
                 confirmationToken: proposal.confirmationToken,
                 conversationId: conversation.id
             )
-            draftCardId = nil
-            draftCardText = ""
-            draftCardTo = ""
-            draftCardSubject = ""
-            draftCardCandidates = []
-            draftInConversation = false
+            discardDraftCard()
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
             AppHaptics.warning()
         }
+    }
+
+    private func discardDraftCard() {
+        draftCardId = nil
+        draftCardText = ""
+        draftCardTo = ""
+        draftCardSubject = ""
+        draftCardCandidates = []
+        draftCardEditing = false
+        draftCardStreaming = false
+        draftInConversation = false
+        draftCardStatus = "Brouillon"
+        AppHaptics.light()
     }
 
     private var composer: some View {
@@ -1348,10 +1370,30 @@ struct ChatScreen: View {
     }
 
     private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false) async {
-        let text = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawText = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
-        guard !text.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
+        guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
+
+        // Texte API : enrichi si un brouillon est ouvert (contexte pour « moins formel », etc.).
+        var text = rawText
+        if forcedText == nil,
+           let draftId = draftCardId,
+           !draftId.isEmpty,
+           !rawText.isEmpty {
+            let bodySnippet = String(draftCardText.prefix(2500))
+            text = """
+            Brouillon email ouvert (draftId=\(draftId)).
+            Destinataire: \(draftCardTo.isEmpty ? "(inconnu)" : draftCardTo)
+            Objet: \(draftCardSubject.isEmpty ? "(aucun)" : draftCardSubject)
+            Corps actuel:
+            \(bodySnippet)
+
+            Demande de l’utilisateur: \(rawText)
+
+            Réécris et mets à jour CE brouillon selon la demande (outil mail / draft_preview). Ne crée pas un nouveau brouillon. Ne pose pas de question — applique directement le changement de ton/contenu.
+            """
+        }
 
         var opts = options ?? ChatSendOptions(attachmentIds: ids, mode: chatMode)
         if let editId = editingMessageId {
@@ -1360,12 +1402,26 @@ struct ChatScreen: View {
         if opts.activeContext == nil {
             opts.activeContext = forcedActiveContext
         }
+        // Brouillon ouvert : le chat doit peaufiner CE brouillon (pas une nouvelle conversation).
+        if let draftId = draftCardId, !draftId.isEmpty {
+            var ctx = opts.activeContext ?? ActiveContextHint()
+            ctx.draftId = draftId
+            if ctx.mailThreadId == nil {
+                ctx.mailThreadId = forcedActiveContext?.mailThreadId
+            }
+            if ctx.label == nil || ctx.label?.isEmpty == true {
+                ctx.label = forcedActiveContext?.label ?? draftCardSubject
+            }
+            opts.activeContext = ctx
+        }
 
         suppressAssistantNarration = false
 
         var immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
-        let lower = text.lowercased()
-        if lower.contains("moi-même") || lower.contains("moi meme") || lower.contains("à moi") || lower.contains("a moi") {
+        let lower = rawText.lowercased()
+        if draftCardId != nil, forcedText == nil {
+            immediateThinking = .custom("Amélioration du brouillon…")
+        } else if lower.contains("moi-même") || lower.contains("moi meme") || lower.contains("à moi") || lower.contains("a moi") {
             immediateThinking = .custom("Recherche du destinataire…")
         } else if lower.contains("mail") || lower.contains("email") || lower.contains("brouillon") || lower.contains("écris") || lower.contains("ecris") {
             immediateThinking = .custom("Préparation du brouillon…")
@@ -1394,7 +1450,7 @@ struct ChatScreen: View {
                     MessageDTO(
                         id: "local-\(UUID().uuidString)",
                         role: "user",
-                        content: text.isEmpty ? "📎 Pièce jointe" : text,
+                        content: rawText.isEmpty ? "📎 Pièce jointe" : rawText,
                         createdAt: nil,
                         attachments: localAtts
                     )
@@ -1404,7 +1460,7 @@ struct ChatScreen: View {
                 messages[idx] = MessageDTO(
                     id: editId,
                     role: "user",
-                    content: text,
+                    content: rawText,
                     createdAt: messages[idx].createdAt,
                     attachments: messages[idx].attachments
                 )
@@ -1525,14 +1581,28 @@ struct ChatScreen: View {
         } catch is CancellationError {
             thinkingKind = nil
         } catch {
-            self.error = error.localizedDescription
-            canRetrySend = true
-            if case APIClientError.unauthorized = error {
-                await session.logout()
+            if Self.isUserCancellation(error) {
+                thinkingKind = nil
+            } else {
+                self.error = error.localizedDescription
+                canRetrySend = true
+                if case APIClientError.unauthorized = error {
+                    await session.logout()
+                }
             }
         }
         isSending = false
         sendTask = nil
+    }
+
+    /// Stop utilisateur / invalidate URLSession — pas une erreur à afficher.
+    private static func isUserCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return true }
+        let msg = error.localizedDescription.lowercased()
+        return msg == "cancelled" || msg == "canceled" || msg.contains("annul")
     }
 
     private func resolveFileAction(confirm: Bool) async {
@@ -1610,10 +1680,14 @@ struct ChatScreen: View {
         case "status", "thinking", "runtime_status":
             if type == "runtime_status", let st = obj["status"] as? String {
                 runtimeStatus = st
+                // Ne jamais afficher READY/BUSY comme texte « réflexion » dans le fil.
+                break
             }
             if !agentActivity.visible {
                 let msg = (obj["message"] as? String) ?? (obj["status"] as? String)
-                thinkingKind = ThinkingKind.fromSSE(type: type, message: msg)
+                if let kind = ThinkingKind.fromSSE(type: type, message: msg) {
+                    thinkingKind = kind
+                }
             }
         case "tool_start":
             let tool = (obj["tool"] as? String) ?? (obj["name"] as? String) ?? ""
@@ -1624,8 +1698,8 @@ struct ChatScreen: View {
                 agentActivity.webPhase = .searching
                 agentActivity.webQuery = (obj["query"] as? String) ?? tool
                 thinkingKind = .searching
-            } else {
-                thinkingKind = ThinkingKind.fromSSE(type: type, message: tool)
+            } else if let kind = ThinkingKind.fromSSE(type: type, message: tool) {
+                thinkingKind = kind
             }
         case "tool_done", "tool_result":
             if agentActivity.webPhase == .searching || agentActivity.webPhase == .analyzing {
@@ -1818,8 +1892,10 @@ struct ChatScreen: View {
             )
         case "files_found":
             if let arr = obj["files"] as? [[String: Any]] {
+                var seen = Set<String>()
                 let parsed: [FilesFoundFileDTO] = arr.compactMap { f in
                     guard let id = f["fileId"] as? String, !id.isEmpty else { return nil }
+                    guard seen.insert(id).inserted else { return nil }
                     return FilesFoundFileDTO(
                         id: id,
                         filename: (f["filename"] as? String) ?? "fichier",
@@ -1833,9 +1909,16 @@ struct ChatScreen: View {
                 streamFilesFound = parsed
                 if !parsed.isEmpty {
                     suppressAssistantNarration = true
-                    // Ne pas vider streamingText ici — provoque un flash « disparaît / réapparaît ».
-                }
-                if let id = streamingAssistantId {
+                    // Ancre unique dans la liste — évite la carte flash puis double carte.
+                    let id = streamingAssistantId ?? "asst-\(UUID().uuidString)"
+                    if streamingAssistantId == nil {
+                        streamingAssistantId = id
+                        if messages.firstIndex(where: { $0.id == id }) == nil {
+                            messages.append(
+                                MessageDTO(id: id, role: "assistant", content: "", createdAt: nil)
+                            )
+                        }
+                    }
                     var chrome = chromeById[id] ?? MessageChromeMeta()
                     chrome.filesFound = parsed
                     chromeById[id] = chrome
@@ -1844,6 +1927,7 @@ struct ChatScreen: View {
                         conversationId: conversation.id,
                         messageId: id
                     )
+                    thinkingKind = nil
                 }
             }
         case "draft_preview":

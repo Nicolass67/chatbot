@@ -547,13 +547,12 @@ struct MailInboxView: View {
             }
         }
 
-        do {
-            let cat = unreadOnly ? "unread" : category
-            let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cat = unreadOnly ? "unread" : category
+        let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        do {
             if activeSort == .newest {
-                let page = try await client.listMailMessages(
-                    maxResults: pageSize,
+                let page = try await listMailWithRetry(
                     category: cat,
                     query: q.isEmpty ? nil : q,
                     pageToken: pageToken
@@ -562,20 +561,17 @@ struct MailInboxView: View {
                 let filtered = applyUnreadFilter(page.messages)
                 messages = sortedMessages(filtered, by: activeSort)
                 nextPageToken = page.nextPageToken
-                // Gmail often returns estimate 0 for UNREAD — treat as unknown.
                 let est = page.resultSizeEstimate ?? 0
                 resultSizeEstimate = est > 0 ? est : nil
                 sortedWindow = []
                 error = nil
             } else {
-                // Tri avant pagination : charge une fenêtre (jusqu’à 150), trie, puis page locale.
                 var collected: [MailMessageSummary] = []
                 var token: String? = nil
                 var estimate: Int?
                 var exhausted = true
                 while collected.count < sortWindowMax {
-                    let page = try await client.listMailMessages(
-                        maxResults: pageSize,
+                    let page = try await listMailWithRetry(
                         category: cat,
                         query: q.isEmpty ? nil : q,
                         pageToken: token
@@ -586,19 +582,14 @@ struct MailInboxView: View {
                     collected.append(contentsOf: applyUnreadFilter(page.messages))
                     if let next = page.nextPageToken, !next.isEmpty {
                         token = next
-                        if collected.count < sortWindowMax {
-                            exhausted = false
-                        } else {
-                            exhausted = false
-                            break
-                        }
+                        exhausted = false
+                        if collected.count >= sortWindowMax { break }
                     } else {
                         exhausted = true
                         break
                     }
                 }
                 guard gen == loadGeneration, !Task.isCancelled else { return }
-                // Dédupliquer si chevauchement
                 var seen = Set<String>()
                 let unique = collected.filter { seen.insert($0.id).inserted }
                 sortedWindow = sortedMessages(unique, by: activeSort)
@@ -613,12 +604,52 @@ struct MailInboxView: View {
             return
         } catch {
             guard gen == loadGeneration, !Task.isCancelled else { return }
-            messages = []
+            // Garde la dernière liste si erreur transitoire (évite « OK → vide 500 »).
+            if messages.isEmpty || !isTransientMailError(error) {
+                messages = []
+            }
             self.error = friendlyMailError(error)
             if case APIClientError.unauthorized = error {
                 await session.logout()
             }
         }
+    }
+
+    private func listMailWithRetry(
+        category: String,
+        query: String?,
+        pageToken: String?
+    ) async throws -> MailMessagesPage {
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                return try await client.listMailMessages(
+                    maxResults: pageSize,
+                    category: category,
+                    query: query,
+                    pageToken: pageToken
+                )
+            } catch {
+                lastError = error
+                if attempt == 0, isTransientMailError(error) {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastError ?? APIClientError.decode
+    }
+
+    private func isTransientMailError(_ error: Error) -> Bool {
+        if case APIClientError.http(let code, _) = error {
+            return code == 429 || code >= 500
+        }
+        if let url = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet]
+                .contains(url.code)
+        }
+        return false
     }
 
     private func friendlyMailError(_ error: Error) -> String {

@@ -27,6 +27,8 @@ struct ActiveContextHint: Hashable, Sendable {
     var mailThreadId: String?
     var rootId: String?
     var label: String?
+    /// Brouillon mail ouvert dans l’assistant — pour que le chat peaufine le texte.
+    var draftId: String?
 
     func asDictionary() -> [String: Any] {
         var d: [String: Any] = [:]
@@ -34,11 +36,12 @@ struct ActiveContextHint: Hashable, Sendable {
         if let mailThreadId { d["mailThreadId"] = mailThreadId }
         if let rootId { d["rootId"] = rootId }
         if let label { d["label"] = label }
+        if let draftId { d["draftId"] = draftId }
         return d
     }
 
     var isEmpty: Bool {
-        fileId == nil && mailThreadId == nil && rootId == nil && (label?.isEmpty ?? true)
+        fileId == nil && mailThreadId == nil && rootId == nil && draftId == nil && (label?.isEmpty ?? true)
     }
 }
 

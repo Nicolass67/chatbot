@@ -11,6 +11,7 @@ const activeContextSchema = z
     mailThreadId: z.string().min(1).optional(),
     rootId: z.string().min(1).optional(),
     label: z.string().max(200).optional(),
+    draftId: z.string().min(1).optional(),
   })
   .strict()
   .optional();

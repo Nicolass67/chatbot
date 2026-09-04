@@ -71,6 +71,12 @@ export const GET = withAuth(apiAuthGuard, async (request, auth) => {
     if (error instanceof EmailNotConnectedError) {
       return apiErrorResponse("EMAIL_NOT_CONNECTED", error.message);
     }
-    throw error;
+    const message =
+      error instanceof Error ? error.message : "Erreur Gmail inattendue";
+    console.error("[mail/messages]", message);
+    return apiErrorResponse(
+      "PROVIDER_ERROR",
+      `Impossible de charger les mails : ${message}`
+    );
   }
 });

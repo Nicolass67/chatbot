@@ -39,7 +39,7 @@ struct ThinkingStatusView: View {
     }
 }
 
-/// Indicateur « ChatGPT-like » dans le fil de messages (emplacement de la future réponse).
+/// Indicateur dans le fil — même police que l’app, pulse discret (pas de serif « READY »).
 struct InStreamWorkingIndicator: View {
     let label: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,9 +48,9 @@ struct InStreamWorkingIndicator: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label)
-                .font(.system(.body, design: .serif).italic())
+                .font(CNFont.callout.weight(.medium))
                 .foregroundStyle(AppTheme.mutedForeground)
-                .opacity(reduceMotion ? 0.85 : (pulse ? 1.0 : 0.42))
+                .opacity(reduceMotion ? 0.9 : (pulse ? 1.0 : 0.45))
                 .animation(
                     reduceMotion
                         ? nil
@@ -92,8 +92,16 @@ enum ThinkingKind: Equatable {
         }
     }
 
-    static func fromSSE(type: String, message: String?) -> ThinkingKind {
+    /// Retourne nil pour les statuts runtime (READY/BUSY) — ne doivent pas apparaître dans le fil.
+    static func fromSSE(type: String, message: String?) -> ThinkingKind? {
         let raw = ((message ?? "") + " " + type).lowercased()
+        let runtimeTokens = ["ready", "busy", "offline", "error", "loading", "switching", "unknown"]
+        if let message {
+            let m = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if runtimeTokens.contains(m) { return nil }
+        }
+        if type == "runtime_status" { return nil }
+
         if raw.contains("search") || raw.contains("recherche") || raw.contains("web") {
             return .searching
         }

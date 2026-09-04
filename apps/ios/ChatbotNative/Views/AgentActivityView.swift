@@ -43,7 +43,20 @@ enum AgentToolLabels {
     /// Titres d’étapes lisibles (pas la requête user entière).
     static func friendlyStepTitle(_ raw: String) -> String {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.lowercased().hasPrefix("répondre :") || t.lowercased().hasPrefix("repondre :") {
+        let lower = t.lowercased()
+        if lower == "comprendre la demande" || lower.hasPrefix("comprendre ") {
+            return "Analyser ce que tu demandes"
+        }
+        if lower == "rechercher des informations" {
+            return "Chercher des infos utiles"
+        }
+        if lower == "analyser les résultats" {
+            return "Comparer ce qui a été trouvé"
+        }
+        if lower == "rédiger la réponse" || lower.hasPrefix("répondre") || lower.hasPrefix("repondre") {
+            return "Rédiger la réponse"
+        }
+        if lower.hasPrefix("répondre :") || lower.hasPrefix("repondre :") {
             return "Rédiger la réponse"
         }
         if t.count > 48 {

@@ -276,25 +276,26 @@ struct MarkdownMessageView: View {
             .padding(.vertical, AppTheme.space4)
         case .table(let headers, let rows):
             ScrollView(.horizontal, showsIndicators: false) {
-                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                    GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top, spacing: 0) {
                         ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
                             Text(h)
                                 .font(CNFont.caption.weight(.semibold))
                                 .foregroundStyle(AppTheme.foreground)
                                 .padding(AppTheme.space8)
-                                .frame(minWidth: 88, alignment: .leading)
+                                .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+                                .background(AppTheme.surfaceElevated)
                         }
                     }
-                    .background(AppTheme.surfaceElevated)
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        GridRow {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                    ForEach(Array(rows.enumerated()), id: \.offset) { rIdx, row in
+                        HStack(alignment: .top, spacing: 0) {
+                            ForEach(Array(row.enumerated()), id: \.offset) { cIdx, cell in
                                 Text(cell)
                                     .font(CNFont.caption)
                                     .foregroundStyle(AppTheme.muted)
                                     .padding(AppTheme.space8)
-                                    .frame(minWidth: 88, alignment: .leading)
+                                    .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+                                    .background(rIdx % 2 == 0 ? AppTheme.surface.opacity(0.35) : Color.clear)
                             }
                         }
                     }

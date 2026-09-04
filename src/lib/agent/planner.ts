@@ -69,13 +69,63 @@ function fallbackPlan(goal: string, temporal?: TemporalContext): AgentPlan {
     };
   }
 
-  const steps: PlanStep[] = [
-    { id: "step-1", title: "Comprendre la demande", status: "active", actions: [] },
-    { id: "step-2", title: "Rechercher des informations", status: "pending", actions: [] },
-    { id: "step-3", title: "Analyser les résultats", status: "pending", actions: [] },
-    { id: "step-4", title: "Rédiger la réponse", status: "pending", actions: [] },
-  ];
+  const steps: PlanStep[] = goalAwareFallbackSteps(goal);
   return { steps };
+}
+
+/** Plans concrets selon l’intention — évite « Comprendre la demande » générique. */
+function goalAwareFallbackSteps(goal: string): PlanStep[] {
+  const g = goal.toLowerCase();
+  if (
+    g.includes("fichier") ||
+    g.includes("dossier") ||
+    g.includes("carte") ||
+    g.includes("pdf") ||
+    g.includes("document") ||
+    g.includes("ci ") ||
+    g.includes("identité") ||
+    g.includes("identite")
+  ) {
+    return [
+      { id: "step-1", title: "Chercher le fichier demandé", status: "active", actions: [] },
+      { id: "step-2", title: "Vérifier le chemin et les droits", status: "pending", actions: [] },
+      { id: "step-3", title: "Présenter le document trouvé", status: "pending", actions: [] },
+    ];
+  }
+  if (g.includes("mail") || g.includes("email") || g.includes("gmail") || g.includes("brouillon")) {
+    return [
+      { id: "step-1", title: "Lire le mail concerné", status: "active", actions: [] },
+      { id: "step-2", title: "Préparer le brouillon ou le résumé", status: "pending", actions: [] },
+      { id: "step-3", title: "Finaliser pour validation", status: "pending", actions: [] },
+    ];
+  }
+  if (
+    g.includes("prix") ||
+    g.includes("meilleur") ||
+    g.includes("acheter") ||
+    g.includes("gpu") ||
+    g.includes("carte graphique") ||
+    g.includes("compar") ||
+    g.includes("cherche") ||
+    g.includes("web")
+  ) {
+    return [
+      { id: "step-1", title: "Recherche web des sources actuelles", status: "active", actions: [] },
+      { id: "step-2", title: "Comparer les options pertinentes", status: "pending", actions: [] },
+      { id: "step-3", title: "Recommander avec sources", status: "pending", actions: [] },
+    ];
+  }
+  const short = goal.trim().slice(0, 42);
+  return [
+    {
+      id: "step-1",
+      title: short ? `Traiter : ${short}${goal.trim().length > 42 ? "…" : ""}` : "Analyser la demande",
+      status: "active",
+      actions: [],
+    },
+    { id: "step-2", title: "Collecter les infos utiles", status: "pending", actions: [] },
+    { id: "step-3", title: "Formuler la réponse", status: "pending", actions: [] },
+  ];
 }
 
 export function parsePlanDraft(content: string): AgentPlan {

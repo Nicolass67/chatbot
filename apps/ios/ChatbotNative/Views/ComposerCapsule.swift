@@ -381,7 +381,6 @@ struct PersistentProductActionsBar: View {
                 return [
                     (.summarize, "Résumer", "text.alignleft"),
                     (.reply, "Répondre", "arrowshape.turn.up.left"),
-                    (.extractTasks, "Extraire", "checklist"),
                 ]
             }
             return [

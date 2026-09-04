@@ -287,6 +287,7 @@ struct MailDraftProposal: View {
     var onRetry: () -> Void
     var onSend: () -> Void
     var onAttach: (() -> Void)? = nil
+    var onDiscard: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
@@ -295,6 +296,21 @@ struct MailDraftProposal: View {
                     .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mailAccent)
                 Spacer()
+                if let onDiscard {
+                    Button {
+                        AppHaptics.warning()
+                        onDiscard()
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(AppTheme.danger)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy || isStreaming)
+                    .accessibilityLabel("Supprimer le brouillon")
+                }
                 if busy || isStreaming {
                     ProgressView()
                         .controlSize(.small)
@@ -360,33 +376,52 @@ struct MailDraftProposal: View {
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
             }
 
+            // Ligne 1 : actions secondaires (icônes + label court, pas de wrap).
             HStack(spacing: AppTheme.space8) {
-                Button(isEditing ? "Terminé" : "Modifier") { onEditToggle() }
+                Button(isEditing ? "OK" : "Modifier") { onEditToggle() }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(isStreaming)
                     .accessibilityIdentifier(A11yID.Mail.draftEdit)
                 if let onAttach {
-                    Button("Ajouter PJ") { onAttach() }
-                        .buttonStyle(.bordered)
-                        .disabled(busy || isStreaming)
-                }
-                Button("Réessayer") { onRetry() }
+                    Button {
+                        onAttach()
+                    } label: {
+                        Label("PJ", systemImage: "paperclip")
+                            .labelStyle(.titleAndIcon)
+                    }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .disabled(busy || isStreaming)
-                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
-                Spacer(minLength: 0)
-                Button {
-                    AppHaptics.medium()
-                    onSend()
-                } label: {
-                    Label("Envoyer", systemImage: "paperplane.fill")
-                        .font(CNFont.callout.weight(.semibold))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(AppTheme.mailAccent)
-                .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-                .accessibilityIdentifier(A11yID.Mail.send)
+                Button {
+                    onRetry()
+                } label: {
+                    Label("Réécrire", systemImage: "arrow.clockwise")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(busy || isStreaming)
+                .accessibilityIdentifier(A11yID.Mail.draftRetry)
+                Spacer(minLength: 0)
             }
+
+            // Ligne 2 : Envoyer pleine largeur.
+            Button {
+                AppHaptics.medium()
+                onSend()
+            } label: {
+                Label("Envoyer", systemImage: "paperplane.fill")
+                    .font(CNFont.callout.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(AppTheme.mailAccent)
+            .controlSize(.large)
+            .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+            .accessibilityIdentifier(A11yID.Mail.send)
         }
         .padding(AppTheme.space14)
         .background(AppTheme.surfaceElevated.opacity(0.9))
