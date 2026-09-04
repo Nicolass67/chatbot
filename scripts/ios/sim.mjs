@@ -105,11 +105,15 @@ function main() {
   }
 
   const allowPush = process.env.IOS_SIM_ALLOW_PUSH === "1";
-  const remote = sh("git", ["ls-remote", "origin", sha]);
-  if (!(remote.stdout || "").includes(sha)) {
+  sh("git", ["fetch", "origin", branch, "--quiet"]);
+  const remoteHead = (sh("git", ["rev-parse", `origin/${branch}`]).stdout || "").trim();
+  const onRemote =
+    remoteHead === sha ||
+    sh("git", ["merge-base", "--is-ancestor", sha, `origin/${branch}`]).status === 0;
+  if (!onRemote) {
     if (!allowPush) {
-      console.error(`[SIMULATOR] SHA ${short} is not on origin.`);
-      console.error("Commit is local-only. Push manually, or set IOS_SIM_ALLOW_PUSH=1 to allow push.");
+      console.error(`[SIMULATOR] SHA ${short} is not on origin/${branch}.`);
+      console.error("Push manually, or set IOS_SIM_ALLOW_PUSH=1 to allow push.");
       process.exit(2);
     }
     console.log(`[SIMULATOR] SHA ${short} not on origin — pushing ${branch} (IOS_SIM_ALLOW_PUSH=1)…`);
@@ -117,6 +121,8 @@ function main() {
     if (push.status !== 0) {
       throw new Error("Cannot dispatch Simulator: push failed.");
     }
+  } else {
+    console.log(`[SIMULATOR] SHA ${short} present on origin/${branch}`);
   }
 
   console.log("[1/4] Dispatch workflow…");
