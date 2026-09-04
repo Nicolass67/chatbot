@@ -76,19 +76,19 @@ Puis P5…P17
 | P1b Mail readability | **PASS Simulator** |
 | GATE | descriptions OK ; Chat Gate via MVP découpé |
 | P2 Keyboard | code + PNG run 33832310215 |
-| P3 Thinking | fixtures SSE + UITest — DoD PNG pending jalon CI |
-| P4 Agent + Stop | fixtures SSE + UITest — DoD PNG pending jalon CI |
+| P3 Thinking | **PASS** run 33837888783 (`chat-thinking.png`) |
+| P4 Agent + Stop | fixtures SSE + UITest — DoD PNG pending (dernier flake agent a11y) |
 | P5 Scope | done (DB + API + client) |
-| P6 Mail Assistant | code + UITest a11y `mail.assistant` + context chip |
-| P7 Files Assistant | code + UITest `FilesAssistantUITests` |
+| P6 Mail Assistant | **PASS** PNG mail-assistant + history |
+| P7 Files Assistant | **PASS** PNG + context Documents |
 | P8 Harden Mail | baseline P1b |
-| P9 Draft edit/send | UITest stubs Modifier/Envoyer |
-| P10 Actions | menu overflow `mail.overflow` + a11y draft |
-| P11 Files preview | `files.preview` + UITest nested→spec.md |
-| P12 Histories | `HistoryIsolationUITests` titres + fixtures |
-| P13 Handoffs | SSE `handoff` + `HandoffUITests` |
+| P9 Draft edit/send | **PASS** mail-draft / editing / sent |
+| P10 Actions | menu overflow + a11y draft |
+| P11 Files preview | **PASS** files-preview + nested |
+| P12 Histories | **PASS** history-mail/files-scope |
+| P13 Handoffs | **PASS** chat-handoff-mail/files |
 | P14–P16 | polish/a11y partiel |
-| P17 Final QA | **pending** jalon Simulator `gate`/`all` |
+| P17 Final QA | en cours — plan `all` quasi vert |
 
 ## Note Contracts CI
 

@@ -116,7 +116,7 @@ actor ChatStreamingService {
                 "message": "Analyser la demande",
             ]))
             // Hold agent strip visible for XCUITest screenshot / Stop tap.
-            try await Task.sleep(nanoseconds: 1_200_000_000)
+            try await Task.sleep(nanoseconds: 2_000_000_000)
             guard myGeneration == generation else { return }
 
             if scenario == "agent-error" {

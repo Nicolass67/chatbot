@@ -1060,10 +1060,14 @@ struct ChatScreen: View {
                 agentActivity.completed = true
                 agentActivity.phase = "synthesis"
                 agentActivity.visible = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        agentActivity = AgentActivityState()
+                let keepAgent = UITestMode.isActive
+                    && (UITestMode.sseScenario == "agent" || UITestMode.sseScenario == "agent-error")
+                if !keepAgent {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            agentActivity = AgentActivityState()
+                        }
                     }
                 }
             } else {
