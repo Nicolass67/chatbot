@@ -12,9 +12,11 @@ struct ChatbotNativeApp: App {
                 .environmentObject(session)
                 .environmentObject(appearance)
                 .environment(nav)
+                .environment(\.themeRevision, appearance.themeRevision)
                 .tint(AppTheme.accent)
                 .preferredColorScheme(appearance.mode.preferredColorScheme)
-                .id("theme-\(appearance.themeRevision)-\(appearance.mode.rawValue)")
+                // Pas de `.id(themeRevision)` : ça détruisait toute la hiérarchie
+                // (sheet Réglages fermée/rouverte à chaque pastille).
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }

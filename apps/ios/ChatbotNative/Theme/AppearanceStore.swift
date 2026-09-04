@@ -131,7 +131,8 @@ final class AppearanceStore: ObservableObject {
         didSet { persistPalette() }
     }
 
-    /// Incrémenté à chaque changement de palette → force le refresh UI (`.id`).
+    /// Incrémenté à chaque changement de palette (les vues qui le lisent se rafraîchissent
+    /// sans détruire la navigation / les sheets — ne jamais l’utiliser comme `.id` racine).
     @Published private(set) var themeRevision: Int = 0
 
     private var isHydrating = true

@@ -182,9 +182,12 @@ struct MainTabView: View {
                 .environmentObject(session)
                 .environmentObject(appearance)
                 .environment(nav)
+                .environment(\.themeRevision, appearance.themeRevision)
                 .chatbotSheetAppearance(appearance.mode)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+                // Identité stable : ne pas remonter la sheet à chaque pastille.
+                .id("settings-hub")
         }
     }
 }

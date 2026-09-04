@@ -64,6 +64,8 @@ struct SettingsView: View {
         }
         .chatbotSheetAppearance(appearance.mode)
         .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
+        // Garde la sheet stable quand la palette change (pas de remount NavigationStack).
+        .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.themeRevision)
     }
 
     private var settingsContent: some View {

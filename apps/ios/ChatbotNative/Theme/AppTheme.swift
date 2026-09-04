@@ -126,11 +126,25 @@ private extension UIColor {
     }
 }
 
+extension EnvironmentValues {
+    /// Révision palette thème — invalide les fonds / chrome sans remount navigation.
+    var themeRevision: Int {
+        get { self[ThemeRevisionKey.self] }
+        set { self[ThemeRevisionKey.self] = newValue }
+    }
+}
+
+private struct ThemeRevisionKey: EnvironmentKey {
+    static let defaultValue: Int = 0
+}
+
 /// Fond Ice Blue — ambient bleu clair moderne.
 struct AmbientBackground: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeRevision) private var themeRevision
 
     var body: some View {
+        let _ = themeRevision
         ZStack {
             AppTheme.background
             RadialGradient(
@@ -163,8 +177,10 @@ struct ChromeGlass: ViewModifier {
     var opacity: Double = 0.55
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeRevision) private var themeRevision
 
     func body(content: Content) -> some View {
+        let _ = themeRevision
         if reduceTransparency {
             content
                 .background(
