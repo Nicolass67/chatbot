@@ -146,15 +146,17 @@ struct MailHtmlView: UIViewRepresentable {
         <meta name="color-scheme" content="dark light">
         <base target="_blank" rel="noopener noreferrer">
         <style id="cn-base">
-        html,body{margin:0;padding:12px;background:#1e2128!important;color:#f2f2f7!important;
+        html,body{margin:0;padding:12px;
+        background:light-dark(#F3F4F6,#1e2128)!important;
+        color:light-dark(#14161A,#f2f2f7)!important;
         font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:17px;line-height:1.55;width:100%;
         max-width:100%;overflow-x:hidden;overflow-wrap:anywhere;word-break:break-word;-webkit-text-size-adjust:100%;}
-        html,body,*{color:#f2f2f7!important;background:transparent!important;background-color:transparent!important;}
-        a,a *{color:#8ec7ff!important}
+        html,body,*{color:light-dark(#14161A,#f2f2f7)!important;background:transparent!important;background-color:transparent!important;}
+        a,a *{color:light-dark(#3B6EA5,#8ec7ff)!important}
         img{max-width:100%!important;height:auto!important}
         table{max-width:100%!important;border-collapse:collapse}
         pre,code{white-space:pre-wrap;word-break:break-word}
-        blockquote{margin:0;padding-left:12px;border-left:3px solid #5B8FD4;color:#d1d1d6!important}
+        blockquote{margin:0;padding-left:12px;border-left:3px solid light-dark(#3B6EA5,#5B8FD4);color:light-dark(#5C6370,#d1d1d6)!important}
         </style></head><body>\(body)</body></html>
         """
     }

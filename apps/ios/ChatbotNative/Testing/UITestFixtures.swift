@@ -50,14 +50,18 @@ enum UITestFixtures {
 
     static func conversations(scope: ConversationScope) -> [ConversationDTO] {
         switch scope {
-        case .general: return [sampleConversation]
+        case .general: return [emptyConversation, sampleConversation]
         case .mail: return [mailScopedConversation]
         case .files: return [filesScopedConversation]
         }
     }
 
     static func messages(conversationId: String) -> [MessageDTO] {
-        if conversationId == sampleConversation.id || conversationId == emptyConversation.id {
+        // Nouveau chat UITest : vraiment vide → EmptyChatCanvas.
+        if conversationId == emptyConversation.id {
+            return []
+        }
+        if conversationId == sampleConversation.id {
             return [
                 MessageDTO(
                     id: "uitest-msg-user",

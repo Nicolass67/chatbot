@@ -8,27 +8,28 @@ on:
   workflow_dispatch:
     inputs:
       test_plan:
-        description: "Suite ciblée (all|mail|chat|files|gate|assistants)"
+        description: "Suite (smoke≤5m | gate | chat | mail | files | assistants | all=long)"
         required: false
-        default: "all"
+        default: "smoke"
         type: choice
         options:
-          - all
+          - smoke
+          - gate
           - mail
           - chat
           - files
-          - gate
           - assistants
+          - all
   workflow_call:
     inputs:
       test_plan:
-        description: "Suite ciblée (all|mail|chat|files|gate|assistants)"
+        description: "Suite (smoke≤5m | gate | … | all)"
         required: false
-        default: "all"
+        default: "smoke"
         type: string
 
 concurrency:
-  group: ios-native-simulator-${{ github.ref }}-${{ inputs.test_plan || 'all' }}
+  group: ios-native-simulator-${{ github.ref }}-${{ inputs.test_plan || 'smoke' }}
   cancel-in-progress: true
 
 permissions:
@@ -38,13 +39,14 @@ permissions:
 env:
   IOS_SIMULATOR_DEVICE: ${{ vars.IOS_SIMULATOR_DEVICE }}
   IOS_SIMULATOR_OS: ${{ vars.IOS_SIMULATOR_OS }}
-  TEST_PLAN: ${{ inputs.test_plan || 'all' }}
+  TEST_PLAN: ${{ inputs.test_plan || 'smoke' }}
 
 jobs:
   simulator-ui:
-    name: Fast Simulator (${{ inputs.test_plan || 'all' }})
+    name: Fast Simulator (${{ inputs.test_plan || 'smoke' }})
     runs-on: macos-26
-    timeout-minutes: 25
+    # smoke/gate ≤10m soft ; all long opt-in
+    timeout-minutes: 12
 
     steps:
       - name: Checkout
@@ -169,6 +171,11 @@ jobs:
           PLAN="${TEST_PLAN:-all}"
           ONLY=()
           case "$PLAN" in
+            smoke)
+              # 1 launch × 3 tabs — budget ≤5 min (build cache + tests courts)
+              ONLY+=("-only-testing:ChatbotNativeUITests/SmokeGateUITests")
+              REQUIRED="chat-empty.png mail-inbox.png files-root.png"
+              ;;
             mail)
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
@@ -196,17 +203,12 @@ jobs:
               REQUIRED="mail-assistant.png files-assistant.png history-mail-scope.png history-files-scope.png mail-draft.png chat-handoff-mail.png chat-handoff-files.png files-nested.png files-preview.png"
               ;;
             gate)
-              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/MailAssistantUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/FilesAssistantUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/FilesNavigationUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/HistoryIsolationUITests")
-              ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
-              REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png mail-draft.png mail-assistant.png files-assistant.png files-nested.png files-preview.png chat-handoff-mail.png chat-handoff-files.png"
+              ONLY+=("-only-testing:ChatbotNativeUITests/SmokeGateUITests")
+              ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests/testChatThinkingAndAgentScreenshots")
+              ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests/testMailHtmlTextSummaryAndBack")
+              REQUIRED="chat-empty.png mail-inbox.png files-root.png chat-thinking.png chat-agent.png mail-detail-html.png mail-summary.png"
               ;;
-            all|*)
+            all)
               ONLY+=("-only-testing:ChatbotNativeUITests/SimulatorMVPUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailReadabilityUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/MailDraftUITests")
@@ -216,6 +218,10 @@ jobs:
               ONLY+=("-only-testing:ChatbotNativeUITests/HistoryIsolationUITests")
               ONLY+=("-only-testing:ChatbotNativeUITests/HandoffUITests")
               REQUIRED="chat-empty.png mail-inbox.png mail-detail-html.png mail-detail-text.png mail-summary.png files-root.png chat-composer.png chat-keyboard-dismissed.png chat-thinking.png chat-agent.png files-folder-documents.png files-nested.png files-preview.png mail-draft.png mail-assistant.png files-assistant.png history-mail-scope.png history-files-scope.png chat-handoff-mail.png chat-handoff-files.png"
+              ;;
+            *)
+              echo "::error::Unknown TEST_PLAN=$PLAN (use smoke|gate|chat|mail|files|assistants|all)"
+              exit 1
               ;;
           esac
           # shell array → env (newline-separated)
@@ -377,6 +383,14 @@ jobs:
             echo "- test-without-building: ${UI_TEST_SECONDS:-?}s"
             echo "- plan: ${TEST_PLAN}"
           } >> "$GITHUB_STEP_SUMMARY"
+          TOTAL=$(( ${BUILD_SECONDS:-0} + ${UI_TEST_SECONDS:-0} ))
+          if [ "${TEST_PLAN}" = "smoke" ] && [ "$TOTAL" -gt 240 ]; then
+            echo "::warning::Smoke build+test ${TOTAL}s — cible ≤4m hors setup (cache DerivedData)"
+          fi
+          if [ "${TEST_PLAN}" = "smoke" ] && [ "$TOTAL" -gt 360 ]; then
+            echo "::error::Smoke exceeded 6m build+test (${TOTAL}s)"
+            exit 1
+          fi
 
       - name: Upload simulator screenshots
         if: always()

@@ -87,8 +87,8 @@ Puis P5…P17
 | P11 Files preview | **PASS** |
 | P12 Histories | **PASS** |
 | P13 Handoffs | **PASS** |
-| P14–P16 | polish/a11y partiel — suite |
-| P17 Final QA | **jalon `all` PASS** run 33839932300 |
+| P14–P16 | **PASS polish** — empty chat UITest, Settings Apparence, Mail a11y unread, HTML light-dark, Reduce Motion login |
+| P17 Final QA | gate = `plan=smoke` ≤5 min ; `all` = opt-in long |
 
 ## Note Contracts CI
 

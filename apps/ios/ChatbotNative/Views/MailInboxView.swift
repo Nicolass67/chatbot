@@ -338,18 +338,18 @@ struct MailRow: View {
     let message: MailMessageSummary
 
     var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.space10) {
+        HStack(alignment: .top, spacing: AppTheme.space12) {
             ZStack {
                 Circle()
                     .fill(AppTheme.mailAccent.opacity(0.18))
                 Text(initials)
-                    .font(.caption.weight(.semibold))
+                    .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mailAccent)
             }
             .frame(width: 36, height: 36)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: AppTheme.space4) {
                 HStack(alignment: .firstTextBaseline, spacing: AppTheme.space8) {
                     Text(message.from?.name ?? message.from?.email ?? "Inconnu")
                         .font(CNFont.callout.weight(message.isUnread == true ? .semibold : .regular))
@@ -389,8 +389,17 @@ struct MailRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, AppTheme.space8)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        let from = message.from?.name ?? message.from?.email ?? "Inconnu"
+        let subject = message.subject?.isEmpty == false ? message.subject! : "sans objet"
+        let unread = message.isUnread == true ? "Non lu. " : ""
+        let attach = message.hasAttachments == true ? " Avec pièce jointe." : ""
+        return "\(unread)\(from). \(subject).\(attach)"
     }
 
     private var initials: String {

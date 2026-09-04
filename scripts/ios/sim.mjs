@@ -4,7 +4,7 @@
  * Usage:
  *   npm.cmd run ios:sim
  *   IOS_SIM_TEST_PLAN=mail npm.cmd run ios:sim
- *   IOS_SIM_TEST_PLAN=chat|files|gate|assistants|all
+ *   IOS_SIM_TEST_PLAN=smoke|gate|chat|files|assistants|all
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,10 +21,11 @@ const ARTIFACT = "simulator-screenshots";
 const PLAN = (() => {
   const arg = process.argv.find((a) => a.startsWith("--plan="));
   if (arg) return arg.slice("--plan=".length).trim().toLowerCase();
-  return (process.env.IOS_SIM_TEST_PLAN || "all").trim().toLowerCase();
+  return (process.env.IOS_SIM_TEST_PLAN || "smoke").trim().toLowerCase();
 })();
 
 const REQUIRED_BY_PLAN = {
+  smoke: ["chat-empty.png", "mail-inbox.png", "files-root.png"],
   mail: [
     "mail-inbox.png",
     "mail-detail-html.png",
@@ -63,21 +64,11 @@ const REQUIRED_BY_PLAN = {
   gate: [
     "chat-empty.png",
     "mail-inbox.png",
-    "mail-detail-html.png",
-    "mail-detail-text.png",
-    "mail-summary.png",
     "files-root.png",
-    "chat-composer.png",
-    "chat-keyboard-dismissed.png",
     "chat-thinking.png",
     "chat-agent.png",
-    "mail-draft.png",
-    "mail-assistant.png",
-    "files-assistant.png",
-    "files-nested.png",
-    "files-preview.png",
-    "chat-handoff-mail.png",
-    "chat-handoff-files.png",
+    "mail-detail-html.png",
+    "mail-summary.png",
   ],
   all: [
     "chat-empty.png",
@@ -180,7 +171,7 @@ function main() {
   }
   fs.mkdirSync(dest, { recursive: true });
 
-  const plan = REQUIRED_BY_PLAN[PLAN] ? PLAN : "all";
+  const plan = REQUIRED_BY_PLAN[PLAN] ? PLAN : "smoke";
   const required = REQUIRED_BY_PLAN[plan];
 
   console.log("FAST SIMULATOR");

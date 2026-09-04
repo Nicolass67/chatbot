@@ -7,7 +7,8 @@ Boucle rapide **avant** rework Mobile 3.0 device-first : build IPA sans tests lo
 | Workflow | Fichier | Contenu | Quand |
 |----------|---------|---------|--------|
 | **Fast QA** | `.github/workflows/ios-native-qa.yml` | xcodegen + **1** `xcodebuild` Release unsigned + IPA + `qa-meta.json` | `workflow_dispatch` / `workflow_call` uniquement (via `ios:fast-build` / `ios:deploy`) |
-| **Full CI** | `.github/workflows/ios-native.yml` | Unit tests + UI tests Simulator + IPA | `push` `apps/ios/**`, PR paths, `workflow_dispatch` |
+| **Full CI** | `.github/workflows/ios-native.yml` | **Unit tests only** (budget ≤5 min) | `push` / PR `apps/ios/**` |
+| **Fast Simulator** | `.github/workflows/ios-native-simulator.yml` | UI smoke (défaut) ou suites ciblées | `ios:sim` / `ios:sim:smoke` |
 
 ```
 Modify Swift → ios:deploy
@@ -20,30 +21,17 @@ Modify Swift → ios:deploy
 
 ## Timings mesurés (baseline Full CI)
 
-Run succès `33796983013` (~**4m57s** wall, runner `macos-26`) :
+### Budget dur ≤5 min (sept. 2026)
 
-| Step | Durée |
-|------|-------|
-| Checkout + Xcode pin + SDK gate | ~10s |
-| brew XcodeGen + generate | ~3s |
-| **Unit tests** | **~3m32s** |
-| Build Release unsigned | ~1m01s |
-| Package + upload | ~3s |
+| Workflow | Contenu | Cible |
+|----------|---------|--------|
+| **Full CI** `ios-native.yml` | Unit tests only (+ DerivedData cache) | **≤5 min** — plus d’UI suite ni IPA |
+| **Fast Simulator** `plan=smoke` | 1 UITest × 3 tabs + 3 PNG | **≤5 min** (défaut `ios:sim`) |
+| **IPA Flash** | Release unsigned + inject URL | ~1–1.5 min |
+| `plan=all` | Suite complète screenshots | **opt-in long** (~15 min) — pas le gate |
 
-Frein principal = **unit tests avant l’IPA**, pas l’archive. Les UI tests ajoutent ~1–2 min quand présents.
-
-**Cible Fast QA** : ~**1.5–3 min** wall (sans unit/UI). Sous 3 min dépend aussi de la queue `macos-26`.
-
-### Mesures Fast vs Full CI (runs réels)
-
-| Run | Workflow | Job wall | Notes |
-|-----|----------|----------|-------|
-| Full baseline | `ios-native.yml` `33796983013` | ~4m57s | Unit ~3m32s + build ~1m01s |
-| **Fast #1** | `ios-native-qa.yml` `33807323773` | **~1m30s** | SHA `fbd7d02` ; build ~1m13s |
-| **Fast #2** | `ios-native-qa.yml` `33807597024` | **~1m15s** | Cache XcodeGen hit ; build ~1m05s |
-| **Full #2** | `ios-native.yml` `33809232045` | **~10m28s** | Unit ~4m14s + UI ~4m44s + build ~58s |
-
-**Verdict :** Fast QA ≈ **1.2–1.5 min** (cible 1.5–3 min **atteinte**). Full CI reste ~5 min avec unit tests.
+Freins historiques (~20–24 min Full CI) : UI suite complète (~18 min) + unit (~4 min) + IPA.  
+Mitigation : retirer UI/IPA du push gate ; smoke Simulator à 1 launch.
 
 ## E2E réel (sept. 2026)
 

@@ -79,6 +79,7 @@ struct BiometricLockView: View {
 
 struct LoginView: View {
     @EnvironmentObject private var session: AppSessionStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -89,7 +90,7 @@ struct LoginView: View {
                     Image(systemName: "bubble.left.and.bubble.right.fill")
                         .font(.system(size: 48, weight: .semibold))
                         .foregroundStyle(AppTheme.accent)
-                        .symbolEffect(.pulse, options: .repeating.speed(0.35))
+                        .modifier(PulseIfNeeded(reduceMotion: reduceMotion))
                         .accessibilityHidden(true)
                     Text("Chatbot")
                         .font(CNFont.brand)
@@ -180,6 +181,18 @@ struct MainTabView: View {
                 .environment(nav)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private struct PulseIfNeeded: ViewModifier {
+    let reduceMotion: Bool
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else {
+            content.symbolEffect(.pulse, options: .repeating.speed(0.35))
         }
     }
 }

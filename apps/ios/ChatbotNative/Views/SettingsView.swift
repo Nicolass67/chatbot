@@ -57,7 +57,7 @@ struct SettingsView: View {
             AmbientBackground()
             List {
                 Section {
-                    LabeledContent("User", value: session.userId ?? "—")
+                    LabeledContent("Utilisateur", value: session.userId ?? "—")
                     LabeledContent("Client", value: "ios · Mobile 3.0")
                     LabeledContent("Origin", value: session.baseURL.host ?? "")
                     LabeledContent("Version", value: appVersion)
@@ -75,6 +75,16 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Session")
+                }
+                .listRowBackground(AppTheme.surface)
+
+                Section {
+                    LabeledContent("Thème", value: "Système (clair / sombre)")
+                    Text("L’app suit Réglages iOS → Affichage. Nocturne Ink s’adapte automatiquement.")
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.muted)
+                } header: {
+                    Text("Apparence")
                 }
                 .listRowBackground(AppTheme.surface)
 
@@ -211,6 +221,7 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
         }
+        .accessibilityIdentifier(A11yID.Settings.root)
         .navigationTitle("Réglages")
         .navigationBarTitleDisplayMode(embedded ? .inline : .large)
         .task { await load() }
