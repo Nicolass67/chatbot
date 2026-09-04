@@ -383,10 +383,8 @@ struct PersistentProductActionsBar: View {
                     (.reply, "Répondre", "arrowshape.turn.up.left"),
                 ]
             }
-            return [
-                (.searchUnread, "Non lus", "envelope.badge"),
-                (.draft, "Nouveau mail", "square.and.pencil"),
-            ]
+            // Assistant boîte mail (pas un fil) : pas de raccourcis — le chat suffit.
+            return []
         }
         return [
             // Pas d’action « Explorer » — Files est déjà l’explorateur natif.
@@ -454,7 +452,9 @@ struct ContextualQuickActions: View {
                 .foregroundStyle(AppTheme.foreground)
             Text(hasMailThread
                 ? "Utilise les actions ci-dessus, ou pose une question."
-                : "Utilise les actions ci-dessus pour commencer.")
+                : (scope == .mail
+                   ? "Pose une question sur ta boîte mail."
+                   : "Pose une question pour commencer."))
                 .font(CNFont.callout)
                 .foregroundStyle(AppTheme.muted)
                 .multilineTextAlignment(.center)
