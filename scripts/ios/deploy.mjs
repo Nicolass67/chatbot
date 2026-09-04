@@ -64,6 +64,7 @@ function parseArgs(argv) {
     skipBuild: false,
     noLaunch: false,
     force: false,
+    latest: false,
     ipa: null,
     /** @type {"auto"|"usb"|"wifi"} */
     transport: "auto",
@@ -77,6 +78,7 @@ function parseArgs(argv) {
     else if (a === "--skip-build") out.skipBuild = true;
     else if (a === "--no-launch") out.noLaunch = true;
     else if (a === "--force") out.force = true;
+    else if (a === "--latest") out.latest = true;
     else if (a === "--wifi") out.transport = "wifi";
     else if (a === "--usb") out.transport = "usb";
     else if (a === "--auto") out.transport = "auto";
@@ -130,6 +132,53 @@ function sleep(ms) {
 
 function step(n, total, msg) {
   console.log(`[${n}/${total}] ${msg}`);
+}
+
+function findLatestSuccessfulRun({ workflow = flashWorkflowFile, limit = 30 } = {}) {
+  const json = sh("gh", [
+    "run",
+    "list",
+    "--repo",
+    repo,
+    "--workflow",
+    workflow,
+    "--limit",
+    String(limit),
+    "--json",
+    "databaseId,status,conclusion,headSha,url,createdAt,displayTitle",
+  ]).stdout;
+  const runs = JSON.parse(json || "[]");
+  return (
+    runs.find((r) => r.status === "completed" && r.conclusion === "success") || null
+  );
+}
+
+function readIpaInfoSafe(target) {
+  try {
+    ensureDeployVenv();
+    const py = path.join(root, "scripts", "ios", ".deploy-venv", "Scripts", "python.exe");
+    const helper = path.join(root, "scripts", "ios", "read_bundle_info.py");
+    const bin = fs.existsSync(py) ? py : "python";
+    const r = spawnSync(bin, [helper, target], { encoding: "utf8", windowsHide: true });
+    if (r.status !== 0) return null;
+    return JSON.parse((r.stdout || "").trim());
+  } catch {
+    return null;
+  }
+}
+
+function printSourceBanner({ runId, sha, ipa, meta, ipaInfo }) {
+  console.log("========== DEPLOY SOURCE ==========");
+  console.log(`SOURCE:   GitHub run ${runId || meta?.run_id || "?"}`);
+  console.log(`COMMIT:   ${sha || meta?.git_sha || "?"}`);
+  console.log(`IPA:      ${ipa || ipaPath}`);
+  console.log(`VERSION:  ${ipaInfo?.version || meta?.marketing || "?"}`);
+  console.log(`BUILD:    ${ipaInfo?.build || meta?.build || "?"}`);
+  console.log(`BUNDLE:   ${ipaInfo?.bundle_id || meta?.bundle_id || expectedBundle}`);
+  console.log(`DEVICE:   iPhone (RemotePairing)`);
+  console.log(`TRANSPORT: RemotePairing → Trusted Tunnel → RSD`);
+  console.log(`USB:       ABSENT (required for --wifi)`);
+  console.log("===================================");
 }
 
 function findRunForSha(sha, { preferInProgress = true, workflow = workflowFile } = {}) {
@@ -262,13 +311,80 @@ function verifyMeta(expectedSha) {
   } else if (host.includes("your-worker.example")) {
     issues.push(`base_url_host placeholder interdit: ${meta.base_url_host}`);
   }
+
+  const ipaInfo = readIpaInfoSafe(ipaPath);
+  if (!ipaInfo) {
+    issues.push("Info.plist IPA illisible");
+  } else {
+    if (meta.marketing && String(ipaInfo.version) !== String(meta.marketing)) {
+      issues.push(`IPA version ${ipaInfo.version} != meta.marketing ${meta.marketing}`);
+    }
+    if (meta.build && String(ipaInfo.build) !== String(meta.build)) {
+      issues.push(`IPA build ${ipaInfo.build} != meta.build ${meta.build}`);
+    }
+    if (ipaInfo.bundle_id && !String(ipaInfo.bundle_id).startsWith(expectedBundle)) {
+      issues.push(`IPA bundle_id ${ipaInfo.bundle_id} != prefix ${expectedBundle}`);
+    }
+  }
+
   if (issues.length) {
-    throw new Error(`REFUSE install — qa-meta.json invalide:\n- ${issues.join("\n- ")}`);
+    throw new Error(`REFUSE install — qa-meta.json/IPA invalide:\n- ${issues.join("\n- ")}`);
   }
   console.log(
     `[ios:deploy] meta OK sha=${meta.git_sha.slice(0, 7)} build=${meta.build} bundle=${meta.bundle_id} host=${meta.base_url_host || "?"} run=${meta.run_id}`
   );
-  return meta;
+  printSourceBanner({
+    runId: meta.run_id,
+    sha: meta.git_sha,
+    ipa: ipaPath,
+    meta,
+    ipaInfo,
+  });
+  return { ...meta, ipaInfo };
+}
+
+async function cmdDownload({ sha, runId, workflow = flashWorkflowFile, latest = false }) {
+  ensureGh();
+  let id = runId;
+  let expectSha = sha ? resolveSha(sha) : null;
+
+  if (!id && (latest || !sha)) {
+    const run = findLatestSuccessfulRun({ workflow });
+    if (!run) {
+      throw new Error(`Aucun run SUCCESS pour workflow ${workflow}`);
+    }
+    id = String(run.databaseId);
+    expectSha = String(run.headSha).toLowerCase();
+    console.log(
+      `[ios:deploy] latest Flash SUCCESS run=${id} sha=${expectSha.slice(0, 7)} at ${run.createdAt}`
+    );
+  }
+
+  if (!id) {
+    expectSha = resolveSha(sha);
+    let run = findRunForSha(expectSha, { preferInProgress: false, workflow });
+    if (!run || run.conclusion !== "success") {
+      run = findRunForSha(expectSha, { preferInProgress: false, workflow: workflowFile });
+    }
+    if (!run || run.conclusion !== "success") {
+      throw new Error(`Pas de run succès pour ${expectSha}`);
+    }
+    id = String(run.databaseId);
+  }
+
+  if (!expectSha) {
+    // Resolve SHA from the chosen run
+    const view = JSON.parse(
+      sh("gh", ["run", "view", String(id), "--repo", repo, "--json", "headSha,conclusion"]).stdout
+    );
+    if (view.conclusion !== "success") {
+      throw new Error(`Run ${id} n'est pas SUCCESS (${view.conclusion})`);
+    }
+    expectSha = String(view.headSha).toLowerCase();
+  }
+
+  downloadArtifact(id);
+  return verifyMeta(expectSha);
 }
 
 async function cmdFlashBuild({ sha, ref, force = false, baseUrl = null }) {
@@ -329,58 +445,54 @@ async function cmdFastBuild({ sha, ref, force = false }) {
   return { runId: String(run.databaseId), meta, ipaPath, metaPath };
 }
 
-async function cmdDownload({ sha, runId, workflow = flashWorkflowFile }) {
-  ensureGh();
-  const expectSha = resolveSha(sha);
-  let id = runId;
-  if (!id) {
-    let run = findRunForSha(expectSha, { preferInProgress: false, workflow });
-    if (!run || run.conclusion !== "success") {
-      run = findRunForSha(expectSha, { preferInProgress: false, workflow: workflowFile });
-    }
-    if (!run || run.conclusion !== "success") {
-      throw new Error(`Pas de run succès pour ${expectSha}`);
-    }
-    id = String(run.databaseId);
-  }
-  downloadArtifact(id);
-  return verifyMeta(expectSha);
-}
-
-async function cmdInstall(ipa, transport = "auto", { noLaunch = false } = {}) {
+async function cmdInstall(ipa, transport = "auto", { noLaunch = false, expect = null } = {}) {
   const target = ipa || ipaPath;
   if (!fs.existsSync(target)) throw new Error(`IPA introuvable: ${target}`);
+  let meta = null;
   if (fs.existsSync(metaPath)) {
     try {
-      verifyMeta(gitSha());
+      meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      // Prefer meta SHA from artifact, not necessarily local HEAD
+      if (meta.git_sha) verifyMeta(meta.git_sha);
     } catch (e) {
       console.warn(`[ios:deploy] warning meta: ${e.message}`);
     }
   }
-  return installIpa(target, { transport, noLaunch });
+  const expectOpts =
+    expect ||
+    (meta?.marketing || meta?.build
+      ? { version: meta.marketing, build: meta.build }
+      : null);
+  return installIpa(target, { transport, noLaunch, expect: expectOpts });
 }
 
 /**
  * Autonomous pipeline: Flash IPA → download → sign → Wi-Fi/USB install (+ launch).
  * No screenshots.
+ * --skip-build = do NOT trigger CI, but always fetch the latest SUCCESS Flash IPA
+ * unless --run is pinned (never silently reuse a stale local IPA).
  */
 async function cmdDeploy(opts) {
   const total = 8;
   let buildResult = null;
+  let meta = null;
 
   if (!opts.skipBuild) {
     step(1, total, "Waiting for GitHub Flash IPA build");
     buildResult = await cmdFlashBuild(opts);
+    meta = buildResult.meta;
   } else {
-    step(1, total, "Reusing local IPA (skip-build)");
-    if (!fs.existsSync(ipaPath) || !fs.existsSync(metaPath)) {
-      await cmdDownload(opts);
-    } else {
-      verifyMeta(resolveSha(opts.sha));
-    }
+    step(1, total, "Fetching latest SUCCESS Flash IPA (no rebuild)");
+    // Always re-download latest unless an explicit --run is provided.
+    meta = await cmdDownload({
+      sha: opts.sha || null,
+      runId: opts.runId || null,
+      latest: !opts.runId && !opts.sha,
+    });
+    buildResult = { runId: String(meta.run_id || opts.runId || ""), meta, ipaPath, metaPath };
   }
 
-  step(2, total, "IPA downloaded");
+  step(2, total, `IPA downloaded build=${meta?.build || "?"} ver=${meta?.marketing || "?"}`);
   try {
     ensureDeployVenv();
   } catch (e) {
@@ -388,12 +500,13 @@ async function cmdDeploy(opts) {
     console.warn(`[ios:deploy] deploy-venv: ${e.message}`);
   }
 
-  step(3, total, "Signature ready (local Apple credentials)");
+  step(3, total, "Signature ready (local Apple credentials — no stale .app fallback)");
   step(4, total, `Finding iPhone (${opts.transport || "auto"})`);
   step(5, total, "Trusted Tunnel / install transport");
 
   const installResult = await cmdInstall(opts.ipa || ipaPath, opts.transport || "auto", {
     noLaunch: opts.noLaunch,
+    expect: { version: meta?.marketing, build: meta?.build },
   });
 
   if (installResult.code !== 0 && installResult.code !== 2) {
@@ -473,10 +586,13 @@ function usage() {
   console.log(`Usage:
   node scripts/ios/deploy.mjs flash-build [--sha SHA] [--ref branch] [--force]
   node scripts/ios/deploy.mjs fast-build [--sha SHA] [--ref branch] [--force]
-  node scripts/ios/deploy.mjs download [--sha SHA] [--run id]
+  node scripts/ios/deploy.mjs download [--latest|--sha SHA|--run id]
   node scripts/ios/deploy.mjs install [ipa] [--auto|--usb|--wifi]
-  node scripts/ios/deploy.mjs deploy [--wifi|--usb|--auto] [--skip-build] [--no-launch] [--force]
+  node scripts/ios/deploy.mjs deploy [--wifi|--usb|--auto] [--skip-build] [--no-launch] [--force] [--latest]
   node scripts/ios/deploy.mjs deploy:wifi | deploy:usb | deploy:auto
+
+  --skip-build / --latest : no CI rebuild; always fetch latest SUCCESS Flash IPA
+  Never silently reuse a stale signed .app when sign fails.
 
   Transport:
     --wifi  RemotePairing Trusted Tunnel RSD (preferred, no USB)
@@ -499,7 +615,10 @@ async function main() {
       return;
     }
     if (opts.cmd === "download") {
-      const meta = await cmdDownload(opts);
+      const meta = await cmdDownload({
+        ...opts,
+        latest: opts.latest || (!opts.sha && !opts.runId),
+      });
       console.log(JSON.stringify({ ok: true, meta, ipaPath }, null, 2));
       return;
     }

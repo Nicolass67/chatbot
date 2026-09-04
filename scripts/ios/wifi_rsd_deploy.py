@@ -7,6 +7,7 @@ Env:
   IOS_REMOTE_UDID   (default: first remote_* pair record / known Chatbot device)
   IOS_BUNDLE_ID     (optional override; else read from app Info.plist)
   IOS_NO_LAUNCH=1   skip CoreDevice launch after install
+  IOS_EXPECT_VERSION / IOS_EXPECT_BUILD  optional strict post-install match
 """
 
 from __future__ import annotations
@@ -14,12 +15,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import plistlib
 import sys
 import time
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import Any, Optional
 
 MIN_PY = (3, 13)
 
@@ -41,7 +44,7 @@ def require_python() -> None:
         )
 
 
-def read_bundle_id(app_path: Path) -> str:
+def read_app_info(app_path: Path) -> dict[str, Any]:
     if app_path.suffix.lower() == ".ipa":
         die("pass a signed .app directory (sign step must expand/sign before RSD install)")
     plist_path = app_path / "Info.plist"
@@ -51,7 +54,15 @@ def read_bundle_id(app_path: Path) -> str:
     bid = data.get("CFBundleIdentifier")
     if not bid:
         die("CFBundleIdentifier missing in Info.plist")
-    return str(bid)
+    return {
+        "bundle_id": str(bid),
+        "version": data.get("CFBundleShortVersionString"),
+        "build": data.get("CFBundleVersion"),
+    }
+
+
+def read_bundle_id(app_path: Path) -> str:
+    return str(read_app_info(app_path)["bundle_id"])
 
 
 def default_udid() -> str:
@@ -81,7 +92,45 @@ async def discover_rp_endpoint(timeout: float = 8.0) -> tuple[str, int]:
     die("RemotePairing Bonjour endpoint not found (same Wi-Fi? phone unlocked? RP paired?)")
 
 
-async def run_install(app_path: Path, bundle_id: str, udid: str, launch: bool, retries: int) -> dict:
+async def launch_via_rsd(rsd, bundle_id: str) -> tuple[bool, Any]:
+    """Prefer CoreDevice AppService; fall back to DVT ProcessControl (iOS 27 RSD)."""
+    try:
+        from pymobiledevice3.remote.core_device.app_service import AppServiceService
+
+        app_svc = AppServiceService(rsd)
+        await app_svc.connect()
+        try:
+            detail = await app_svc.launch_application(bundle_id)
+            log("[wifi-rsd] launch OK (AppService)")
+            return True, detail
+        finally:
+            await app_svc.close()
+    except Exception as e:
+        log(f"[wifi-rsd] AppService launch miss: {type(e).__name__}: {e}")
+
+    try:
+        from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+        from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+
+        async with DvtProvider(rsd) as dvt, ProcessControl(dvt) as pc:
+            pid = await pc.launch(bundle_id=bundle_id, kill_existing=True)
+            log(f"[wifi-rsd] launch OK (DVT ProcessControl) pid={pid}")
+            return True, {"method": "dvt-processcontrol", "pid": pid}
+    except Exception as e:
+        log(f"[wifi-rsd] launch FAIL {type(e).__name__}: {e}")
+        return False, {"error": f"{type(e).__name__}: {e}"}
+
+
+async def run_install(
+    app_path: Path,
+    bundle_id: str,
+    udid: str,
+    launch: bool,
+    retries: int,
+    expect_version: Optional[str] = None,
+    expect_build: Optional[str] = None,
+    require_no_usb: bool = True,
+) -> dict:
     from pymobiledevice3.remote import tunnel_service
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
     from pymobiledevice3.remote.tunnel_service import create_core_device_tunnel_service_using_remotepairing
@@ -90,11 +139,25 @@ async def run_install(app_path: Path, bundle_id: str, udid: str, launch: bool, r
     from pymobiledevice3.services.installation_proxy import InstallationProxyService
     from pymobiledevice3.usbmux import list_devices
 
+    app_info = read_app_info(app_path)
+    if expect_version and str(app_info.get("version")) != str(expect_version):
+        die(
+            f"signed .app version mismatch: app={app_info.get('version')} expected={expect_version} "
+            "(refusing stale signed-app fallback)"
+        )
+    if expect_build and str(app_info.get("build")) != str(expect_build):
+        die(
+            f"signed .app build mismatch: app={app_info.get('build')} expected={expect_build} "
+            "(refusing stale signed-app fallback)"
+        )
+
     try:
         usbmux = [(d.serial, str(d.connection_type)) for d in await list_devices()]
     except Exception:
         usbmux = []
     usb_present = any(str(t).lower() == "usb" for _, t in usbmux)
+    if require_no_usb and usb_present:
+        die(f"USB present during Wi-Fi deploy test — aborting (usbmux={usbmux})")
 
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -150,24 +213,18 @@ async def run_install(app_path: Path, bundle_id: str, udid: str, launch: bool, r
             info = next(iter(apps.values()))
             ver = info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
             build = info.get("CFBundleVersion") if isinstance(info, dict) else None
-            log(f"[wifi-rsd] verified {bundle_id} ver={ver} build={build}")
+            app_type = info.get("ApplicationType") if isinstance(info, dict) else None
+            log(f"[wifi-rsd] verified {bundle_id} ver={ver} build={build} type={app_type}")
+
+            if expect_version and str(ver) != str(expect_version):
+                die(f"DEVICE VERSION MISMATCH: device={ver} expected={expect_version}")
+            if expect_build and str(build) != str(expect_build):
+                die(f"DEVICE BUILD MISMATCH: device={build} expected={expect_build}")
 
             launched = False
             launch_detail = None
             if launch:
-                try:
-                    from pymobiledevice3.remote.core_device.app_service import AppServiceService
-
-                    app_svc = AppServiceService(rsd)
-                    await app_svc.connect()
-                    try:
-                        launch_detail = await app_svc.launch_application(bundle_id)
-                        launched = True
-                        log("[wifi-rsd] launch OK")
-                    finally:
-                        await app_svc.close()
-                except Exception as e:
-                    log(f"[wifi-rsd] launch FAIL {type(e).__name__}: {e}")
+                launched, launch_detail = await launch_via_rsd(rsd, bundle_id)
 
             result = {
                 "ok": True,
@@ -177,6 +234,9 @@ async def run_install(app_path: Path, bundle_id: str, udid: str, launch: bool, r
                 "bundle_id": bundle_id,
                 "version": ver,
                 "build": build,
+                "application_type": app_type,
+                "expect_version": expect_version,
+                "expect_build": expect_build,
                 "install_seconds": round(install_s, 2),
                 "total_seconds": round(time.time() - t0, 2),
                 "launched": launched,
@@ -209,6 +269,9 @@ def main() -> None:
     p.add_argument("--bundle-id", default=None)
     p.add_argument("--no-launch", action="store_true")
     p.add_argument("--retries", type=int, default=3)
+    p.add_argument("--expect-version", default=None)
+    p.add_argument("--expect-build", default=None)
+    p.add_argument("--allow-usb", action="store_true", help="Do not abort if USB is also present")
     args = p.parse_args()
     app = args.app.resolve()
     if not app.exists():
@@ -216,11 +279,23 @@ def main() -> None:
     bundle = args.bundle_id or read_bundle_id(app)
     udid = args.udid or default_udid()
     launch = not args.no_launch
-    import os
 
     if os.environ.get("IOS_NO_LAUNCH", "").strip() in ("1", "true", "yes"):
         launch = False
-    asyncio.run(run_install(app, bundle, udid, launch, max(1, args.retries)))
+    expect_version = args.expect_version or os.environ.get("IOS_EXPECT_VERSION", "").strip() or None
+    expect_build = args.expect_build or os.environ.get("IOS_EXPECT_BUILD", "").strip() or None
+    asyncio.run(
+        run_install(
+            app,
+            bundle,
+            udid,
+            launch,
+            max(1, args.retries),
+            expect_version=expect_version,
+            expect_build=expect_build,
+            require_no_usb=not args.allow_usb,
+        )
+    )
 
 
 if __name__ == "__main__":

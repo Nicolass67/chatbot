@@ -21,6 +21,13 @@ USB reste un **fallback** (`ios:deploy:usb`). Pas de screenshots. Pas de Simulat
 | `npm.cmd run ios:deploy:venv` | Crée/vérifie `scripts/ios/.deploy-venv` (Python ≥3.13, pymobiledevice3==11.3.1) |
 | `npm.cmd run ios:install:wifi` | Install seule (IPA locale déjà téléchargée) |
 
+## Garantie « latest IPA »
+
+- `download --latest` / `deploy --skip-build` sélectionnent le **dernier run SUCCESS** de Flash IPA (pas un cache local stale).
+- `qa-meta.json` + `Info.plist` IPA doivent matcher (version/build/sha).
+- Signature : **jamais** de fallback silencieux vers un `.app` déjà signé d’une autre build. Si `sign` échoue → **FAIL** propre.
+- Post-install : le device doit exposer la **même** version/build que l’IPA source.
+
 ## Transport Wi‑Fi (validé)
 
 1. RemotePairing (record `~/.pymobiledevice3/remote_<UDID>.plist`)

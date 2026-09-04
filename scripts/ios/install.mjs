@@ -163,10 +163,34 @@ function credEnv(creds) {
   };
 }
 
+const READ_INFO_PY = path.join(__dirname, "read_bundle_info.py");
+
+/** Read CFBundle* from .ipa or .app via deploy-venv Python. */
+export function readBundleInfo(targetPath) {
+  ensureDeployVenv();
+  const py = venvPythonPath();
+  const r = spawnSync(py, [READ_INFO_PY, path.resolve(targetPath)], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (r.status !== 0) {
+    throw new Error((r.stderr || r.stdout || "read_bundle_info failed").toString().trim());
+  }
+  return JSON.parse((r.stdout || "").trim());
+}
+
+function wipeSignedDir(outDir) {
+  fs.mkdirSync(outDir, { recursive: true });
+  for (const name of fs.readdirSync(outDir)) {
+    fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
+  }
+}
+
 /**
  * Sign IPA locally (no device). Returns path to signed .app directory.
+ * Never reuses a pre-existing signed .app — stale fallback is forbidden.
  */
-export function signIpa(ipaPath, { outDir = SIGNED_DIR } = {}) {
+export function signIpa(ipaPath, { outDir = SIGNED_DIR, expect } = {}) {
   const abs = path.resolve(ipaPath);
   const cli = findCli();
   const creds = resolveAppleCredentials();
@@ -181,8 +205,35 @@ export function signIpa(ipaPath, { outDir = SIGNED_DIR } = {}) {
       backend: "none",
     };
   }
-  fs.mkdirSync(outDir, { recursive: true });
-  console.log(`[ios:install] sign via isideload (${creds.source})`);
+
+  let ipaInfo;
+  try {
+    ipaInfo = readBundleInfo(abs);
+  } catch (e) {
+    return { code: 1, message: `IPA Info.plist unreadable: ${e.message}`, backend: "none" };
+  }
+  if (expect?.version && String(ipaInfo.version) !== String(expect.version)) {
+    return {
+      code: 1,
+      message: `IPA version mismatch: ipa=${ipaInfo.version} expected=${expect.version}`,
+      backend: "none",
+      ipaInfo,
+    };
+  }
+  if (expect?.build && String(ipaInfo.build) !== String(expect.build)) {
+    return {
+      code: 1,
+      message: `IPA build mismatch: ipa=${ipaInfo.build} expected=${expect.build}`,
+      backend: "none",
+      ipaInfo,
+    };
+  }
+
+  // Wipe prior signed output so a failed sign cannot leave an older .app to reuse.
+  wipeSignedDir(outDir);
+  console.log(
+    `[ios:install] sign via isideload (${creds.source}) — source ${ipaInfo.version}/${ipaInfo.build}`
+  );
   const r = spawnSync(cli, ["sign", "--out", outDir, abs], {
     encoding: "utf8",
     env: credEnv(creds),
@@ -196,30 +247,67 @@ export function signIpa(ipaPath, { outDir = SIGNED_DIR } = {}) {
     .filter(Boolean);
   const signedPath = lines.reverse().find((l) => l.endsWith(".app") && fs.existsSync(l));
   if (r.status === 0 && signedPath) {
-    return { code: 0, message: "signed", backend: "isideload-sign", signedApp: signedPath };
+    let signedInfo;
+    try {
+      signedInfo = readBundleInfo(signedPath);
+    } catch (e) {
+      wipeSignedDir(outDir);
+      return {
+        code: 1,
+        message: `signed .app unreadable: ${e.message}`,
+        backend: "isideload-sign",
+        ipaInfo,
+      };
+    }
+    // Free provisioning may suffix team id on bundle id — compare version/build only.
+    if (String(signedInfo.version) !== String(ipaInfo.version) || String(signedInfo.build) !== String(ipaInfo.build)) {
+      wipeSignedDir(outDir);
+      return {
+        code: 1,
+        message:
+          `REFUSE stale/mismatched signed .app: signed=${signedInfo.version}/${signedInfo.build} ` +
+          `ipa=${ipaInfo.version}/${ipaInfo.build}`,
+        backend: "isideload-sign",
+        ipaInfo,
+        signedInfo,
+      };
+    }
+    return {
+      code: 0,
+      message: "signed",
+      backend: "isideload-sign",
+      signedApp: signedPath,
+      ipaInfo,
+      signedInfo,
+    };
   }
+  wipeSignedDir(outDir);
   if (r.status === 2 || /HUMAN_REQUIRED|2FA/i.test(out)) {
     return {
       code: 2,
       humanRequired: true,
-      message: "HUMAN_REQUIRED during sign (2FA)",
+      message: "HUMAN_REQUIRED during sign (2FA) — no stale signed-app fallback",
       backend: "isideload-sign",
       detail: out.slice(0, 400),
+      ipaInfo,
     };
   }
   return {
     code: 1,
-    message: `sign failed (exit ${r.status})`,
+    message: `sign failed (exit ${r.status}) — no stale signed-app fallback`,
     backend: "isideload-sign",
     detail: out.slice(0, 500),
+    ipaInfo,
   };
 }
 
-function runWifiRsd(signedApp, { noLaunch = false } = {}) {
+function runWifiRsd(signedApp, { noLaunch = false, expectVersion = null, expectBuild = null } = {}) {
   ensureDeployVenv();
   const py = venvPythonPath();
   const args = [WIFI_SCRIPT, signedApp, "--retries", "3"];
   if (noLaunch) args.push("--no-launch");
+  if (expectVersion) args.push("--expect-version", String(expectVersion));
+  if (expectBuild) args.push("--expect-build", String(expectBuild));
   console.log(`[ios:install] Wi-Fi RSD via ${py}`);
   const r = spawnSync(py, args, {
     encoding: "utf8",
@@ -228,6 +316,8 @@ function runWifiRsd(signedApp, { noLaunch = false } = {}) {
     env: {
       ...process.env,
       ...(noLaunch ? { IOS_NO_LAUNCH: "1" } : {}),
+      ...(expectVersion ? { IOS_EXPECT_VERSION: String(expectVersion) } : {}),
+      ...(expectBuild ? { IOS_EXPECT_BUILD: String(expectBuild) } : {}),
     },
   });
   const combined = ((r.stdout || "") + "\n" + (r.stderr || "")).trim();
@@ -244,6 +334,24 @@ function runWifiRsd(signedApp, { noLaunch = false } = {}) {
     }
   }
   if (r.status === 0 && json?.ok) {
+    if (expectVersion && String(json.version) !== String(expectVersion)) {
+      return {
+        code: 1,
+        message: `post-install version mismatch device=${json.version} expected=${expectVersion}`,
+        backend: "wifi-rsd",
+        transport: "wifi",
+        detail: json,
+      };
+    }
+    if (expectBuild && String(json.build) !== String(expectBuild)) {
+      return {
+        code: 1,
+        message: `post-install build mismatch device=${json.build} expected=${expectBuild}`,
+        backend: "wifi-rsd",
+        transport: "wifi",
+        detail: json,
+      };
+    }
     return {
       code: 0,
       message: "installed via wifi-rsd",
@@ -251,6 +359,8 @@ function runWifiRsd(signedApp, { noLaunch = false } = {}) {
       transport: "wifi",
       launched: Boolean(json.launched),
       bundleId: json.bundle_id,
+      version: json.version,
+      build: json.build,
       detail: json,
     };
   }
@@ -328,15 +438,38 @@ export async function installIpa(ipaPath, opts = {}) {
   }
 
   const noLaunch = Boolean(opts.noLaunch);
+  const expect = opts.expect || null;
 
   if (transportNorm === "wifi" || transportNorm === "auto") {
-    const signed = signIpa(abs);
+    let ipaInfo = null;
+    try {
+      ipaInfo = readBundleInfo(abs);
+    } catch (e) {
+      return { code: 1, message: `IPA unreadable: ${e.message}`, backend: "none" };
+    }
+    console.log("========== DEPLOY SOURCE ==========");
+    console.log(`IPA:      ${abs}`);
+    console.log(`VERSION:  ${ipaInfo.version}`);
+    console.log(`BUILD:    ${ipaInfo.build}`);
+    console.log(`BUNDLE:   ${ipaInfo.bundle_id}`);
+    console.log(`TRANSPORT: RemotePairing → Trusted Tunnel → RSD`);
+    console.log(`USB:       must be ABSENT for --wifi`);
+    console.log("===================================");
+
+    const signed = signIpa(abs, { expect });
     if (signed.code !== 0) {
+      // Strict: never fall back to a previously signed older .app.
       if (transportNorm === "wifi") return signed;
       console.warn(`[ios:install] sign/wifi prep failed → USB fallback: ${signed.message}`);
     } else {
-      const wifi = runWifiRsd(signed.signedApp, { noLaunch });
-      if (wifi.code === 0) return { ...wifi, signedApp: signed.signedApp };
+      const wifi = runWifiRsd(signed.signedApp, {
+        noLaunch,
+        expectVersion: ipaInfo.version,
+        expectBuild: ipaInfo.build,
+      });
+      if (wifi.code === 0) {
+        return { ...wifi, signedApp: signed.signedApp, ipaInfo, signedInfo: signed.signedInfo };
+      }
       if (transportNorm === "wifi") return wifi;
       console.warn(`[ios:install] Wi-Fi RSD failed → USB fallback: ${wifi.message}`);
     }
