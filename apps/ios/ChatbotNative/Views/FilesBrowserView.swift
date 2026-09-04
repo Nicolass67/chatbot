@@ -433,6 +433,12 @@ struct FileFolderView: View {
                 accessibilityLabelText: "Assistant Files",
                 action: onAskAssistant
             )
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
                     Text(title).font(.headline)
                     Text(breadcrumb)
