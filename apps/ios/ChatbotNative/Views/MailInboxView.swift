@@ -226,7 +226,7 @@ struct MailInboxView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ZStack {
+            ZStack(alignment: .bottomTrailing) {
                 AmbientBackground()
                 mailStack
                 ContextualAssistantButton {
@@ -484,8 +484,11 @@ struct MailInboxView: View {
                     } label: {
                         MailRow(message: msg)
                             .frame(minHeight: 72, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .accessibilityIdentifier(A11yID.Mail.message)
                     .listRowBackground(AppTheme.surface.opacity(0.55))
                     .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
@@ -860,7 +863,7 @@ struct MailThreadView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottomTrailing) {
             AmbientBackground()
             Group {
                 if loading {

@@ -153,6 +153,7 @@ struct AmbientBackground: View {
             )
         }
         .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 

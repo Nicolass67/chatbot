@@ -128,6 +128,7 @@ enum MailAssistantContext: Equatable {
 }
 
 /// Bouton signature Assistant contextuel (FAB) — chrome glass, accent de scope.
+/// Taille intrinsèque uniquement : ne jamais étendre un plein écran (bloque les taps liste).
 struct ContextualAssistantButton: View {
     var accessibilityId: String = A11yID.Assistant.open
     var accessibilityLabelText: String = "Ouvrir l’assistant"
@@ -136,35 +137,29 @@ struct ContextualAssistantButton: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(false)
-            .overlay(alignment: .bottomTrailing) {
-                Button {
-                    AppHaptics.light()
-                    action()
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(tint)
-                        .frame(width: 54, height: 54)
-                        .background {
-                            if reduceTransparency {
-                                Circle().fill(AppTheme.surfaceElevated)
-                            } else {
-                                Circle().fill(.ultraThinMaterial)
-                            }
-                        }
-                        .overlay(Circle().stroke(tint.opacity(0.45), lineWidth: 1.25))
-                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        Button {
+            AppHaptics.light()
+            action()
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 54, height: 54)
+                .background {
+                    if reduceTransparency {
+                        Circle().fill(AppTheme.surfaceElevated)
+                    } else {
+                        Circle().fill(.ultraThinMaterial)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(accessibilityLabelText)
-                .accessibilityIdentifier(accessibilityId)
-                .accessibilityAddTraits(.isButton)
-                .padding(.trailing, 18)
-                .padding(.bottom, 18)
-                .allowsHitTesting(true)
-            }
+                .overlay(Circle().stroke(tint.opacity(0.45), lineWidth: 1.25))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityIdentifier(accessibilityId)
+        .accessibilityAddTraits(.isButton)
+        .padding(.trailing, 18)
+        .padding(.bottom, 18)
     }
 }

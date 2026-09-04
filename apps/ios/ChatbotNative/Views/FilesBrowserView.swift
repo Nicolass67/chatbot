@@ -68,7 +68,7 @@ struct FilesBrowserView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ZStack {
+            ZStack(alignment: .bottomTrailing) {
                 AmbientBackground()
                 VStack(spacing: 0) {
                     filesIndexBanner
@@ -599,7 +599,7 @@ struct FileFolderView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottomTrailing) {
             AmbientBackground()
             Group {
                 if loading && entries.isEmpty {

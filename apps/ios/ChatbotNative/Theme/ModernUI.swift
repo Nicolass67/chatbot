@@ -179,6 +179,7 @@ struct MailListLoadingIndicator: View {
         .frame(maxWidth: .infinity)
         .frame(height: 2)
         .opacity(isActive ? 1 : 0)
+        .allowsHitTesting(false)
         .animation(.easeOut(duration: AppTheme.motionQuick), value: isActive)
         .accessibilityHidden(!isActive)
         .accessibilityLabel(isActive ? "Mise à jour de la boîte mail" : "")
