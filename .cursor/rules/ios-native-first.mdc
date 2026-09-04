@@ -1,0 +1,48 @@
+---
+description: Priorité absolue — app iPhone native SwiftUI (pas le desktop/web)
+alwaysApply: true
+---
+
+# iPhone Native First
+
+## Cible principale
+
+Toute amélioration UX/UI/navigation/Chat/Mail/Files/Assistant/design system se fait dans :
+
+`apps/ios/ChatbotNative/`
+
+Le produit à optimiser est **une app iPhone native**, pas une app web qui a aussi une version iPhone.
+
+## Interdits (sauf demande explicite)
+
+- UX/UI Next.js / React / CSS / layouts desktop
+- Parité visuelle volontaire avec le desktop
+- Modifier du TypeScript / JavaScript « par habitude » pour un problème iPhone
+- Modifier `ios/` (Capacitor) ou son frontend associé
+- Lancer Simulator CI, Contracts CI, Full CI, tests web, screenshots
+- Relancer le serveur de dev Next pour une tâche 100 % Swift
+
+## Avant de modifier un fichier
+
+Demande-toi : *« Est-ce directement nécessaire à l’app iPhone native ? »*
+
+- **NON** → ne pas toucher
+- **OUI** → modifier
+
+## Bug iPhone → ordre d’investigation
+
+1. Swift / SwiftUI (`APIClient`, stores, `ChatScreen`, navigation, états, vues)
+2. Config native / XcodeGen / assets iOS
+3. Backend **uniquement** si l’API ne fournit pas les données nécessaires (plus petite modif possible, **sans** UI desktop)
+
+## TypeScript
+
+Ne touche au TS que si tu **démontres** que la cause est un endpoint/backend commun. Sinon : STOP, reste dans Swift.
+
+## CI autorisée
+
+Après commit + push des changements natives : **uniquement** `npm.cmd run ios:ipa:flash` (Flash IPA). Aucun autre workflow sans demande explicite.
+
+## Décisions UX
+
+Conventions iOS, tactile, Dynamic Type, safe areas, sheets, keyboard, gestures, haptics, SwiftUI moderne — **pas** la reproduction du desktop.
