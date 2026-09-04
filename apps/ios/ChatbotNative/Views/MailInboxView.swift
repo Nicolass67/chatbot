@@ -626,12 +626,14 @@ struct MailThreadView: View {
             aiStatus = nil
         }
         do {
-            var collected = ""
+            final class Box: @unchecked Sendable { var value = "" }
+            let box = Box()
             try await client.streamSummarizeMail(threadId: threadId) { token in
+                box.value += token
+                let snapshot = box.value
                 Task { @MainActor in
-                    collected += token
                     self.aiStatus = nil
-                    self.summaryText = collected
+                    self.summaryText = snapshot
                 }
             }
             AppHaptics.success()
