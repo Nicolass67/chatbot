@@ -123,12 +123,15 @@ private struct MailAttachmentPreviewItem: Identifiable {
 
 struct MailAttachmentRow: View {
     @EnvironmentObject private var session: AppSessionStore
+    @Environment(AppNavigation.self) private var nav
     let messageId: String
     let attachment: MailAttachmentDTO
     @State private var busy = false
     @State private var error: String?
     @State private var localURL: URL?
     @State private var previewItem: MailAttachmentPreviewItem?
+    @State private var showFilesPicker = false
+    @State private var savedDestination: FilesSaveDestination?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -136,6 +139,10 @@ struct MailAttachmentRow: View {
 
     private var displayName: String {
         attachment.filename ?? "Pièce jointe"
+    }
+
+    private var mimeType: String {
+        attachment.mimeType ?? "application/octet-stream"
     }
 
     var body: some View {
@@ -158,7 +165,7 @@ struct MailAttachmentRow: View {
             if busy {
                 ProgressView().controlSize(.small).tint(AppTheme.mailAccent)
             } else {
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Button {
                         Task { await openPreview() }
                     } label: {
@@ -172,6 +179,17 @@ struct MailAttachmentRow: View {
                     .accessibilityLabel("Ouvrir \(displayName)")
 
                     Button {
+                        showFilesPicker = true
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(AppTheme.mailAccent)
+                            .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Enregistrer \(displayName) dans Files")
+
+                    Button {
                         Task { await downloadAndShare() }
                     } label: {
                         Image(systemName: "square.and.arrow.down")
@@ -180,7 +198,7 @@ struct MailAttachmentRow: View {
                             .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Télécharger \(displayName)")
+                    .accessibilityLabel("Partager \(displayName)")
                 }
             }
         }
@@ -204,6 +222,18 @@ struct MailAttachmentRow: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
+                            previewItem = nil
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 350_000_000)
+                                showFilesPicker = true
+                            }
+                        } label: {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .accessibilityLabel("Enregistrer dans Files")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
                             NativeShare.present(url: item.url, title: item.title)
                         } label: {
                             Image(systemName: "square.and.arrow.up")
@@ -215,6 +245,23 @@ struct MailAttachmentRow: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showFilesPicker) {
+            FilesFolderPickerSheet(
+                filename: displayName,
+                mimeType: mimeType,
+                loadData: {
+                    let url = try await ensureLocalFile()
+                    return try Data(contentsOf: url)
+                },
+                onFinished: { saved, destination in
+                    showFilesPicker = false
+                    if saved {
+                        savedDestination = destination
+                    }
+                }
+            )
+            .environmentObject(session)
+        }
         .alert("Pièce jointe", isPresented: Binding(
             get: { error != nil },
             set: { if !$0 { error = nil } }
@@ -222,6 +269,23 @@ struct MailAttachmentRow: View {
             Button("OK", role: .cancel) { error = nil }
         } message: {
             Text(error ?? "")
+        }
+        .alert("Enregistré dans Files", isPresented: Binding(
+            get: { savedDestination != nil },
+            set: { if !$0 { savedDestination = nil } }
+        )) {
+            Button("OK", role: .cancel) { savedDestination = nil }
+            Button("Ouvrir le dossier") {
+                guard let dest = savedDestination else { return }
+                savedDestination = nil
+                nav.openFileFolder(
+                    rootId: dest.rootId,
+                    folderPath: dest.path,
+                    title: dest.path.split(separator: "/").last.map(String.init) ?? dest.rootLabel
+                )
+            }
+        } message: {
+            Text(savedDestination.map { "Fichier enregistré dans\n\($0.displayPath)" } ?? "")
         }
     }
 
