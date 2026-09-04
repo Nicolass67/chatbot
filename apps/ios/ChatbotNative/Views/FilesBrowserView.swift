@@ -695,40 +695,12 @@ struct FileFolderView: View {
             Text("Le dossier sera créé sous « \(title) » après confirmation.")
         }
         .sheet(item: $mkdirConfirm) { proposal in
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Confirmer la création")
-                        .font(CNFont.title3)
-                    Text(proposal.detail)
-                        .font(CNFont.body)
-                        .foregroundStyle(AppTheme.muted)
-                    Spacer()
-                    Button {
-                        Task { await resolveMkdir(proposal, confirm: true) }
-                    } label: {
-                        Text(confirming ? "Création…" : "Confirmer")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(confirming)
-                    Button("Annuler", role: .cancel) {
-                        Task { await resolveMkdir(proposal, confirm: false) }
-                    }
-                    .disabled(confirming)
-                }
-                .padding(20)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Fermer") {
-                            Task { await resolveMkdir(proposal, confirm: false) }
-                        }
-                    }
-                }
-            }
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
+            MkdirConfirmSheet(
+                detail: proposal.detail,
+                confirming: confirming,
+                onConfirm: { Task { await resolveMkdir(proposal, confirm: true) } },
+                onCancel: { Task { await resolveMkdir(proposal, confirm: false) } }
+            )
         }
         .alert("Renommer", isPresented: Binding(
             get: { renameTarget != nil },
@@ -1143,5 +1115,44 @@ struct FilePreviewView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+/// Sheet de confirmation mkdir — isolée pour alléger le type-check de FileFolderView.
+private struct MkdirConfirmSheet: View {
+    let detail: String
+    let confirming: Bool
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Confirmer la création")
+                    .font(CNFont.title3)
+                Text(detail)
+                    .font(CNFont.body)
+                    .foregroundStyle(AppTheme.muted)
+                Spacer(minLength: 0)
+                Button(action: onConfirm) {
+                    Text(confirming ? "Création…" : "Confirmer")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(confirming)
+                Button("Annuler", role: .cancel, action: onCancel)
+                    .disabled(confirming)
+            }
+            .padding(20)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Fermer", action: onCancel)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 }
