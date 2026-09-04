@@ -2,14 +2,15 @@ import SwiftUI
 import WebKit
 import UIKit
 
-/// Lecteur mail fondation P1b — HTML contrasté, plain fallback, hauteur dynamique.
+/// Lecteur mail P1b — HTML contrasté, plain fallback, résumé Markdown séparé (pas de conversion mail→MD).
 struct MailBodyReader: View {
     let html: String?
     let text: String?
     let snippet: String?
 
-    @State private var measuredHeight: CGFloat = 180
-    @State private var forcePlain = false
+    @State private var measuredHeight: CGFloat = 240
+    /// nil = auto (HTML si dispo), true = forcer plain, false = forcer HTML
+    @State private var forcePlain: Bool? = nil
 
     private var trimmedHtml: String {
         (html ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21,21 +22,24 @@ struct MailBodyReader: View {
         return (snippet ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// HTML prioritaire ; plain uniquement en fallback ou sur demande.
-    private var showPlain: Bool {
-        if trimmedHtml.isEmpty { return true }
-        return forcePlain
+    /// HTML prioritaire ; plain uniquement en fallback ou sur bascule manuelle.
+    private var showingPlain: Bool {
+        if let forcePlain { return forcePlain }
+        if trimmedHtml.isEmpty { return !trimmedText.isEmpty }
+        return false
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if showPlain {
-                Text(trimmedText.isEmpty ? "Contenu non disponible" : trimmedText)
-                    .font(.system(size: 17))
-                    .lineSpacing(5)
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
+            if showingPlain {
+                contentModeCaption("Version texte")
+                Text(trimmedText)
+                    .font(CNFont.body)
+                    .lineSpacing(6)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(A11yID.Mail.bodyPlain)
 
                 if !trimmedHtml.isEmpty {
                     Button {
@@ -44,12 +48,22 @@ struct MailBodyReader: View {
                         Text("Afficher la version HTML")
                             .font(CNFont.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
+                            .frame(minHeight: AppTheme.touchMin, alignment: .leading)
                     }
+                    .accessibilityIdentifier(A11yID.Mail.bodyShowHtml)
                 }
             } else if !trimmedHtml.isEmpty {
-                MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
-                    .frame(height: measuredHeight)
-                    .frame(maxWidth: .infinity)
+                contentModeCaption("Version HTML")
+                // GeometryReader force une largeur réelle avant loadHTMLString (évite WKWebView blank).
+                GeometryReader { geo in
+                    MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
+                        .frame(width: max(geo.size.width, 1), height: measuredHeight)
+                }
+                .frame(height: measuredHeight)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier(A11yID.Mail.bodyHtml)
+                .accessibilityLabel("Version HTML")
+                .accessibilityValue(htmlA11yPlain)
 
                 if !trimmedText.isEmpty {
                     Button {
@@ -58,14 +72,41 @@ struct MailBodyReader: View {
                         Text("Version texte")
                             .font(CNFont.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
+                            .frame(minHeight: AppTheme.touchMin, alignment: .leading)
                     }
+                    .accessibilityIdentifier(A11yID.Mail.bodyShowPlain)
                 }
+            } else if !trimmedText.isEmpty {
+                contentModeCaption("Version texte")
+                Text(trimmedText)
+                    .font(CNFont.body)
+                    .lineSpacing(6)
+                    .foregroundStyle(AppTheme.foreground)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(A11yID.Mail.bodyPlain)
             } else {
                 Text("Contenu non disponible")
-                    .font(.subheadline)
+                    .font(CNFont.callout)
                     .foregroundStyle(AppTheme.muted)
             }
         }
+    }
+
+    private func contentModeCaption(_ title: String) -> some View {
+        Text(title)
+            .font(CNFont.caption2.weight(.semibold))
+            .foregroundStyle(AppTheme.mutedForeground)
+            .textCase(.uppercase)
+            .tracking(0.4)
+    }
+
+    /// Texte dépouillé pour a11y / XCUITest (WKWebView n’expose pas toujours le DOM).
+    private var htmlA11yPlain: String {
+        var s = trimmedHtml
+        s = s.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -89,37 +130,45 @@ struct MailAttachmentRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: AppTheme.space10) {
             Image(systemName: iconName)
-                .foregroundStyle(AppTheme.accent)
+                .foregroundStyle(AppTheme.mailAccent)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename ?? "Pièce jointe")
-                    .font(.subheadline.weight(.medium))
+                    .font(CNFont.callout.weight(.medium))
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
                 if let size = attachment.sizeBytes {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.muted)
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
             if busy {
-                ProgressView().controlSize(.small)
+                ProgressView().controlSize(.small).tint(AppTheme.mailAccent)
             } else if let shareURL {
                 ShareLink(item: shareURL) {
                     Image(systemName: "square.and.arrow.up")
+                        .foregroundStyle(AppTheme.mailAccent)
+                        .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
                 }
             } else {
                 Button("Ouvrir") {
                     Task { await download() }
                 }
-                .font(.caption.weight(.semibold))
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mailAccent)
+                .frame(minHeight: AppTheme.touchMin)
             }
         }
-        .padding(10)
-        .background(AppTheme.surface.opacity(0.7))
+        .padding(AppTheme.space12)
+        .background(AppTheme.surface.opacity(0.85))
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .alert("Pièce jointe", isPresented: Binding(
             get: { error != nil },
             set: { if !$0 { error = nil } }
@@ -159,18 +208,67 @@ struct MailAttachmentRow: View {
     }
 }
 
+/// Résumé assistant — compact, repliable, sans carte « AI » générique.
 struct MailSummaryBlock: View {
     let text: String
+    @State private var expanded = true
+
+    private var bodyMarkdown: String {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let regex = try? NSRegularExpression(
+            pattern: #"^#{1,6}\s*Résumé\s*\r?\n+"#,
+            options: [.caseInsensitive]
+        ) {
+            t = regex.stringByReplacingMatches(
+                in: t,
+                range: NSRange(t.startIndex..., in: t),
+                withTemplate: ""
+            )
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Résumé")
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
-            MarkdownMessageView(markdown: text)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.88)) {
+                    expanded.toggle()
+                }
+                AppHaptics.light()
+            } label: {
+                HStack(spacing: AppTheme.space8) {
+                    Image(systemName: "text.alignleft")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                    Text("Essentiel")
+                        .font(CNFont.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                    Spacer(minLength: 0)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.mutedForeground)
+                }
+                .padding(.horizontal, AppTheme.space14)
+                .padding(.vertical, AppTheme.space12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                MarkdownMessageView(markdown: bodyMarkdown)
+                    .foregroundStyle(AppTheme.foreground)
+                    .padding(.horizontal, AppTheme.space14)
+                    .padding(.bottom, AppTheme.space14)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.mailAccent.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.mailAccent.opacity(0.22), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(A11yID.Mail.summary)
     }
@@ -186,43 +284,73 @@ struct MailDraftProposal: View {
     var onSend: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Réponse proposée")
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
+        VStack(alignment: .leading, spacing: AppTheme.space12) {
+            HStack {
+                Text("Brouillon")
+                    .font(CNFont.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mailAccent)
+                Spacer()
+                if busy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(AppTheme.mailAccent)
+                }
+            }
 
             if isEditing {
                 TextEditor(text: $draftText)
-                    .frame(minHeight: 140)
-                    .padding(8)
+                    .frame(minHeight: 160)
+                    .padding(AppTheme.space12)
+                    .scrollContentBackground(.hidden)
                     .background(AppTheme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    )
                     .foregroundStyle(AppTheme.foreground)
+                    .accessibilityLabel("Éditeur de brouillon")
                     .accessibilityIdentifier(A11yID.Mail.draftEditor)
             } else {
                 Text(draftText)
-                    .font(.system(size: 15))
+                    .font(CNFont.body)
                     .foregroundStyle(AppTheme.foreground)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(AppTheme.space12)
+                    .background(AppTheme.surface.opacity(0.7))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
             }
 
-            HStack(spacing: 10) {
-                Button(isEditing ? "OK" : "Modifier") { onEditToggle() }
+            HStack(spacing: AppTheme.space8) {
+                Button(isEditing ? "Terminé" : "Modifier") { onEditToggle() }
                     .buttonStyle(.bordered)
-                Button("Réessayer") { onRetry() }
+                    .accessibilityIdentifier(A11yID.Mail.draftEdit)
+                Button("Réécrire") { onRetry() }
                     .buttonStyle(.bordered)
                     .disabled(busy)
-                Spacer()
-                Button("Envoyer") { onSend() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.accent)
-                    .disabled(busy || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-                    .accessibilityIdentifier(A11yID.Mail.send)
+                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
+                Spacer(minLength: 0)
+                Button {
+                    AppHaptics.medium()
+                    onSend()
+                } label: {
+                    Label("Envoyer", systemImage: "paperplane.fill")
+                        .font(CNFont.callout.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.mailAccent)
+                .disabled(busy || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+                .accessibilityIdentifier(A11yID.Mail.send)
             }
-            .font(.subheadline.weight(.semibold))
         }
-        .padding(.vertical, 6)
+        .padding(AppTheme.space14)
+        .background(AppTheme.surfaceElevated.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+        )
         .accessibilityIdentifier(A11yID.Mail.draft)
     }
 }
