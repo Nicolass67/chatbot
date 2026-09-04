@@ -775,7 +775,19 @@ struct FileFolderView: View {
                 .listRowBackground(AppTheme.surface.opacity(0.35))
                 .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 .contextMenu {
-                    if entry.fileId != nil {
+                    if let fileId = entry.fileId, entry.isDirectory != true {
+                        Button {
+                            nav.shareFilesToMail(
+                                files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
+                            )
+                        } label: {
+                            Label("Envoyer par mail", systemImage: "envelope.badge")
+                        }
+                        Button {
+                            renameTarget = entry
+                            renameText = entry.name ?? ""
+                        } label: { Label("Renommer", systemImage: "pencil") }
+                    } else if entry.fileId != nil {
                         Button {
                             renameTarget = entry
                             renameText = entry.name ?? ""
@@ -825,6 +837,17 @@ struct FileFolderView: View {
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        if let fileId = entry.fileId, !isFolder(entry) {
+                            Button {
+                                nav.shareFilesToMail(
+                                    files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
+                                )
+                            } label: {
+                                Label("Envoyer par mail", systemImage: "envelope.badge")
+                            }
+                        }
+                    }
                     .onAppear {
                         if entry.id == filtered.last?.id {
                             Task { await loadMoreIfNeeded() }
@@ -1013,6 +1036,7 @@ struct FileFolderView: View {
 
 struct FilePreviewView: View {
     @EnvironmentObject private var session: AppSessionStore
+    @Environment(AppNavigation.self) private var nav
     let fileId: String
     let title: String
 
@@ -1083,6 +1107,13 @@ struct FilePreviewView: View {
         .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    nav.shareFilesToMail(files: [(fileId: fileId, filename: title)])
+                    AppHaptics.light()
+                } label: {
+                    Image(systemName: "envelope.badge")
+                }
+                .accessibilityLabel("Envoyer par mail")
                 if let shareURL {
                     ShareLink(item: shareURL) {
                         Image(systemName: "square.and.arrow.up")

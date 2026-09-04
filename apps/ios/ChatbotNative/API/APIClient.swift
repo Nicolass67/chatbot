@@ -1078,6 +1078,38 @@ final class APIClient: @unchecked Sendable {
         return try JSONDecoder().decode(Wrap.self, from: data).results ?? []
     }
 
+    func downloadFileBytes(fileId: String) async throws -> (Data, String, String) {
+        if UITestMode.isActive {
+            let name = "uitest.txt"
+            return (Data("hello".utf8), name, "text/plain")
+        }
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/files/content"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "fileId", value: fileId),
+            URLQueryItem(name: "download", value: "1"),
+        ]
+        let request = authorizedURLRequest(components.url!)
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        try throwIfNeeded(resp, data)
+        guard let http = resp as? HTTPURLResponse else { throw APIClientError.decode }
+        let mime = http.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+        var filename = "fichier"
+        if let raw = http.value(forHTTPHeaderField: "X-Files-Name"),
+           let decoded = raw.removingPercentEncoding,
+           !decoded.isEmpty {
+            filename = decoded
+        } else if let cd = http.value(forHTTPHeaderField: "Content-Disposition"),
+                  let range = cd.range(of: "filename=\""),
+                  let end = cd[range.upperBound...].firstIndex(of: "\"") {
+            let encoded = String(cd[range.upperBound..<end])
+            filename = encoded.removingPercentEncoding ?? encoded
+        }
+        return (data, filename, mime)
+    }
+
     func fetchFileContent(fileId: String) async throws -> FileContentDTO {
         if UITestMode.isActive { return UITestFixtures.fileContent(fileId: fileId) }
         var components = URLComponents(url: baseURL.appendingPathComponent("api/files/content"), resolvingAgainstBaseURL: false)!

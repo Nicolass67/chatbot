@@ -20,6 +20,7 @@ struct MessageBubble: View {
     var onOpenFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
     var onDownloadFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
     var onRevealFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
+    var onSendFoundFileByMail: ((FilesFoundFileDTO) -> Void)? = nil
 
     private var isUser: Bool { message.role == "user" }
     private var isStreaming: Bool {
@@ -108,7 +109,8 @@ struct MessageBubble: View {
                                 file: file,
                                 onOpen: { onOpenFoundFile?(file) },
                                 onDownload: { onDownloadFoundFile?(file) },
-                                onReveal: { onRevealFoundFile?(file) }
+                                onReveal: { onRevealFoundFile?(file) },
+                                onSendByMail: onSendFoundFileByMail.map { cb in { cb(file) } }
                             )
                         }
                     }
@@ -247,6 +249,7 @@ struct FileResultCard: View {
     var onOpen: () -> Void
     var onDownload: () -> Void
     var onReveal: () -> Void
+    var onSendByMail: (() -> Void)? = nil
 
     private var sizeLabel: String? {
         guard let bytes = file.sizeBytes, bytes > 0 else { return nil }
@@ -302,6 +305,11 @@ struct FileResultCard: View {
                 Button("Télécharger", action: onDownload)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                if let onSendByMail {
+                    Button("Envoyer par mail", action: onSendByMail)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
                 Button("Aller à la destination", action: onReveal)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -314,6 +322,14 @@ struct FileResultCard: View {
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
                 .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
         )
+        .contextMenu {
+            Button("Ouvrir", systemImage: "doc", action: onOpen)
+            Button("Télécharger", systemImage: "square.and.arrow.down", action: onDownload)
+            if let onSendByMail {
+                Button("Envoyer par mail", systemImage: "envelope.badge", action: onSendByMail)
+            }
+            Button("Aller à la destination", systemImage: "folder", action: onReveal)
+        }
     }
 }
 

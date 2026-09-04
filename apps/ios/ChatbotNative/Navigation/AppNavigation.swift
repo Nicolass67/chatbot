@@ -30,6 +30,13 @@ struct MailDeepLink: Equatable, Sendable {
     var label: String?
 }
 
+/// Handoff Files → Assistant Mail (PJ préchargée).
+struct MailAttachHandoff: Equatable, Sendable, Identifiable {
+    var id: String { fileId }
+    let fileId: String
+    let filename: String
+}
+
 /// Deep-link Files — preview fichier, dossier parent exact, ou recherche.
 struct FilesDeepLink: Equatable, Sendable {
     enum Intent: String, Equatable, Sendable {
@@ -70,6 +77,9 @@ final class AppNavigation {
     /// Mail Assistant sheet (in-place, pas de switch vers Chat).
     var presentMailAssistant = false
     var mailAssistantContext: MailAssistantContext = .global
+    /// Fichiers Files → PJ assistant Mail (consommés par ChatScreen scope mail).
+    var mailAttachHandoffs: [MailAttachHandoff] = []
+    var mailComposerPrefill: String?
 
     /// Files Assistant sheet (in-place).
     var presentFilesAssistant = false
@@ -168,6 +178,25 @@ final class AppNavigation {
         mailAssistantContext = context
         presentMailAssistant = true
         selectedTab = .mail
+    }
+
+    /// Ouvre l’assistant Mail avec des fichiers Files déjà prêts à joindre.
+    func shareFilesToMail(
+        files: [(fileId: String, filename: String)],
+        prefill: String? = nil
+    ) {
+        guard !files.isEmpty else { return }
+        // Ferme Files Assistant sans toucher aux handoffs mail.
+        presentFilesAssistant = false
+        assistantDismissToken &+= 1
+        mailAttachHandoffs = files.map {
+            MailAttachHandoff(fileId: $0.fileId, filename: $0.filename)
+        }
+        mailComposerPrefill = prefill
+            ?? (files.count == 1
+                ? "Je veux envoyer « \(files[0].filename) » en pièce jointe. Indique le destinataire, l’objet et le message — je rédige le brouillon."
+                : "Je veux envoyer \(files.count) fichiers en pièces jointes. Indique le destinataire, l’objet et le message — je rédige le brouillon.")
+        openMailAssistant(.global)
     }
 
     /// Files Assistant sheet (in-place, comme Mail — pas de redirect Chat).

@@ -235,8 +235,14 @@ struct ChatScreen: View {
             nav.chatComposerPrefill = nil
             AppHaptics.light()
         }
+        .onChange(of: nav.mailAttachHandoffs) { _, items in
+            guard forcedScope == .mail, !items.isEmpty else { return }
+            Task { await consumeMailAttachHandoffs() }
+        }
         .onAppear {
-            if let text = nav.chatComposerPrefill, !text.isEmpty {
+            if forcedScope == .mail {
+                Task { await consumeMailAttachHandoffs() }
+            } else if let text = nav.chatComposerPrefill, !text.isEmpty {
                 draft = text
                 nav.chatComposerPrefill = nil
             }
@@ -362,6 +368,9 @@ struct ChatScreen: View {
                                 },
                                 onRevealFoundFile: { file in
                                     revealFoundFileFolder(file)
+                                },
+                                onSendFoundFileByMail: { file in
+                                    sendFoundFileByMail(file)
                                 }
                             )
                             .id(msg.id)
@@ -415,6 +424,9 @@ struct ChatScreen: View {
                                 },
                                 onRevealFoundFile: { file in
                                     revealFoundFileFolder(file)
+                                },
+                                onSendFoundFileByMail: { file in
+                                    sendFoundFileByMail(file)
                                 }
                             )
                             .id("streaming")
@@ -830,6 +842,66 @@ struct ChatScreen: View {
                 ? nil
                 : FilesPathHelpers.lastSegment(of: parent)
         )
+    }
+
+    private func sendFoundFileByMail(_ file: FilesFoundFileDTO) {
+        persistActiveConversation()
+        Keyboard.dismiss()
+        onRequestClose?()
+        nav.shareFilesToMail(files: [(fileId: file.id, filename: file.filename)])
+        AppHaptics.light()
+    }
+
+    private func consumeMailAttachHandoffs() async {
+        guard forcedScope == .mail else { return }
+        let items = nav.mailAttachHandoffs
+        guard !items.isEmpty else {
+            if let text = nav.mailComposerPrefill, !text.isEmpty {
+                draft = text
+                nav.mailComposerPrefill = nil
+            }
+            return
+        }
+        nav.mailAttachHandoffs = []
+        if let text = nav.mailComposerPrefill, !text.isEmpty {
+            draft = text
+            nav.mailComposerPrefill = nil
+        }
+        for item in items {
+            await attachFilesEntryToComposer(fileId: item.fileId, filename: item.filename)
+        }
+        AppHaptics.success()
+    }
+
+    private func attachFilesEntryToComposer(fileId: String, filename: String) async {
+        let tempId = "local-mail-\(UUID().uuidString)"
+        pendingAttachments.append(
+            UploadedAttachment(
+                id: tempId,
+                filename: filename,
+                mimeType: "application/octet-stream",
+                sizeBytes: 0,
+                isUploading: true
+            )
+        )
+        do {
+            let (data, resolvedName, mime) = try await client.downloadFileBytes(fileId: fileId)
+            let uploaded = try await client.uploadAttachment(
+                conversationId: conversation.id,
+                filename: resolvedName.isEmpty ? filename : resolvedName,
+                mimeType: mime,
+                fileData: data
+            )
+            if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
+                pendingAttachments[idx] = uploaded
+            } else {
+                pendingAttachments.append(uploaded)
+            }
+        } catch {
+            pendingAttachments.removeAll { $0.id == tempId }
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
     }
 
     private func downloadFoundFile(_ file: FilesFoundFileDTO) async {

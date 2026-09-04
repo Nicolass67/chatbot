@@ -74,6 +74,28 @@ export const GET = withAuth(apiAuthGuard, async (request, auth) => {
       extensionOf(resolved.displayName);
     const mime = guessMimeFromFilename(resolved.displayName) || "application/octet-stream";
 
+    // Téléchargement brut (ex. PJ mail) — pas d’extraction / aperçu.
+    if (new URL(request.url).searchParams.get("download") === "1") {
+      const buf = fs.readFileSync(resolved.absolutePath);
+      const maxBytes = 50 * 1024 * 1024;
+      if (buf.length > maxBytes) {
+        return Response.json(
+          { error: "Fichier trop volumineux (max 50 Mo)" },
+          { status: 413 }
+        );
+      }
+      return new Response(buf, {
+        headers: {
+          "Content-Type": mime,
+          "Content-Disposition": `attachment; filename="${encodeURIComponent(resolved.displayName)}"`,
+          "Cache-Control": "private, max-age=60",
+          "X-Files-Kind": "download",
+          "X-Files-Name": encodeURIComponent(resolved.displayName),
+          "X-Files-Size": String(buf.length),
+        },
+      });
+    }
+
     if (IMAGE_EXTS.has(ext)) {
       const buf = fs.readFileSync(resolved.absolutePath);
       if (buf.length > 12 * 1024 * 1024) {
