@@ -184,6 +184,8 @@ struct AgentActivityView: View {
             }
         }
         .chromeGlass(cornerRadius: AppTheme.radiusLg, opacity: 0.4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activité agent")
         .accessibilityIdentifier(A11yID.Agent.root)
         .opacity(state.completed ? 0.72 : 1)
         .onChange(of: state.completed) { _, done in

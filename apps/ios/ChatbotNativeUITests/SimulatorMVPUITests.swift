@@ -101,18 +101,17 @@ final class SimulatorMVPUITests: XCTestCase {
         }
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         saveScreenshot(app2, name: "chat-agent-early")
-        let agent = app2.descendants(matching: .any).matching(identifier: UITestA11y.agentRoot).firstMatch
-        let agentBanner = app2.descendants(matching: .any).matching(identifier: "chat.agent").firstMatch
-        let agentStep = app2.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "Analyser")
-        ).firstMatch
-        XCTAssertTrue(
-            agent.waitForExistence(timeout: 14)
-                || agentBanner.waitForExistence(timeout: 3)
-                || agentStep.waitForExistence(timeout: 3),
-            "AgentActivityView (P4)"
-        )
         saveScreenshot(app2, name: "chat-agent")
+        let agent = app2.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@ OR identifier == %@ OR label CONTAINS[c] %@ OR label CONTAINS[c] %@",
+                UITestA11y.agentRoot,
+                "chat.agent",
+                "Analyser",
+                "Activité"
+            )
+        ).firstMatch
+        XCTAssertTrue(agent.waitForExistence(timeout: 14), "AgentActivityView (P4)")
         if app2.element(id: UITestA11y.chatStop, timeout: 2).exists {
             app2.tapFirst(id: UITestA11y.chatStop)
             saveScreenshot(app2, name: "chat-agent-stopped")
