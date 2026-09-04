@@ -26,6 +26,39 @@ export function parseCsv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Alias courants pour « m'envoyer un mail » — résolus vers l'adresse Gmail connectée. */
+const SELF_RECIPIENT_ALIASES = new Set([
+  "me",
+  "myself",
+  "moi",
+  "moi-même",
+  "moi meme",
+  "à moi",
+  "a moi",
+  "self",
+]);
+
+export function resolveRecipients(
+  raw: string | undefined,
+  accountEmail?: string | null
+): string[] {
+  const parts = parseCsv(raw);
+  if (!accountEmail?.trim()) return parts;
+  const self = accountEmail.trim();
+  return parts.map((part) => {
+    const normalized = part
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (SELF_RECIPIENT_ALIASES.has(normalized)) {
+      return self;
+    }
+    return part;
+  });
+}
+
 export function toMessagePreview(
   message: NormalizedEmailMessage
 ): Record<string, unknown> {

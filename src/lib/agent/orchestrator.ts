@@ -50,7 +50,15 @@ import { mergeUniqueSources, dedupeAndCapSources } from "@/lib/tools/web-search/
 import { createTaintState } from "@/lib/policy";
 import { sanitizeToolStartPayload } from "@/lib/observability/sse-sanitize";
 import { compressToolResultForContext } from "@/lib/context/tool-result-compress";
-import { isEmailFeatureEnabled } from "@/lib/integrations/oauth";
+import {
+  getOAuthAccount,
+  isEmailFeatureEnabled,
+} from "@/lib/integrations/oauth";
+import {
+  buildEmailDraftInstructionsBlock,
+  buildEmailDraftWritingBlock,
+  injectEmailDraftWritingIntoContext,
+} from "@/lib/email/draft";
 import { getLocalAIRuntime } from "@/lib/runtime/factory";
 import { applyMessageEdit } from "./edit-message";
 import {
@@ -670,9 +678,38 @@ export async function runChatOrchestrator(
       contextMessages,
       initialSnapshot,
       reasoningEffort,
-      documentContext,
+      documentContext: builtDocumentContext,
       debugTrace,
     } = builtContext;
+
+    let documentContext = builtDocumentContext;
+    let mailAccountEmail: string | null = null;
+
+    // Assistant Mail : forcer le chemin brouillon (l'envoi direct n'est jamais exposé au LLM).
+    if (
+      emailEnabled &&
+      emailPolicyContext.emailConnected &&
+      mailAssistantActive
+    ) {
+      const writingBlock = await buildEmailDraftWritingBlock();
+      const gmailAccount = await getOAuthAccount(userId, "gmail");
+      mailAccountEmail = gmailAccount?.accountEmail ?? null;
+      const draftOpts = { accountEmail: mailAccountEmail };
+      injectEmailDraftWritingIntoContext(
+        contextMessages,
+        writingBlock,
+        draftOpts
+      );
+      const instructions = buildEmailDraftInstructionsBlock(
+        writingBlock,
+        draftOpts
+      );
+      if (!documentContext.includes("<email_draft_instructions>")) {
+        documentContext = documentContext.trim()
+          ? `${documentContext}\n\n${instructions}`
+          : instructions;
+      }
+    }
 
     if (route.temporal.isTimeSensitive && chatMode === "chat") {
       injectTemporalIntoContext(contextMessages, route.temporal);
@@ -753,6 +790,7 @@ export async function runChatOrchestrator(
           emailPolicyContext.emailConnected &&
           mailAssistantActive,
         emailToolCandidates: mailToolCandidates,
+        accountEmail: mailAccountEmail,
         filesEnabled:
           filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots),
         fileToolCandidates: route.files.suggestedTools,

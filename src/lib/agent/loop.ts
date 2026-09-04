@@ -107,6 +107,8 @@ export interface AgentLoopInput {
   toolCtxBase?: Omit<ToolContext, "signal">;
   emailEnabled?: boolean;
   emailToolCandidates?: string[];
+  /** Adresse Gmail connectée — pour brouillons « à moi ». */
+  accountEmail?: string | null;
   filesEnabled?: boolean;
   fileToolCandidates?: string[];
 }
@@ -452,8 +454,20 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     const temporalContext = route.temporal;
 
     let documentContext = input.documentContext;
-    if (input.emailEnabled && route.email.intent === "draft") {
-      documentContext = `${documentContext}\n\n${await buildEmailDraftWritingBlock()}`;
+    // Les instructions brouillon sont injectées par l'orchestrateur quand l'assistant
+    // mail est actif. Fallback si intent=draft sans injection préalable.
+    if (
+      input.emailEnabled &&
+      route.email.intent === "draft" &&
+      !documentContext.includes("<email_draft_instructions>")
+    ) {
+      const { buildEmailDraftInstructionsBlock } = await import(
+        "@/lib/email/draft"
+      );
+      documentContext = `${documentContext}\n\n${buildEmailDraftInstructionsBlock(
+        await buildEmailDraftWritingBlock(),
+        { accountEmail: input.accountEmail }
+      )}`;
     }
 
     logAgentHeader(resolveEffectiveScope(temporalContext));

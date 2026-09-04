@@ -8,7 +8,9 @@ import {
   getEmailProviderForTool,
   parseCsv,
   requireToolUserId,
+  resolveRecipients,
 } from "./helpers";
+import { getOAuthAccount } from "@/lib/integrations/oauth";
 
 const inputSchema = z.object({
   to: z
@@ -34,14 +36,21 @@ export type EmailCreateDraftInput = z.infer<typeof inputSchema>;
 export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
   name: "email_create_draft",
   description:
-    "Crée un brouillon email Gmail (sans envoi). Retourne draftId interne pour validation et envoi ultérieur via confirmation utilisateur.",
+    "Crée un brouillon Gmail pour toute demande d'écrire ou d'envoyer un mail (y compris à soi-même). L'envoi réel se fait ensuite via confirmation utilisateur (bouton Envoyer) — pas via un autre outil.",
   inputSchema,
   preferredRuntime: "local",
   async execute(input, ctx) {
     const userId = requireToolUserId(ctx);
     const provider = await getEmailProviderForTool(ctx);
+    let accountEmail: string | null = null;
+    try {
+      const account = await getOAuthAccount(userId, "gmail");
+      accountEmail = account?.accountEmail ?? null;
+    } catch {
+      accountEmail = null;
+    }
 
-    const to = parseCsv(input.to);
+    const to = resolveRecipients(input.to, accountEmail);
     const cc = parseCsv(input.cc);
     const bcc = parseCsv(input.bcc);
 

@@ -29,5 +29,13 @@ describe("email draft builder", () => {
 
     expect(messages[0]?.content).toContain("email_draft_instructions");
     expect(buildEmailDraftInstructionsBlock("prefs")).toContain("email_create_draft");
+    expect(
+      buildEmailDraftInstructionsBlock("prefs", {
+        accountEmail: "me@gmail.com",
+      })
+    ).toContain("me@gmail.com");
+    expect(buildEmailDraftInstructionsBlock("prefs")).toContain(
+      "INTERDIT de dire que tu ne peux pas envoyer"
+    );
   });
 });
