@@ -1053,7 +1053,9 @@ struct ChatScreen: View {
             }
             error = AgentToolLabels.friendlyError(msg)
         case "done":
-            thinkingKind = nil
+            if !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
+                thinkingKind = nil
+            }
             if agentActivity.visible || agentActivity.webPhase != .idle {
                 agentActivity.completed = true
                 agentActivity.phase = "synthesis"

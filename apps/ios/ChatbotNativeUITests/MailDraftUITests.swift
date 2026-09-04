@@ -58,9 +58,17 @@ final class MailDraftUITests: XCTestCase {
             edit.tap()
         }
 
-        let send = app.element(id: "mail.send", timeout: 4)
-        XCTAssertTrue(send.exists, "Envoyer")
-        send.tap()
+        let send = app.buttons["Envoyer"].firstMatch
+        XCTAssertTrue(
+            send.waitForExistence(timeout: 6)
+                || app.element(id: "mail.send", timeout: 3).exists,
+            "Envoyer"
+        )
+        if send.exists {
+            send.tap()
+        } else {
+            app.tapFirst(id: "mail.send")
+        }
         // Confirm alert
         let confirm = app.alerts.buttons["Envoyer"]
         if confirm.waitForExistence(timeout: 4) {

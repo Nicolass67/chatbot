@@ -72,13 +72,15 @@ final class SimulatorMVPUITests: XCTestCase {
         let send = app.element(id: UITestA11y.chatSend, timeout: 8)
         XCTAssertTrue(send.exists)
         send.tap()
-        // ThinkingStatusView dès isSending (.reflecting) puis fixture SSE (hold allongé).
-        let thinking = app.element(id: UITestA11y.chatThinking, timeout: 16)
+        // Laisse le stream thinking démarrer (fixture hold ~2.4s) — capture tôt.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        saveScreenshot(app, name: "chat-thinking-early")
+        let thinking = app.descendants(matching: .any).matching(identifier: UITestA11y.chatThinking).firstMatch
         let thinkingByLabel = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "Réflexion")
         ).firstMatch
         XCTAssertTrue(
-            thinking.exists || thinkingByLabel.waitForExistence(timeout: 4),
+            thinking.waitForExistence(timeout: 16) || thinkingByLabel.waitForExistence(timeout: 4),
             "ThinkingStatusView (P3)"
         )
         XCTAssertFalse(app.element(id: UITestA11y.agentRoot, timeout: 1).exists)

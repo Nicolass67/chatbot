@@ -27,6 +27,11 @@ enum FilesDestination: Hashable {
     case file(fileId: String, title: String, rootId: String, folderPath: String)
 }
 
+private struct PresentedFilesAssistant: Identifiable, Equatable {
+    let id = UUID()
+    let context: FilesAssistantContext
+}
+
 struct FilesBrowserView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
@@ -38,19 +43,14 @@ struct FilesBrowserView: View {
     @State private var searchQuery = ""
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
-    @State private var showAssistant = false
-    @State private var assistantContext = FilesAssistantContext.global
-    /// Snapshot figé à l’ouverture du sheet (évite contexte stale SwiftUI).
-    @State private var sheetContext = FilesAssistantContext.global
+    @State private var presentedAssistant: PresentedFilesAssistant?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
     private func openFilesAssistant(_ context: FilesAssistantContext) {
-        assistantContext = context
-        sheetContext = context
-        showAssistant = true
+        presentedAssistant = PresentedFilesAssistant(context: context)
     }
 
     var body: some View {
@@ -114,7 +114,7 @@ struct FilesBrowserView: View {
                     nav.qaIntent = nil
                 case .filesDocuments:
                     if let root = roots.first(where: {
-                        ($0.label ?? "").localizedCaseInsensitiveContains("document")
+                        ($0.label ?? "").localizedCaseInsensitiveContains("Documents")
                             || ($0.absolutePath ?? "").localizedCaseInsensitiveContains("Documents")
                     }) ?? roots.first {
                         path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Documents"))
@@ -141,12 +141,12 @@ struct FilesBrowserView: View {
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
             }
-            .sheet(isPresented: $showAssistant) {
+            .sheet(item: $presentedAssistant) { item in
                 ContextualAssistantSheet(
                     scope: .files,
-                    title: sheetContext.sheetTitle,
-                    contextLabel: sheetContext.label,
-                    contextRef: sheetContext.ref
+                    title: item.context.sheetTitle,
+                    contextLabel: item.context.label,
+                    contextRef: item.context.ref
                 )
                 .environmentObject(session)
                 .environment(nav)
