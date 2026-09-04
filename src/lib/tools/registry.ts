@@ -35,7 +35,18 @@ export function getRegisteredTools(options: {
 }): Tool[] {
   return tools.filter((t) => {
     if (t.name === "email_send") return false;
-    if (t.name.startsWith("email_")) return false;
+    if (t.name.startsWith("email_")) {
+      // Email tools uniquement si candidats explicites (ex. conversation scope=mail).
+      // emailEnabled seul ne suffit pas — le chat général reste sans outils email.
+      if (!options.emailEnabled) return false;
+      if (
+        !options.emailToolCandidates ||
+        options.emailToolCandidates.length === 0
+      ) {
+        return false;
+      }
+      return options.emailToolCandidates.includes(t.name);
+    }
     if (t.name === "web_search") return options.webSearchEnabled;
     if (FILE_READ_ONLY.has(t.name) || FILE_MUTATION_PROPOSE.has(t.name)) {
       if (!options.filesEnabled) return false;

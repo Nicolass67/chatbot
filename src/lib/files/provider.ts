@@ -281,17 +281,9 @@ export async function searchMetadata(input: {
         // Bonus fichiers peu profonds
         score += Math.max(0, 8 - cur.depth);
 
-        const ref = await mintFileReference({
-          userId: input.userId,
-          rootId: root.id,
-          relativePath: rel,
-          displayName: ent.name,
-          sizeBytes: st.size,
-          mtimeMs: Math.floor(st.mtimeMs),
-        });
-
+        // Mint différé : collecter d'abord, mint seulement le top-K après tri
         scored.push({
-          fileId: ref.id,
+          fileId: "",
           filename: ent.name,
           relativePath: rel,
           rootId: root.id,
@@ -306,7 +298,25 @@ export async function searchMetadata(input: {
   }
 
   scored.sort((a, b) => b._score - a._score || b.mtimeMs - a.mtimeMs);
-  const hits = scored.slice(0, maxResults).map(({ _score: _, ...hit }) => {
+  const top = scored.slice(0, maxResults);
+  const minted = await Promise.all(
+    top.map(async (hit) => {
+      const ref = await mintFileReference({
+        userId: input.userId,
+        rootId: hit.rootId,
+        relativePath: hit.relativePath,
+        displayName: hit.filename,
+        sizeBytes: hit.sizeBytes,
+        mtimeMs: hit.mtimeMs,
+      });
+      return {
+        ...hit,
+        fileId: ref.id,
+      };
+    })
+  );
+
+  const hits = minted.map(({ _score: _, ...hit }) => {
     void _;
     return {
       ...hit,

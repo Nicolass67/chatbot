@@ -1,7 +1,9 @@
 import { getMailThread } from "@/lib/mail/service";
+import { cleanPlainText } from "@/lib/mail/html-utils";
 import { resolveFileReference } from "@/lib/files/resolve";
 import { getFileRoot } from "@/lib/files/roots";
 import { FilesError } from "@/lib/files/types";
+import type { NormalizedEmailThread } from "@/lib/integrations/email/types";
 
 /**
  * ACTIVE CONTEXT = USER CONTEXT HINT (not authorization).
@@ -30,12 +32,55 @@ export type ResolvedActiveContext = {
   mail?: {
     threadId: string;
     subject?: string;
+    /** Contenu lisible pour le LLM (dernier message + contexte). */
+    bodyForLlm?: string;
+    from?: string;
+    date?: string;
+    attachmentNames?: string[];
   };
   root?: {
     rootId: string;
     label: string;
   };
 };
+
+const BODY_MAX = 8_000;
+
+/** Formate un thread mail pour injection contexte LLM (corps inclus). */
+export function formatMailThreadBodyForLlm(
+  thread: NormalizedEmailThread,
+  maxChars = BODY_MAX
+): string {
+  const lastIndex = thread.messages.length - 1;
+  const parts = thread.messages.map((m, index) => {
+    const from = m.from.name
+      ? `${m.from.name} <${m.from.email}>`
+      : m.from.email;
+    const to = (m.to ?? [])
+      .map((r) => (r.name ? `${r.name} <${r.email}>` : r.email))
+      .join(", ");
+    const body =
+      cleanPlainText(m.bodyText).slice(0, 3500) ||
+      cleanPlainText(m.snippet).slice(0, 500);
+    const atts = (m.attachments ?? [])
+      .map((a) => a.filename || a.id)
+      .filter(Boolean);
+    const label =
+      index === lastIndex
+        ? `--- DERNIER MESSAGE ${m.id} ---`
+        : `--- Message antérieur ${m.id} ---`;
+    return `${label}
+De: ${from}
+À: ${to || "(n/a)"}
+Date: ${m.date}
+Objet: ${m.subject}
+${atts.length ? `Pièces jointes: ${atts.join(", ")}\n` : ""}
+${body || "(contenu non disponible)"}`;
+  });
+  const joined = parts.join("\n\n");
+  if (joined.length <= maxChars) return joined;
+  return `${joined.slice(0, maxChars)}…`;
+}
 
 export async function resolveActiveContext(input: {
   userId: string;
@@ -103,9 +148,24 @@ export async function resolveActiveContext(input: {
         input.userId,
         hint.mailThreadId.trim()
       );
+      const last = thread.messages[thread.messages.length - 1];
+      const from = last?.from
+        ? last.from.name
+          ? `${last.from.name} <${last.from.email}>`
+          : last.from.email
+        : undefined;
+      const attachmentNames = thread.messages
+        .flatMap((m) => m.attachments ?? [])
+        .map((a) => a.filename || a.id)
+        .filter(Boolean)
+        .slice(0, 12);
       mail = {
         threadId: thread.id,
-        subject: thread.subject || thread.messages[0]?.subject,
+        subject: thread.subject || last?.subject,
+        bodyForLlm: formatMailThreadBodyForLlm(thread),
+        from,
+        date: last?.date,
+        attachmentNames,
       };
       if (mail.subject) entityLabels.push(mail.subject);
     } catch {
@@ -134,7 +194,7 @@ export async function resolveActiveContext(input: {
   };
 }
 
-/** Safe block for system prompt — no absolute paths. */
+/** Safe block for system prompt — no absolute paths. Includes mail body when present. */
 export function formatActiveContextBlock(
   ctx: ResolvedActiveContext
 ): string | null {
@@ -149,6 +209,16 @@ export function formatActiveContextBlock(
     lines.push(
       `Fil mail actif: ${ctx.mail.subject ?? ctx.mail.threadId} (threadId=${ctx.mail.threadId})`
     );
+    if (ctx.mail.from) lines.push(`Expéditeur: ${ctx.mail.from}`);
+    if (ctx.mail.date) lines.push(`Date: ${ctx.mail.date}`);
+    if (ctx.mail.attachmentNames?.length) {
+      lines.push(`Pièces jointes: ${ctx.mail.attachmentNames.join(", ")}`);
+    }
+    if (ctx.mail.bodyForLlm) {
+      lines.push(
+        `<email_context untrusted="true">\n${ctx.mail.bodyForLlm}\n</email_context>`
+      );
+    }
   }
   if (ctx.root) {
     lines.push(`Source Files active: ${ctx.root.label} (rootId=${ctx.root.rootId})`);

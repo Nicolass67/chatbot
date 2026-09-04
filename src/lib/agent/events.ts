@@ -48,6 +48,18 @@ export type OrchestratorEvent =
       url?: string;
     }
   | {
+      type: "files_found";
+      files: Array<{
+        fileId: string;
+        filename: string;
+        relativePath?: string;
+        rootId?: string;
+        sizeBytes?: number;
+        mtimeMs?: number;
+        extension?: string;
+      }>;
+    }
+  | {
       type: "file_action_pending";
       actionId: string;
       confirmationToken: string;

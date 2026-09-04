@@ -2,13 +2,25 @@ import { describe, expect, it } from "vitest";
 import { getRegisteredTools, getTool, getToolDefinitions } from "./registry";
 
 describe("tool registry V2", () => {
-  it("n'expose plus les email tools au chat LLM", () => {
+  it("n'expose plus les email tools au chat LLM sans candidats", () => {
     const tools = getRegisteredTools({
       webSearchEnabled: false,
       emailEnabled: true,
     }).map((t) => t.name);
 
     expect(tools).toEqual([]);
+  });
+
+  it("expose les email tools mail-scope via candidats explicites", () => {
+    const tools = getRegisteredTools({
+      webSearchEnabled: false,
+      emailEnabled: true,
+      emailToolCandidates: ["email_create_draft", "email_get_thread"],
+    }).map((t) => t.name);
+
+    expect(tools).toContain("email_create_draft");
+    expect(tools).toContain("email_get_thread");
+    expect(tools).not.toContain("email_send");
   });
 
   it("n'expose pas email_send au LLM", () => {

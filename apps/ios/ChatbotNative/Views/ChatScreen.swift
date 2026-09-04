@@ -44,9 +44,15 @@ struct ChatScreen: View {
     @State private var streamSources: [SearchSourceDTO] = []
     @State private var streamMailHandoff: MailHandoffDTO?
     @State private var streamFilesHandoff: FilesHandoffDTO?
+    @State private var streamFilesFound: [FilesFoundFileDTO] = []
+    @State private var draftCardId: String?
+    @State private var draftCardText = ""
+    @State private var draftCardEditing = false
+    @State private var draftCardBusy = false
     @State private var lastSources: [SearchSourceDTO] = []
     @State private var lastMailHandoff: MailHandoffDTO?
     @State private var lastFilesHandoff: FilesHandoffDTO?
+    @State private var lastFilesFound: [FilesFoundFileDTO] = []
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
@@ -77,11 +83,6 @@ struct ChatScreen: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
-    /// Garde le chrome Thinking à l’écran pendant le scénario UITest `thinking`.
-    private var uiTestKeepThinking: Bool {
-        UITestMode.isActive && UITestMode.sseScenario == "thinking"
-    }
-
     var body: some View {
         ZStack {
             AmbientBackground()
@@ -92,12 +93,9 @@ struct ChatScreen: View {
                         .padding(.horizontal, 14)
                         .padding(.bottom, 4)
                         .transition(.opacity.combined(with: .move(edge: .top)))
-                } else if let thinkingKind, isSending || uiTestKeepThinking {
+                } else if let thinkingKind, isSending {
                     ThinkingStatusView(kind: thinkingKind)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 4)
                         .transition(.opacity)
-                        .accessibilityIdentifier(A11yID.Chat.thinking)
                 }
                 if let pendingFileAction {
                     FileActionPendingCard(
@@ -141,6 +139,7 @@ struct ChatScreen: View {
                 : (conversationTitle.isEmpty ? "Nouvelle conversation" : conversationTitle)
         )
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             if forcedScope == nil {
                 ToolbarItem(placement: .topBarLeading) {
@@ -265,6 +264,7 @@ struct ChatScreen: View {
                                 sources: chrome.sources,
                                 mailHandoff: chrome.mailHandoff,
                                 filesHandoff: chrome.filesHandoff,
+                                filesFound: chrome.filesFound,
                                 onCopy: {
                                     UIPasteboard.general.string = msg.content
                                     AppHaptics.light()
@@ -287,11 +287,17 @@ struct ChatScreen: View {
                                 },
                                 onOpenDocument: { url, title in
                                     quickLookURL = IdentifiedURL(url: url, title: title)
+                                },
+                                onOpenFoundFile: { file in
+                                    nav.openFiles(rootId: file.rootId, query: file.filename)
+                                },
+                                onRevealFoundFile: { file in
+                                    nav.openFiles(rootId: file.rootId, query: file.relativePath ?? file.filename)
                                 }
                             )
                             .id(msg.id)
                         }
-                        if !streamingText.isEmpty {
+                        if !streamingText.isEmpty && streamingAssistantId == nil {
                             MessageBubble(
                                 message: MessageDTO(
                                     id: "streaming",
@@ -378,11 +384,92 @@ struct ChatScreen: View {
                 .transition(.opacity.combined(with: .scale))
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if draftCardId != nil {
+                MailDraftProposal(
+                    draftText: $draftCardText,
+                    draftId: draftCardId,
+                    isEditing: draftCardEditing,
+                    busy: draftCardBusy,
+                    onEditToggle: { draftCardEditing.toggle() },
+                    onRetry: {
+                        Task { await send(forcedText: "Réécris le brouillon de façon plus claire.") }
+                    },
+                    onSend: {
+                        Task { await sendDraftCard() }
+                    }
+                )
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(AppTheme.surface.opacity(0.96))
+            }
+        }
     }
 
+    @ViewBuilder
     private var emptyThread: some View {
-        EmptyChatCanvas { suggestion in
-            draft = suggestion
+        if let scope = forcedScope {
+            ContextualQuickActions(
+                scope: scope,
+                hasMailThread: forcedActiveContext?.mailThreadId != nil,
+                onAction: { action in
+                    Task { await runQuickAction(action) }
+                }
+            )
+        } else {
+            EmptyChatCanvas { suggestion in
+                draft = suggestion
+            }
+        }
+    }
+
+    enum QuickAction: String {
+        case summarize, reply, draft, extractTasks, searchUnread, improve
+    }
+
+    private func runQuickAction(_ action: QuickAction) async {
+        switch action {
+        case .summarize:
+            draft = ""
+            await send(forcedText: "Résume ce mail de façon claire et concise.")
+        case .reply:
+            draft = ""
+            await send(forcedText: "Prépare une réponse professionnelle à ce mail et crée un brouillon.")
+        case .draft:
+            draft = ""
+            await send(forcedText: "Crée un nouveau brouillon d’email pour répondre à ce contexte.")
+        case .extractTasks:
+            draft = ""
+            await send(forcedText: "Extrais les tâches et dates demandées dans ce mail.")
+        case .searchUnread:
+            draft = ""
+            await send(forcedText: "Résume mes mails non lus les plus importants.")
+        case .improve:
+            draft = ""
+            await send(forcedText: "Améliore le brouillon en cours pour le rendre plus clair et professionnel.")
+        }
+    }
+
+    private func sendDraftCard() async {
+        guard let draftId = draftCardId else { return }
+        draftCardBusy = true
+        defer { draftCardBusy = false }
+        do {
+            let body = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
+            try await client.updateEmailDraft(id: draftId, bodyText: body)
+            try await client.validateEmailDraft(id: draftId)
+            let proposal = try await client.proposeEmailSend(draftId: draftId)
+            try await client.confirmEmailSend(
+                actionId: proposal.actionId,
+                confirmationToken: proposal.confirmationToken,
+                conversationId: conversation.id
+            )
+            draftCardId = nil
+            draftCardText = ""
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
+            AppHaptics.warning()
         }
     }
 
@@ -443,18 +530,14 @@ struct ChatScreen: View {
     }
 
     private var canSend: Bool {
-        // XCUITest : typeText ne met pas toujours à jour le @Binding SwiftUI à temps.
-        // En UITestMode le bouton reste armé ; `send()` injecte un texte défaut si besoin.
-        if UITestMode.isActive && !isSending && !uploading {
-            return true
-        }
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (hasText || !pendingAttachments.isEmpty) && !uploading && !pendingAttachments.contains(where: \.isUploading)
     }
 
-    private func loadMessages() async {
+    private func loadMessages(preserveAssistantId: String? = nil) async {
         do {
-            messages = try await client.listMessages(conversationId: conversation.id)
+            let server = try await client.listMessages(conversationId: conversation.id)
+            messages = mergeMessages(local: messages, server: server, preserveAssistantId: preserveAssistantId)
             error = nil
             let ids = messages.flatMap { $0.attachments ?? [] }
                 .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
@@ -465,6 +548,45 @@ struct ChatScreen: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Fusionne serveur + local pour éviter un frame vide pendant/après le stream.
+    private func mergeMessages(
+        local: [MessageDTO],
+        server: [MessageDTO],
+        preserveAssistantId: String?
+    ) -> [MessageDTO] {
+        if server.isEmpty { return local }
+        var byId = Dictionary(uniqueKeysWithValues: server.map { ($0.id, $0) })
+        // Conserver le contenu local plus long si le serveur est encore en retard
+        for msg in local where msg.role == "assistant" {
+            if let existing = byId[msg.id], existing.content.count < msg.content.count {
+                byId[msg.id] = MessageDTO(
+                    id: msg.id,
+                    role: msg.role,
+                    content: msg.content,
+                    createdAt: existing.createdAt ?? msg.createdAt,
+                    attachments: existing.attachments ?? msg.attachments
+                )
+            } else if byId[msg.id] == nil,
+                      let preserveAssistantId,
+                      msg.id == preserveAssistantId,
+                      !msg.content.isEmpty {
+                byId[msg.id] = msg
+            }
+        }
+        // Ordre serveur ; append locaux orphelins (optimistic user / promote)
+        var ordered = server.map { byId[$0.id]! }
+        let serverIds = Set(server.map(\.id))
+        for msg in local where !serverIds.contains(msg.id) {
+            if msg.id.hasPrefix("local-") || msg.id.hasPrefix("partial-") { continue }
+            if msg.id == preserveAssistantId || msg.id.hasPrefix("asst-") {
+                if !ordered.contains(where: { $0.role == "assistant" && $0.content == msg.content }) {
+                    ordered.append(msg)
+                }
+            }
+        }
+        return ordered
     }
 
     private func loadSettings() async {
@@ -514,14 +636,41 @@ struct ChatScreen: View {
     }
 
     private func applyModel(_ modelId: String) async {
+        let previous = selectedModel
         modelSwitching = true
+        runtimeStatus = "LOADING_MODEL"
+        selectedModel = modelId
         defer { modelSwitching = false }
         do {
             try await client.selectModel(modelId)
-            selectedModel = modelId
-            await refreshReasoningCaps()
+            // Poll jusqu'à confirmation réelle (loadedModel === modelId)
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if let snap = try? await client.runtimeSnapshot() {
+                    runtimeStatus = snap.status
+                    if snap.phase == "ready", snap.loadedModel == modelId {
+                        runtimeStatus = "READY"
+                        await refreshReasoningCaps()
+                        return
+                    }
+                    if snap.phase == "error" {
+                        selectedModel = previous
+                        error = snap.message ?? "Impossible de charger le modèle"
+                        runtimeStatus = snap.loadedModel != nil ? "READY" : "ERROR"
+                        return
+                    }
+                    if snap.phase == "loading" || snap.phase == "unloading" {
+                        runtimeStatus = "LOADING_MODEL"
+                    }
+                }
+            }
+            error = "Chargement du modèle trop long — vérifie LM Studio."
+            selectedModel = previous
+            runtimeStatus = (try? await client.runtimeStatus()) ?? "ERROR"
         } catch {
+            selectedModel = previous
             self.error = error.localizedDescription
+            runtimeStatus = (try? await client.runtimeStatus()) ?? "ERROR"
         }
     }
 
@@ -669,13 +818,8 @@ struct ChatScreen: View {
         await send(options: ChatSendOptions(regenerate: true, mode: chatMode))
     }
 
-    private func send(options: ChatSendOptions? = nil) async {
-        var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty && UITestMode.isActive && options?.regenerate != true {
-            let forced = ProcessInfo.processInfo.environment["CHATBOT_UI_FORCE_MESSAGE"]?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            text = forced.isEmpty ? "UITest" : forced
-        }
+    private func send(options: ChatSendOptions? = nil, forcedText: String? = nil) async {
+        let text = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
         guard !text.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
@@ -728,15 +872,12 @@ struct ChatScreen: View {
 
         isSending = true
         streamingText = ""
-        if chatMode == "agent" && !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
-            thinkingKind = nil
-        } else {
-            thinkingKind = .reflecting
-        }
+        thinkingKind = chatMode == "agent" ? nil : .reflecting
         error = nil
         streamSources = []
         streamMailHandoff = nil
         streamFilesHandoff = nil
+        streamFilesFound = []
         agentActivity = AgentActivityState()
         showScrollDown = false
         runtimeStatus = "BUSY"
@@ -764,25 +905,41 @@ struct ChatScreen: View {
             let finalSources = streamSources
             let finalMail = streamMailHandoff
             let finalFiles = streamFilesHandoff
-            // Retirer le bubble stream avant le reload — évite le double layout / décalage.
+            let finalFound = streamFilesFound
+            let promoteId = streamingAssistantId ?? "asst-\(UUID().uuidString)"
+            // Promote in-place AVANT clear/reload — évite le trou « disparaît puis réapparaît ».
+            if !finalText.isEmpty {
+                if let idx = messages.firstIndex(where: { $0.id == promoteId }) {
+                    messages[idx] = MessageDTO(
+                        id: promoteId,
+                        role: "assistant",
+                        content: finalText,
+                        createdAt: messages[idx].createdAt
+                    )
+                } else {
+                    messages.append(
+                        MessageDTO(id: promoteId, role: "assistant", content: finalText, createdAt: nil)
+                    )
+                }
+                chromeById[promoteId] = MessageChromeMeta(
+                    sources: finalSources,
+                    mailHandoff: finalMail,
+                    filesHandoff: finalFiles,
+                    filesFound: finalFound
+                )
+            }
             streamingText = ""
-            await loadMessages()
-            if let last = messages.last(where: { $0.role == "assistant" }), !finalSources.isEmpty || finalMail != nil || finalFiles != nil {
-                chromeById[last.id] = MessageChromeMeta(
-                    sources: finalSources,
-                    mailHandoff: finalMail,
-                    filesHandoff: finalFiles
-                )
-            } else if messages.last(where: { $0.role == "assistant" }) == nil, !finalText.isEmpty {
-                let id = "asst-\(UUID().uuidString)"
-                messages.append(
-                    MessageDTO(id: id, role: "assistant", content: finalText, createdAt: nil)
-                )
-                chromeById[id] = MessageChromeMeta(
-                    sources: finalSources,
-                    mailHandoff: finalMail,
-                    filesHandoff: finalFiles
-                )
+            await loadMessages(preserveAssistantId: promoteId)
+            if let last = messages.last(where: { $0.role == "assistant" }),
+               !finalSources.isEmpty || finalMail != nil || finalFiles != nil || !finalFound.isEmpty {
+                if chromeById[last.id] == nil {
+                    chromeById[last.id] = MessageChromeMeta(
+                        sources: finalSources,
+                        mailHandoff: finalMail,
+                        filesHandoff: finalFiles,
+                        filesFound: finalFound
+                    )
+                }
             }
             scrollToken += 1
         } catch is CancellationError {
@@ -795,9 +952,6 @@ struct ChatScreen: View {
             }
         }
         isSending = false
-        if !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
-            thinkingKind = nil
-        }
         sendTask = nil
     }
 
@@ -849,20 +1003,34 @@ struct ChatScreen: View {
             streamingText = ""
             scrollToken += 1
         }
-        runtimeStatus = "READY"
+        Task { @MainActor in
+            runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
+        }
         AppHaptics.light()
     }
 
     private func handleSSE(type: String, obj: [String: Any]) {
         switch type {
         case "token":
-            if let c = obj["content"] as? String { streamingText += c }
-            // En scénario Thinking UITest, garder le chrome visible pour la capture PNG.
-            let keepThinking = UITestMode.isActive && UITestMode.sseScenario == "thinking"
-            if !keepThinking {
-                thinkingKind = nil
+            if let c = obj["content"] as? String {
+                streamingText += c
+                if let id = streamingAssistantId,
+                   let idx = messages.firstIndex(where: { $0.id == id }) {
+                    let prev = messages[idx]
+                    messages[idx] = MessageDTO(
+                        id: id,
+                        role: "assistant",
+                        content: prev.content + c,
+                        createdAt: prev.createdAt,
+                        attachments: prev.attachments
+                    )
+                }
             }
+            thinkingKind = nil
         case "status", "thinking", "runtime_status":
+            if type == "runtime_status", let st = obj["status"] as? String {
+                runtimeStatus = st
+            }
             if !agentActivity.visible {
                 let msg = (obj["message"] as? String) ?? (obj["status"] as? String)
                 thinkingKind = ThinkingKind.fromSSE(type: type, message: msg)
@@ -959,6 +1127,11 @@ struct ChatScreen: View {
         case "assistant_start":
             if let id = obj["messageId"] as? String {
                 streamingAssistantId = id
+                if messages.firstIndex(where: { $0.id == id }) == nil {
+                    messages.append(
+                        MessageDTO(id: id, role: "assistant", content: "", createdAt: nil)
+                    )
+                }
             }
             if !agentActivity.visible {
                 thinkingKind = .preparing
@@ -967,6 +1140,12 @@ struct ChatScreen: View {
             if let id = obj["messageId"] as? String, streamingAssistantId == id {
                 streamingText = ""
                 streamingAssistantId = nil
+                if let idx = messages.firstIndex(where: { $0.id == id }) {
+                    messages.remove(at: idx)
+                }
+                if !agentActivity.visible {
+                    thinkingKind = .preparing
+                }
             }
         case "sources":
             agentActivity.webPhase = .done
@@ -1036,6 +1215,41 @@ struct ChatScreen: View {
                 query: obj["query"] as? String,
                 rootId: obj["rootId"] as? String
             )
+        case "files_found":
+            if let arr = obj["files"] as? [[String: Any]] {
+                let parsed: [FilesFoundFileDTO] = arr.compactMap { f in
+                    guard let id = f["fileId"] as? String, !id.isEmpty else { return nil }
+                    return FilesFoundFileDTO(
+                        id: id,
+                        filename: (f["filename"] as? String) ?? "fichier",
+                        relativePath: f["relativePath"] as? String,
+                        rootId: f["rootId"] as? String,
+                        sizeBytes: f["sizeBytes"] as? Int,
+                        mtimeMs: f["mtimeMs"] as? Double,
+                        extensionHint: f["extension"] as? String
+                    )
+                }
+                streamFilesFound = parsed
+                if let id = streamingAssistantId {
+                    var chrome = chromeById[id] ?? MessageChromeMeta()
+                    chrome.filesFound = parsed
+                    chromeById[id] = chrome
+                }
+            }
+        case "draft_preview":
+            if let draft = obj["draft"] as? [String: Any] {
+                let id = (draft["id"] as? String) ?? (draft["draftId"] as? String)
+                let body =
+                    (draft["bodyText"] as? String)
+                    ?? (draft["body"] as? String)
+                    ?? (draft["text"] as? String)
+                    ?? ""
+                if let id, !id.isEmpty {
+                    draftCardId = id
+                    draftCardText = body
+                    draftCardEditing = false
+                }
+            }
         case "conversation_title":
             if let title = obj["title"] as? String, !title.isEmpty {
                 conversationTitle = title
@@ -1052,31 +1266,28 @@ struct ChatScreen: View {
             }
             error = AgentToolLabels.friendlyError(msg)
         case "done":
-            if !(UITestMode.isActive && UITestMode.sseScenario == "thinking") {
-                thinkingKind = nil
-            }
+            thinkingKind = nil
             if agentActivity.visible || agentActivity.webPhase != .idle {
                 agentActivity.completed = true
                 agentActivity.phase = "synthesis"
                 agentActivity.visible = true
-                let keepAgent = UITestMode.isActive
-                    && (UITestMode.sseScenario == "agent" || UITestMode.sseScenario == "agent-error")
-                if !keepAgent {
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 1_200_000_000)
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            agentActivity = AgentActivityState()
-                        }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        agentActivity = AgentActivityState()
                     }
                 }
             } else {
                 agentActivity = AgentActivityState()
             }
-            runtimeStatus = "READY"
+            Task { @MainActor in
+                runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
+            }
             let chrome = MessageChromeMeta(
                 sources: streamSources,
                 mailHandoff: streamMailHandoff,
-                filesHandoff: streamFilesHandoff
+                filesHandoff: streamFilesHandoff,
+                filesFound: streamFilesFound
             )
             if let id = streamingAssistantId ?? (obj["messageId"] as? String) {
                 chromeById[id] = chrome
@@ -1084,6 +1295,7 @@ struct ChatScreen: View {
             lastSources = streamSources
             lastMailHandoff = streamMailHandoff
             lastFilesHandoff = streamFilesHandoff
+            lastFilesFound = streamFilesFound
             if let title = obj["title"] as? String, !title.isEmpty {
                 conversationTitle = title
             }

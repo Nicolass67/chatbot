@@ -194,6 +194,11 @@ export function MailAssistantPanel({
     models.find((m) => m.id === selectedModel)?.label ?? selectedModel;
 
   const handleModelChange = async (modelId: string) => {
+    const previous =
+      modelRuntime?.loadedModel &&
+      models.some((m) => m.id === modelRuntime.loadedModel)
+        ? modelRuntime.loadedModel
+        : selectedModel;
     setSelectedModel(modelId);
     setModelRuntime((prev) =>
       prev
@@ -203,6 +208,7 @@ export function MailAssistantPanel({
             targetModel: modelId,
             preferredModel: modelId,
             message: "Chargement…",
+            error: undefined,
           }
         : {
             phase: "loading",
@@ -221,14 +227,34 @@ export function MailAssistantPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelKey: modelId }),
       });
-      if (res.status === 202 || res.ok) {
-        const state = (await res.json()) as ModelRuntimeSnapshot;
-        setModelRuntime(state);
-        if (state.phase === "ready") setRuntimeStatus("READY");
-        else if (state.phase === "error") setRuntimeStatus("ERROR");
-        else setRuntimeStatus("LOADING_MODEL");
+      if (!(res.status === 202 || res.ok)) {
+        throw new Error("Impossible de demander le chargement du modèle");
       }
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const st = await fetch("/api/runtime/status");
+        if (!st.ok) continue;
+        const data = (await st.json()) as {
+          status?: RuntimeStatus;
+          model?: ModelRuntimeSnapshot;
+        };
+        if (data.status) setRuntimeStatus(data.status);
+        if (data.model) setModelRuntime(data.model);
+        const phase = data.model?.phase;
+        if (phase === "ready" && data.model?.loadedModel === modelId) {
+          setRuntimeStatus("READY");
+          return;
+        }
+        if (phase === "error") {
+          setSelectedModel(previous);
+          setRuntimeStatus(data.model?.loadedModel ? "READY" : "ERROR");
+          return;
+        }
+      }
+      setSelectedModel(previous);
+      void refreshRuntimeStatus();
     } catch {
+      setSelectedModel(previous);
       void refreshRuntimeStatus();
     }
   };

@@ -131,9 +131,8 @@ struct ComposerCapsule: View {
         }
         .padding(.horizontal, AppTheme.space8)
         .padding(.vertical, AppTheme.space4)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(A11yID.Chat.composer)
         .modifier(ComposerGlassChrome(editing: editing, reduceTransparency: reduceTransparency))
+        .accessibilityIdentifier(A11yID.Chat.composer)
         .animation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.82), value: isSending)
         .sheet(isPresented: $showTools) {
             ChatToolsSheet(
@@ -248,7 +247,6 @@ struct ChatToolsSheet: View {
                         Text("Agent").tag("agent")
                     }
                     .pickerStyle(.segmented)
-                    .accessibilityIdentifier("chat.mode.picker")
                     .listRowBackground(AppTheme.surface)
 
                     Toggle("Recherche web", isOn: Binding(
@@ -331,6 +329,7 @@ struct ChatToolsSheet: View {
                 }
             }
         }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -351,5 +350,133 @@ struct ScrollToBottomButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Descendre")
+    }
+}
+
+struct EmptyChatCanvas: View {
+    let onSuggestion: (String) -> Void
+
+    private let suggestions = [
+        "Résume mes mails non lus",
+        "Cherche un fichier sur le disque",
+        "Qu’as-tu retenu sur moi ?",
+    ]
+
+    var body: some View {
+        VStack(spacing: AppTheme.space24) {
+            Spacer(minLength: AppTheme.space32)
+            VStack(spacing: AppTheme.space12) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(AppTheme.accent.opacity(0.9))
+                    .accessibilityHidden(true)
+                Text("Chatbot")
+                    .font(CNFont.title)
+                    .foregroundStyle(AppTheme.foreground)
+                Text("Dis-moi ce dont tu as besoin.")
+                    .font(CNFont.callout)
+                    .foregroundStyle(AppTheme.muted)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(alignment: .leading, spacing: AppTheme.space8) {
+                ForEach(suggestions, id: \.self) { suggestion in
+                    Button {
+                        AppHaptics.light()
+                        onSuggestion(suggestion)
+                    } label: {
+                        Text(suggestion)
+                            .font(CNFont.body)
+                            .foregroundStyle(AppTheme.foreground)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, AppTheme.space16)
+                            .padding(.vertical, AppTheme.space12)
+                            .background(AppTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(suggestion)
+                }
+            }
+            .padding(.horizontal, AppTheme.space24)
+
+            Spacer(minLength: AppTheme.space16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Actions produit contextuelles (pas des suggestions de prompt).
+struct ContextualQuickActions: View {
+    let scope: ConversationScope
+    var hasMailThread: Bool = false
+    let onAction: (ChatScreen.QuickAction) -> Void
+
+    private var actions: [(ChatScreen.QuickAction, String, String)] {
+        if scope == .mail {
+            if hasMailThread {
+                return [
+                    (.summarize, "Résumer", "text.alignleft"),
+                    (.reply, "Répondre", "arrowshape.turn.up.left"),
+                    (.extractTasks, "Tâches", "checklist"),
+                    (.draft, "Brouillon", "square.and.pencil"),
+                ]
+            }
+            return [
+                (.searchUnread, "Non lus", "envelope.badge"),
+                (.draft, "Nouveau mail", "square.and.pencil"),
+            ]
+        }
+        return [
+            (.searchUnread, "Explorer", "folder"),
+        ]
+    }
+
+    var body: some View {
+        VStack(spacing: AppTheme.space20) {
+            Spacer(minLength: AppTheme.space24)
+            Image(systemName: scope == .mail ? "envelope.open" : "folder")
+                .font(.system(size: 32, weight: .medium))
+                .foregroundStyle(AppTheme.accent.opacity(0.9))
+            Text(scope == .mail ? "Assistant Mail" : "Assistant Files")
+                .font(CNFont.title)
+                .foregroundStyle(AppTheme.foreground)
+            Text(hasMailThread
+                ? "Actions sur le mail ouvert"
+                : "Choisis une action pour commencer")
+                .font(CNFont.callout)
+                .foregroundStyle(AppTheme.muted)
+                .multilineTextAlignment(.center)
+
+            LazyVGrid(
+                columns: [GridItem(.flexible()), GridItem(.flexible())],
+                spacing: 10
+            ) {
+                ForEach(actions, id: \.0) { item in
+                    Button {
+                        AppHaptics.light()
+                        onAction(item.0)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: item.2)
+                            Text(item.1)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .foregroundStyle(AppTheme.foreground)
+                        .background(AppTheme.surfaceElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, AppTheme.space24)
+
+            Spacer(minLength: AppTheme.space16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

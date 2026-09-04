@@ -75,6 +75,7 @@ interface ChatMessage {
   savedMemories?: SavedMemoryItem[];
   mailHandoff?: MailHandoffInfo;
   filesHandoff?: import("@/components/files/FilesHandoffCard").FilesHandoffInfo;
+  filesFound?: import("@/components/files/FilesFoundCard").FilesFoundItem[];
   filesMutationPending?: import("@/components/files/FilesMutationConfirmation").FilesMutationPending;
 }
 
@@ -112,7 +113,7 @@ export function ChatView({
   );
   const [title, setTitle] = useState(initialTitle ?? "Conversation");
   const [isGenerating, setIsGenerating] = useState(false);
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("READY");
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("OFFLINE");
   const [webStatus, setWebStatus] = useState<WebRuntimeStatus>("unavailable");
   const [webStatusMessage, setWebStatusMessage] = useState<string | undefined>();
   const [modelRuntime, setModelRuntime] = useState<ModelRuntimeSnapshot | null>(
@@ -151,6 +152,12 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const pendingSourcesRef = useRef<MessageSource[]>([]);
+  const pendingFilesHandoffRef = useRef<
+    import("@/components/files/FilesHandoffCard").FilesHandoffInfo | null
+  >(null);
+  const pendingFilesFoundRef = useRef<
+    import("@/components/files/FilesFoundCard").FilesFoundItem[] | null
+  >(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -585,11 +592,20 @@ export function ChatView({
   const ensureStreamingAssistant = useCallback((messageId: string) => {
     streamingAssistantIdRef.current = messageId;
     const pendingSources = pendingSourcesRef.current;
+    const pendingHandoff = pendingFilesHandoffRef.current;
+    const pendingFound = pendingFilesFoundRef.current;
+    pendingFilesHandoffRef.current = null;
+    pendingFilesFoundRef.current = null;
     setMessages((prev) => {
+      const patch = {
+        ...(pendingSources.length > 0 ? { sources: pendingSources } : {}),
+        ...(pendingHandoff ? { filesHandoff: pendingHandoff } : {}),
+        ...(pendingFound?.length ? { filesFound: pendingFound } : {}),
+      };
       if (prev.some((m) => m.id === messageId)) {
-        if (pendingSources.length === 0) return prev;
+        if (Object.keys(patch).length === 0) return prev;
         return prev.map((m) =>
-          m.id === messageId ? { ...m, sources: pendingSources } : m
+          m.id === messageId ? { ...m, ...patch } : m
         );
       }
       return [
@@ -599,7 +615,7 @@ export function ChatView({
           role: "assistant",
           content: "",
           streaming: true,
-          ...(pendingSources.length > 0 ? { sources: pendingSources } : {}),
+          ...patch,
         },
       ];
     });
@@ -804,23 +820,46 @@ export function ChatView({
             }
             case "files_handoff": {
               const assistantId = streamingAssistantIdRef.current;
+              const handoff = {
+                intent: event.intent,
+                reason: event.reason,
+                query: event.query,
+                rootId: event.rootId,
+                url: event.url,
+              };
               if (assistantId) {
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
                       ? {
                           ...m,
-                          filesHandoff: {
-                            intent: event.intent,
-                            reason: event.reason,
-                            query: event.query,
-                            rootId: event.rootId,
-                            url: event.url,
-                          },
+                          filesHandoff: handoff,
                         }
                       : m
                   )
                 );
+              } else {
+                // Buffer jusqu'à assistant_start (handoff peut arriver avant)
+                pendingFilesHandoffRef.current = handoff;
+              }
+              break;
+            }
+            case "files_found": {
+              const assistantId = streamingAssistantIdRef.current;
+              const files = (event.files ?? []) as import("@/components/files/FilesFoundCard").FilesFoundItem[];
+              if (assistantId && files.length > 0) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          filesFound: files,
+                        }
+                      : m
+                  )
+                );
+              } else if (files.length > 0) {
+                pendingFilesFoundRef.current = files;
               }
               break;
             }
@@ -1134,6 +1173,11 @@ export function ChatView({
   };
 
   const handleModelChange = async (modelId: string) => {
+    const previous =
+      modelRuntime?.loadedModel &&
+      modelOptions.some((m) => m.id === modelRuntime.loadedModel)
+        ? modelRuntime.loadedModel
+        : selectedModel;
     setSelectedModel(modelId);
     setModelRuntime((prev) =>
       prev
@@ -1143,9 +1187,18 @@ export function ChatView({
             targetModel: modelId,
             preferredModel: modelId,
             message: "Chargement…",
+            error: undefined,
           }
-        : prev
+        : {
+            phase: "loading",
+            preferredModel: modelId,
+            loadedModel: null,
+            targetModel: modelId,
+            message: "Chargement…",
+            pendingRequestCount: 0,
+          }
     );
+    setRuntimeStatus("LOADING_MODEL");
 
     try {
       const res = await fetch("/api/runtime/model", {
@@ -1153,19 +1206,33 @@ export function ChatView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelKey: modelId }),
       });
-      if (res.status === 202 || res.ok) {
-        const state = (await res.json()) as ModelRuntimeSnapshot;
-        setModelRuntime(state);
-        if (state.phase === "ready") {
+      if (!(res.status === 202 || res.ok)) {
+        throw new Error("Impossible de demander le chargement du modèle");
+      }
+      // Ne jamais traiter le 202 comme ready — poll jusqu'à confirmation réelle
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const st = await fetch("/api/runtime/status");
+        if (!st.ok) continue;
+        const data = (await st.json()) as {
+          status?: RuntimeStatus;
+          model?: ModelRuntimeSnapshot;
+        };
+        if (data.status) setRuntimeStatus(data.status);
+        if (data.model) setModelRuntime(data.model);
+        const phase = data.model?.phase;
+        if (phase === "ready" && data.model?.loadedModel === modelId) {
           setRuntimeStatus("READY");
-        } else if (state.phase === "error") {
-          setRuntimeStatus("ERROR");
-        } else {
-          setRuntimeStatus("LOADING_MODEL");
+          break;
+        }
+        if (phase === "error") {
+          setSelectedModel(previous);
+          setRuntimeStatus(data.model?.loadedModel ? "READY" : "ERROR");
+          break;
         }
       }
     } catch {
-      // settings still updated via API on success; refresh status on failure
+      setSelectedModel(previous);
       void loadRuntimeStatus();
     }
 

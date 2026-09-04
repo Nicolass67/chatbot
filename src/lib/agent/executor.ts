@@ -57,6 +57,15 @@ export interface ExecutorCallbacks {
     };
     notice?: string;
   }) => void;
+  onFilesFound?: (files: Array<{
+    fileId: string;
+    filename: string;
+    relativePath?: string;
+    rootId?: string;
+    sizeBytes?: number;
+    mtimeMs?: number;
+    extension?: string;
+  }>) => void;
   onSources: (sources: SearchResult[]) => void;
 }
 
@@ -297,6 +306,35 @@ async function executeSingleTool(
           },
           notice: pending.notice,
         });
+      }
+    } else if (call.tool === "file_search" || call.tool === "file_list") {
+      const payload = result as {
+        results?: Array<Record<string, unknown>>;
+        entries?: Array<Record<string, unknown>>;
+      };
+      const raw = payload.results ?? payload.entries ?? [];
+      const files = raw
+        .map((r) => ({
+          fileId: String(r.fileId ?? ""),
+          filename: String(r.filename ?? r.name ?? "fichier"),
+          relativePath:
+            typeof r.relativePath === "string" ? r.relativePath : undefined,
+          rootId: typeof r.rootId === "string" ? r.rootId : undefined,
+          sizeBytes: typeof r.sizeBytes === "number" ? r.sizeBytes : undefined,
+          mtimeMs: typeof r.mtimeMs === "number" ? r.mtimeMs : undefined,
+          extension: typeof r.extension === "string" ? r.extension : undefined,
+        }))
+        .filter((f) => f.fileId.length > 0)
+        .slice(0, 8);
+      summary =
+        files.length > 0
+          ? `${files.length} fichier(s) trouvé(s)`
+          : call.tool === "file_search"
+            ? "Aucun fichier trouvé"
+            : call.tool;
+      ctx.callbacks.onToolDone(call.tool, summary, files.length);
+      if (files.length > 0) {
+        ctx.callbacks.onFilesFound?.(files);
       }
     } else {
       ctx.callbacks.onToolDone(call.tool, summary);

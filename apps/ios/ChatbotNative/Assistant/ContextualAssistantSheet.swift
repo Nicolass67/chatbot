@@ -22,33 +22,40 @@ struct ContextualAssistantSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                AmbientBackground()
-                if booting {
-                    SoftLoadingBlock(label: "Préparation de l’assistant…")
-                } else if let error {
-                    SoftEmptyState(
-                        systemImage: "exclamationmark.triangle",
-                        title: "Impossible d’ouvrir",
-                        message: error,
-                        actionTitle: "Réessayer"
-                    ) { Task { await boot() } }
-                } else if let conversation {
-                    AssistantChatHost(
-                        conversation: conversation,
-                        scope: scope,
-                        activeContext: contextRef
-                    )
-                    .id(conversation.id)
+            VStack(spacing: 0) {
+                contextChip
+                    .accessibilityIdentifier(A11yID.Assistant.contextChip)
+                ZStack {
+                    AmbientBackground()
+                    if booting {
+                        SoftLoadingBlock(label: "Préparation de l’assistant…")
+                    } else if let error {
+                        SoftEmptyState(
+                            systemImage: "exclamationmark.triangle",
+                            title: "Impossible d’ouvrir",
+                            message: error,
+                            actionTitle: "Réessayer"
+                        ) { Task { await boot() } }
+                    } else if let conversation {
+                        AssistantChatHost(
+                            conversation: conversation,
+                            scope: scope,
+                            activeContext: contextRef
+                        )
+                        .id(conversation.id)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(AppTheme.surface.opacity(0.94), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Fermer") { dismiss() }
                         .accessibilityIdentifier(A11yID.Assistant.close)
-                        .accessibilityAddTraits(.isButton)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -59,10 +66,6 @@ struct ContextualAssistantSheet: View {
                     .accessibilityLabel(scope.historyTitle)
                     .accessibilityIdentifier(A11yID.Assistant.history)
                 }
-            }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                contextChip
-                    .accessibilityIdentifier(A11yID.Assistant.contextChip)
             }
             .sheet(isPresented: $showHistory) {
                 ScopedConversationSwitcher(
@@ -84,32 +87,26 @@ struct ContextualAssistantSheet: View {
             }
             .task { await boot() }
         }
+        .preferredColorScheme(.dark)
         .accessibilityIdentifier(A11yID.Assistant.root)
     }
 
     private var contextChip: some View {
-        HStack(spacing: AppTheme.space8) {
+        HStack(spacing: 8) {
             Image(systemName: scope == .mail ? "envelope.fill" : "folder.fill")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(scope == .mail ? AppTheme.mailAccent : AppTheme.filesAccent)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(scope == .mail ? "Dans Mail" : "Dans Files")
-                    .font(CNFont.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.muted)
-                Text(contextLabel)
-                    .font(CNFont.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.foreground)
-                    .lineLimit(1)
-            }
+                .foregroundStyle(AppTheme.accent)
+            Text(contextLabel)
+                .font(CNFont.caption)
+                .foregroundStyle(AppTheme.foreground)
+                .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, AppTheme.space14)
-        .padding(.vertical, AppTheme.space10)
-        .background((scope == .mail ? AppTheme.mailAccent : AppTheme.filesAccent).opacity(0.10))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(AppTheme.surface.opacity(0.9))
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(AppTheme.borderSubtle)
-                .frame(height: 1)
+            Divider().overlay(AppTheme.borderSubtle)
         }
     }
 
@@ -281,6 +278,7 @@ struct ScopedConversationSwitcher: View {
             }
             .task { await load() }
         }
+        .preferredColorScheme(.dark)
     }
 
     private func load() async {

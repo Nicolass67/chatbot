@@ -149,7 +149,21 @@ export class ModelManager {
   scheduleSwitch(modelKey: string, contextLength?: number): Promise<void> {
     this.desiredModel = modelKey;
     if (contextLength) this.desiredContextLength = contextLength;
-    this.patchState({ preferredModel: modelKey, targetModel: modelKey });
+    // Marquer loading immédiatement (évite un GET status encore "ready" pendant la file)
+    const alreadyReady =
+      this.state.phase === "ready" && this.state.loadedModel === modelKey;
+    if (!alreadyReady) {
+      this.patchState({
+        preferredModel: modelKey,
+        targetModel: modelKey,
+        phase: "loading",
+        message: `Chargement de ${modelKey.split("/").pop() ?? modelKey}…`,
+        error: undefined,
+        progress: undefined,
+      });
+    } else {
+      this.patchState({ preferredModel: modelKey, targetModel: modelKey });
+    }
 
     this.switchChain = this.switchChain
       .catch(() => undefined)

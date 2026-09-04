@@ -9,6 +9,7 @@ struct MessageBubble: View {
     var sources: [SearchSourceDTO] = []
     var mailHandoff: MailHandoffDTO? = nil
     var filesHandoff: FilesHandoffDTO? = nil
+    var filesFound: [FilesFoundFileDTO] = []
     let onCopy: () -> Void
     let onEdit: () -> Void
     let onRegenerate: () -> Void
@@ -16,6 +17,8 @@ struct MessageBubble: View {
     var onMailHandoff: (() -> Void)? = nil
     var onFilesHandoff: (() -> Void)? = nil
     var onOpenDocument: ((URL, String) -> Void)? = nil
+    var onOpenFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
+    var onRevealFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
 
     private var isUser: Bool { message.role == "user" }
     private var isStreaming: Bool {
@@ -29,14 +32,14 @@ struct MessageBubble: View {
                     Image(systemName: "pencil")
                         .font(.caption2.weight(.semibold))
                     Text("En édition")
-                        .font(CNFont.caption2.weight(.semibold))
+                        .font(.caption2.weight(.semibold))
                 }
                 .foregroundStyle(AppTheme.accent)
             }
 
             if isUser {
                 HStack(spacing: 0) {
-                    Spacer(minLength: 56)
+                    Spacer(minLength: 48)
                     userContent
                 }
             } else {
@@ -61,8 +64,7 @@ struct MessageBubble: View {
                 HandoffBanner(
                     title: "Ouvrir dans Mail",
                     subtitle: mailHandoff.reason ?? mailHandoff.query ?? "Handoff mail",
-                    systemImage: "envelope.open",
-                    accessibilityId: A11yID.Assistant.handoffMail
+                    systemImage: "envelope.open"
                 ) { onMailHandoff?() }
             }
 
@@ -70,20 +72,31 @@ struct MessageBubble: View {
                 HandoffBanner(
                     title: "Ouvrir dans Files",
                     subtitle: filesHandoff.reason ?? filesHandoff.query ?? "Handoff fichiers",
-                    systemImage: "folder",
-                    accessibilityId: A11yID.Assistant.handoffFiles
+                    systemImage: "folder"
                 ) { onFilesHandoff?() }
+            }
+
+            if !filesFound.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(filesFound) { file in
+                        FileResultCard(
+                            file: file,
+                            onOpen: { onOpenFoundFile?(file) },
+                            onReveal: { onRevealFoundFile?(file) }
+                        )
+                    }
+                }
             }
         }
     }
 
     private var userContent: some View {
         Text(message.content)
-            .font(CNFont.body)
+            .font(.body)
             .foregroundStyle(AppTheme.foreground)
             .textSelection(.enabled)
-            .padding(.horizontal, AppTheme.space16)
-            .padding(.vertical, AppTheme.space12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
             .background(AppTheme.userMessage)
             .clipShape(
                 UnevenRoundedRectangle(
@@ -103,8 +116,8 @@ struct MessageBubble: View {
                     style: .continuous
                 )
                 .stroke(
-                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.accent.opacity(0.18),
-                    lineWidth: isEditing ? 1.5 : 1
+                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.borderSubtle,
+                    lineWidth: isEditing ? 1 : 0.5
                 )
             )
             .contextMenu {
@@ -114,23 +127,28 @@ struct MessageBubble: View {
             .accessibilityHint("Appui long pour copier ou modifier")
     }
 
-    /// Lecture éditoriale — pas de bulle chat générique.
+    /// Canvas lecture assistant — pas de bulle web, actions uniquement via context menu.
     private var assistantCanvas: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space10) {
+        VStack(alignment: .leading, spacing: AppTheme.space8) {
             Text(isStreaming ? "Assistant…" : "Assistant")
-                .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.accent)
-                .tracking(0.3)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppTheme.mutedForeground)
 
             MarkdownMessageView(markdown: message.content)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.leading, AppTheme.space14)
+        .padding(.leading, AppTheme.space12)
         .overlay(alignment: .leading) {
-            Capsule()
-                .fill(AppTheme.accent.opacity(isStreaming ? 0.85 : 0.45))
-                .frame(width: 2.5)
-                .padding(.top, 4)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [AppTheme.accent.opacity(0.65), AppTheme.assistantBar.opacity(0.35)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: 2)
+                .padding(.top, 18)
         }
         .contextMenu {
             Button("Copier", systemImage: "doc.on.doc", action: onCopy)
@@ -149,22 +167,19 @@ struct HandoffBanner: View {
     let title: String
     let subtitle: String
     let systemImage: String
-    var accessibilityId: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: AppTheme.space12) {
+            HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.accent)
-                    .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(CNFont.callout.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.foreground)
                     Text(subtitle)
-                        .font(CNFont.caption)
+                        .font(.caption)
                         .foregroundStyle(AppTheme.muted)
                         .lineLimit(2)
                 }
@@ -173,17 +188,73 @@ struct HandoffBanner: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.mutedForeground)
             }
-            .padding(AppTheme.space14)
-            .background(AppTheme.surface.opacity(0.9))
+            .padding(12)
+            .background(AppTheme.surface.opacity(0.95))
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.accent.opacity(0.28), lineWidth: 1)
+                    .stroke(AppTheme.accent.opacity(0.18), lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(accessibilityId)
-        .accessibilityLabel("\(title). \(subtitle)")
+    }
+}
+
+struct FileResultCard: View {
+    let file: FilesFoundFileDTO
+    var onOpen: () -> Void
+    var onReveal: () -> Void
+
+    private var sizeLabel: String? {
+        guard let bytes = file.sizeBytes, bytes > 0 else { return nil }
+        if bytes < 1024 { return "\(bytes) o" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f Ko", Double(bytes) / 1024) }
+        return String(format: "%.1f Mo", Double(bytes) / (1024 * 1024))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.fill")
+                    .foregroundStyle(AppTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.filename)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        if let path = file.relativePath {
+                            Text(path)
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.muted)
+                                .lineLimit(1)
+                        }
+                        if let sizeLabel {
+                            Text("· \(sizeLabel)")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Button("Ouvrir", action: onOpen)
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.accent)
+                    .controlSize(.small)
+                Button("Voir dans Files", action: onReveal)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(AppTheme.surface.opacity(0.95))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+        )
     }
 }
 
@@ -263,7 +334,9 @@ struct SourcesSheet: View {
                     Button("Fermer") { dismiss() }
                 }
             }
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -310,7 +383,7 @@ struct RemoteAttachmentCard: View {
     private var sizeLabel: String {
         guard let bytes = attachment.sizeBytes else { return isImage ? "Image" : "Document" }
         let kind = isImage ? "Image" : "Document"
-        return "\(kind) ┬À \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
+        return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
     }
 
     var body: some View {

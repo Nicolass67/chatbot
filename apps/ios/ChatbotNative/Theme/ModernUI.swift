@@ -69,7 +69,6 @@ struct SoftEmptyState: View {
     let message: String
     var actionTitle: String? = nil
     var action: (() -> Void)? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ContentUnavailableView {
@@ -80,11 +79,7 @@ struct SoftEmptyState: View {
                 Image(systemName: systemImage)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(AppTheme.accent)
-                    .symbolEffect(
-                        .pulse,
-                        options: .repeating.speed(0.4),
-                        isActive: !reduceMotion
-                    )
+                    .symbolEffect(.pulse, options: .repeating.speed(0.4))
             }
         } description: {
             Text(message)
@@ -278,10 +273,21 @@ struct ContextUsageMeter: View {
     }
 }
 
+struct FilesFoundFileDTO: Identifiable, Hashable {
+    let id: String
+    let filename: String
+    let relativePath: String?
+    let rootId: String?
+    let sizeBytes: Int?
+    let mtimeMs: Double?
+    let extensionHint: String?
+}
+
 struct MessageChromeMeta: Equatable {
     var sources: [SearchSourceDTO] = []
     var mailHandoff: MailHandoffDTO?
     var filesHandoff: FilesHandoffDTO?
+    var filesFound: [FilesFoundFileDTO] = []
 }
 
 struct AppearFade: ViewModifier {

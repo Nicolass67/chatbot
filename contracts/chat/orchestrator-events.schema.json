@@ -78,6 +78,31 @@
           "url": { "type": "string" }
         }
       }
+    },
+    {
+      "if": { "properties": { "type": { "const": "files_found" } } },
+      "then": {
+        "required": ["type", "files"],
+        "properties": {
+          "type": { "const": "files_found" },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["fileId", "filename"],
+              "properties": {
+                "fileId": { "type": "string" },
+                "filename": { "type": "string" },
+                "relativePath": { "type": "string" },
+                "rootId": { "type": "string" },
+                "sizeBytes": { "type": "number" },
+                "mtimeMs": { "type": "number" },
+                "extension": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

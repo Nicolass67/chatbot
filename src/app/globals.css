@@ -15,25 +15,25 @@
   --surface-active: #38383d;
 
   /* Borders — soft separators, not hard lines */
-  --border: #3d3d43;
-  --border-subtle: color-mix(in srgb, #ffffff 6.5%, transparent);
-  --border-strong: #505057;
+  --border: #34343a;
+  --border-subtle: color-mix(in srgb, #ffffff 4.5%, transparent);
+  --border-strong: #484850;
 
-  /* Accent — soft macOS blue, desaturated; use sparingly */
-  --accent: #5b8fd4;
-  --accent-hover: #74a3e0;
+  /* Accent — Mist Teal (premium, distinctif, pas violet IA / bleu Apple générique) */
+  --accent: #7eb8c4;
+  --accent-hover: #96cbd4;
   --accent-muted: color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-subtle: color-mix(in srgb, var(--accent) 8%, transparent);
-  --accent-foreground: #eef3fa;
+  --accent-foreground: #0e1618;
 
   /* Text hierarchy — soft white → quiet greys */
   --muted: #a3a3aa;
   --muted-foreground: #74747c;
 
-  /* Status — muted, integrated */
-  --success: #6baf8c;
+  /* Status — muted sage / clay (pas vert/jaune saturés) */
+  --success: #8aa8a4;
   --success-muted: color-mix(in srgb, var(--success) 12%, transparent);
-  --warning: #c9a06c;
+  --warning: #b8a090;
   --warning-muted: color-mix(in srgb, var(--warning) 12%, transparent);
   --error: #c97d79;
   --error-muted: color-mix(in srgb, var(--error) 12%, transparent);

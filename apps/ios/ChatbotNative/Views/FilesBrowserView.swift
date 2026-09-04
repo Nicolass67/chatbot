@@ -27,11 +27,6 @@ enum FilesDestination: Hashable {
     case file(fileId: String, title: String, rootId: String, folderPath: String)
 }
 
-private struct PresentedFilesAssistant: Identifiable, Equatable {
-    let id = UUID()
-    let context: FilesAssistantContext
-}
-
 struct FilesBrowserView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
@@ -43,14 +38,11 @@ struct FilesBrowserView: View {
     @State private var searchQuery = ""
     @State private var searchHits: [FileSearchHitDTO] = []
     @State private var searching = false
-    @State private var presentedAssistant: PresentedFilesAssistant?
+    @State private var showAssistant = false
+    @State private var assistantContext = FilesAssistantContext.global
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
-    }
-
-    private func openFilesAssistant(_ context: FilesAssistantContext) {
-        presentedAssistant = PresentedFilesAssistant(context: context)
     }
 
     var body: some View {
@@ -58,18 +50,15 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 content
-                if path.isEmpty {
-                    ContextualAssistantButton(
-                        accessibilityId: A11yID.Files.assistant,
-                        accessibilityLabelText: "Assistant Files",
-                        tint: AppTheme.filesAccent
-                    ) {
-                        openFilesAssistant(.global)
-                    }
+                ContextualAssistantButton {
+                    assistantContext = .global
+                    showAssistant = true
                 }
+                .accessibilityIdentifier(A11yID.Files.assistant)
             }
             .navigationTitle("Files")
             .accessibilityIdentifier(A11yID.Files.root)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -103,7 +92,8 @@ struct FilesBrowserView: View {
             }
             .onChange(of: nav.presentFilesAssistant) { _, present in
                 if present {
-                    openFilesAssistant(nav.filesAssistantContext)
+                    assistantContext = nav.filesAssistantContext
+                    showAssistant = true
                     nav.presentFilesAssistant = false
                 }
             }
@@ -114,7 +104,7 @@ struct FilesBrowserView: View {
                     nav.qaIntent = nil
                 case .filesDocuments:
                     if let root = roots.first(where: {
-                        ($0.label ?? "").localizedCaseInsensitiveContains("Documents")
+                        ($0.label ?? "").localizedCaseInsensitiveContains("document")
                             || ($0.absolutePath ?? "").localizedCaseInsensitiveContains("Documents")
                     }) ?? roots.first {
                         path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Documents"))
@@ -130,7 +120,8 @@ struct FilesBrowserView: View {
                     // Prefers search hit / first file once a folder is open — intent marks request.
                     nav.qaIntent = nil
                 case .filesAssistant:
-                    openFilesAssistant(.global)
+                    assistantContext = .global
+                    showAssistant = true
                     nav.qaIntent = nil
                 default:
                     break
@@ -141,12 +132,12 @@ struct FilesBrowserView: View {
             .navigationDestination(for: FilesDestination.self) { dest in
                 destinationView(dest)
             }
-            .sheet(item: $presentedAssistant) { item in
+            .sheet(isPresented: $showAssistant) {
                 ContextualAssistantSheet(
                     scope: .files,
-                    title: item.context.sheetTitle,
-                    contextLabel: item.context.label,
-                    contextRef: item.context.ref
+                    title: assistantContext.sheetTitle,
+                    contextLabel: assistantContext.label,
+                    contextRef: assistantContext.ref
                 )
                 .environmentObject(session)
                 .environment(nav)
@@ -186,7 +177,8 @@ struct FilesBrowserView: View {
                         )
                     },
                     onAskAssistant: {
-                        openFilesAssistant(.folder(rootId: root.id, path: folderPath, title: title))
+                        assistantContext = .folder(rootId: root.id, path: folderPath, title: title)
+                        showAssistant = true
                     }
                 )
             } else {
@@ -201,7 +193,8 @@ struct FilesBrowserView: View {
                 fileId: fileId,
                 title: title,
                 onAskAssistant: {
-                    openFilesAssistant(.file(fileId: fileId, name: title, rootId: rootId, path: folderPath))
+                    assistantContext = .file(fileId: fileId, name: title, rootId: rootId, path: folderPath)
+                    showAssistant = true
                 }
             )
         }
@@ -239,33 +232,27 @@ struct FilesBrowserView: View {
                                 )
                             )
                         } label: {
-                            HStack(spacing: AppTheme.space12) {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                                        .fill(AppTheme.filesAccent.opacity(0.16))
-                                    Image(systemName: rootIcon(for: root))
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .foregroundStyle(AppTheme.filesAccent)
-                                }
-                                .frame(width: 40, height: 40)
+                            HStack(spacing: 12) {
+                                Image(systemName: "externaldrive.fill")
+                                    .foregroundStyle(AppTheme.accent)
+                                    .frame(width: 28)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(root.label?.isEmpty == false ? root.label! : "Racine")
-                                        .font(CNFont.body.weight(.medium))
                                         .foregroundStyle(AppTheme.foreground)
                                     if let path = root.absolutePath {
                                         Text(path)
-                                            .font(CNFont.caption2)
-                                            .foregroundStyle(AppTheme.muted)
+                                            .font(.caption2)
+                                            .foregroundStyle(AppTheme.mutedForeground)
                                             .lineLimit(1)
                                     }
                                 }
-                                Spacer(minLength: 0)
+                                Spacer()
                                 Image(systemName: "chevron.right")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(AppTheme.mutedForeground)
                             }
-                            .padding(.horizontal, AppTheme.space16)
-                            .padding(.vertical, AppTheme.space14)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 14)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(A11yID.Files.folder)
@@ -325,17 +312,6 @@ struct FilesBrowserView: View {
                 .padding(.bottom, 72)
             }
         }
-    }
-
-    private func rootIcon(for root: FileRootDTO) -> String {
-        let label = ((root.label ?? "") + " " + (root.absolutePath ?? "")).lowercased()
-        if label.contains("download") { return "arrow.down.circle.fill" }
-        if label.contains("document") { return "doc.fill" }
-        if label.contains("desktop") || label.contains("bureau") { return "desktopcomputer" }
-        if label.contains("picture") || label.contains("image") || label.contains("photo") {
-            return "photo.fill"
-        }
-        return "externaldrive.fill"
     }
 
     private func loadRoots() async {
@@ -450,24 +426,19 @@ struct FileFolderView: View {
                     list
                 }
             }
-            ContextualAssistantButton(
-                accessibilityId: A11yID.Files.assistant,
-                accessibilityLabelText: "Assistant Files",
-                tint: AppTheme.filesAccent,
-                action: onAskAssistant
-            )
+            ContextualAssistantButton(action: onAskAssistant)
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
-                    Text(title).font(CNFont.headline)
+                    Text(title).font(.headline)
                     Text(breadcrumb)
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
                         .lineLimit(1)
-                        .accessibilityIdentifier(A11yID.Files.breadcrumb)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -543,10 +514,13 @@ struct FileFolderView: View {
                     if isFolder(entry) { onOpenFolder(entry) } else { onOpenFile(entry) }
                 } label: {
                     fileRow(entry)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+                .contentShape(Rectangle())
+                .listRowBackground(AppTheme.surface.opacity(0.35))
+                .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 .contextMenu {
                     if entry.fileId != nil {
                         Button {
@@ -585,22 +559,18 @@ struct FileFolderView: View {
                         VStack(spacing: 8) {
                             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
                                 .font(.system(size: 28))
-                                .foregroundStyle(isFolder(entry) ? AppTheme.filesAccent : AppTheme.muted)
+                                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
                                 .frame(height: 48)
                             Text(entry.name ?? entry.relativePath)
-                                .font(CNFont.caption2)
+                                .font(.caption2)
                                 .foregroundStyle(AppTheme.foreground)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
                         }
-                        .padding(AppTheme.space10)
+                        .padding(10)
                         .frame(maxWidth: .infinity)
-                        .background(AppTheme.surface.opacity(0.85))
+                        .background(AppTheme.surface)
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -616,27 +586,25 @@ struct FileFolderView: View {
     }
 
     private func fileRow(_ entry: FileEntryDTO) -> some View {
-        HStack(spacing: AppTheme.space12) {
+        HStack(spacing: 12) {
             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(isFolder(entry) ? AppTheme.filesAccent : AppTheme.muted)
-                .frame(width: 28)
+                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name ?? entry.relativePath)
-                    .font(CNFont.body)
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
                 if !isFolder(entry), let size = entry.sizeBytes {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
                 } else if isFolder(entry) {
                     Text("Dossier")
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
                 }
             }
-            Spacer(minLength: 0)
+            Spacer()
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.mutedForeground)
@@ -802,18 +770,18 @@ struct FilePreviewView: View {
                 } else if let text = content?.text {
                     ScrollView {
                         Text(text)
-                            .font(CNFont.mono)
+                            .font(.system(.footnote, design: .monospaced))
                             .foregroundStyle(AppTheme.foreground)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(AppTheme.space16)
+                            .padding(14)
                             .textSelection(.enabled)
                     }
                     .background(AppTheme.codeBg.opacity(0.55))
                     if content?.truncated == true {
                         Text("Aperçu tronqué")
-                            .font(CNFont.caption2)
+                            .font(.caption2)
                             .foregroundStyle(AppTheme.muted)
-                            .padding(.bottom, AppTheme.space8)
+                            .padding(.bottom, 8)
                     }
                 } else if let pdfURL {
                     QuickLookPreview(url: pdfURL)
@@ -833,17 +801,12 @@ struct FilePreviewView: View {
                 }
             }
             if let onAskAssistant {
-                ContextualAssistantButton(
-                    accessibilityId: A11yID.Files.assistant,
-                    accessibilityLabelText: "Assistant Files",
-                    tint: AppTheme.filesAccent,
-                    action: onAskAssistant
-                )
+                ContextualAssistantButton(action: onAskAssistant)
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier(A11yID.Files.preview)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if let onAskAssistant {
@@ -854,7 +817,7 @@ struct FilePreviewView: View {
                         Image(systemName: "sparkles")
                     }
                     .accessibilityLabel("Assistant Files")
-                    .accessibilityIdentifier("files.toolbar.assistant")
+                    .accessibilityIdentifier(A11yID.Files.assistant)
                 }
                 if let shareURL {
                     ShareLink(item: shareURL) {

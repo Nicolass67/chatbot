@@ -165,15 +165,8 @@ final class APIClient: @unchecked Sendable {
         if UITestMode.isActive {
             switch scope {
             case .mail:
-                // ID stable par contextKey → réouverture assistant = même conversation.
-                let key = contextKey ?? "global"
-                let freeKey = UITestFixtures.mailScopedConversation.contextKey ?? ""
-                let stableId = key == freeKey
-                    || key.contains("uitest-thread-free")
-                    ? UITestFixtures.mailScopedConversation.id
-                    : "uitest-conv-mail-\(abs(key.hashValue) % 100_000)"
                 return ConversationDTO(
-                    id: stableId,
+                    id: "uitest-conv-mail-\(UUID().uuidString.prefix(8))",
                     title: title ?? "Assistant Mail",
                     updatedAt: "2099-01-01T12:00:00Z",
                     chatMode: "chat",
@@ -183,15 +176,8 @@ final class APIClient: @unchecked Sendable {
                     contextLabel: contextLabel
                 )
             case .files:
-                let key = contextKey ?? "global"
-                let notesKey = UITestFixtures.filesScopedConversation.contextKey ?? ""
-                let stableId = key == notesKey
-                    || key.contains("notes")
-                    || key.contains("uitest-file")
-                    ? UITestFixtures.filesScopedConversation.id
-                    : "uitest-conv-files-\(abs(key.hashValue) % 100_000)"
                 return ConversationDTO(
-                    id: stableId,
+                    id: "uitest-conv-files-\(UUID().uuidString.prefix(8))",
                     title: title ?? "Assistant Files",
                     updatedAt: "2099-01-01T12:00:00Z",
                     chatMode: "chat",
@@ -377,6 +363,44 @@ final class APIClient: @unchecked Sendable {
         req.httpBody = try JSONSerialization.data(withJSONObject: ["modelKey": modelKey])
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
+    }
+
+    struct RuntimeSnapshotDTO {
+        let status: String
+        let phase: String?
+        let loadedModel: String?
+        let targetModel: String?
+        let preferredModel: String?
+        let message: String?
+        let progress: Double?
+    }
+
+    func runtimeSnapshot() async throws -> RuntimeSnapshotDTO {
+        if UITestMode.isActive {
+            return RuntimeSnapshotDTO(
+                status: "READY",
+                phase: "ready",
+                loadedModel: "test-model",
+                targetModel: nil,
+                preferredModel: "test-model",
+                message: nil,
+                progress: nil
+            )
+        }
+        let req = authorizedRequest(path: "api/runtime/status")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        let obj = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let model = obj["model"] as? [String: Any]
+        return RuntimeSnapshotDTO(
+            status: (obj["status"] as? String) ?? "UNKNOWN",
+            phase: model?["phase"] as? String,
+            loadedModel: (model?["loadedModel"] as? String) ?? (obj["modelLoaded"] as? String),
+            targetModel: model?["targetModel"] as? String,
+            preferredModel: model?["preferredModel"] as? String,
+            message: (model?["message"] as? String) ?? (obj["message"] as? String) ?? (model?["error"] as? String),
+            progress: model?["progress"] as? Double
+        )
     }
 
     func reasoningCapabilities(modelId: String) async throws -> ReasoningCapabilitiesDTO {
@@ -577,12 +601,6 @@ final class APIClient: @unchecked Sendable {
     }
 
     func proposeEmailSend(draftId: String) async throws -> EmailSendProposal {
-        if UITestMode.isActive {
-            return EmailSendProposal(
-                actionId: "uitest-send-action",
-                confirmationToken: "uitest-confirm-token"
-            )
-        }
         var req = authorizedRequest(path: "api/email/actions/send", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["draftId": draftId])
@@ -603,7 +621,6 @@ final class APIClient: @unchecked Sendable {
         confirmationToken: String,
         conversationId: String
     ) async throws {
-        if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/email/actions/\(actionId)/confirm", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -635,9 +652,6 @@ final class APIClient: @unchecked Sendable {
     }
 
     func proposeMailTrash(messageId: String) async throws -> MailTrashProposal {
-        if UITestMode.isActive {
-            return MailTrashProposal(actionId: "uitest-trash-action", confirmationToken: "uitest-trash-token")
-        }
         var req = authorizedRequest(path: "api/mail/actions/trash", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["messageId": messageId])
@@ -651,7 +665,6 @@ final class APIClient: @unchecked Sendable {
     }
 
     func confirmMailTrash(actionId: String, confirmationToken: String) async throws {
-        if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/mail/actions/\(actionId)/confirm", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["confirmationToken": confirmationToken])

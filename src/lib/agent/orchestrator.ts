@@ -572,10 +572,25 @@ export async function runChatOrchestrator(
     });
 
     const emailIntent = route.email.intent;
+    const isMailScopedConversation = convRow?.scope === "mail";
+    const hasActiveMail = Boolean(resolvedActive.mail);
+    const mailAssistantActive = isMailScopedConversation || hasActiveMail;
+
+    const mailToolCandidates = mailAssistantActive
+      ? [
+          "email_get_thread",
+          "email_create_draft",
+          "email_list",
+          "email_search",
+          "email_analyze",
+        ]
+      : [];
+
     const shouldHandoffToMail =
       emailEnabled &&
       emailPolicyContext.emailConnected &&
-      emailIntent !== "none";
+      emailIntent !== "none" &&
+      !mailAssistantActive;
 
     if (shouldHandoffToMail && chatMode === "chat") {
       const handoff = buildMailHandoffUrl({
@@ -729,8 +744,11 @@ export async function runChatOrchestrator(
         flushInitialMemorySaves,
         userId,
         toolCtxBase,
-        emailEnabled: false,
-        emailToolCandidates: [],
+        emailEnabled:
+          emailEnabled &&
+          emailPolicyContext.emailConnected &&
+          mailAssistantActive,
+        emailToolCandidates: mailToolCandidates,
         filesEnabled:
           filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots),
         fileToolCandidates: route.files.suggestedTools,
@@ -754,8 +772,11 @@ export async function runChatOrchestrator(
       memoryIntent: analysis.memory,
       flushInitialMemorySaves,
       toolCtxBase,
-      emailEnabled: false,
-      emailToolCandidates: [],
+      emailEnabled:
+        emailEnabled &&
+        emailPolicyContext.emailConnected &&
+        mailAssistantActive,
+      emailToolCandidates: mailToolCandidates,
       filesEnabled:
         filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots),
       fileToolCandidates: route.tools.candidates.filter((c) =>
@@ -1019,6 +1040,74 @@ async function runChatMode(params: {
                   },
                   notice: pending.notice,
                 });
+              }
+            } else if (tc.name === "file_search" || tc.name === "file_list") {
+              const payload = result as {
+                results?: Array<Record<string, unknown>>;
+                entries?: Array<Record<string, unknown>>;
+              };
+              const raw = payload.results ?? payload.entries ?? [];
+              const files = raw
+                .map((r) => ({
+                  fileId: String(r.fileId ?? ""),
+                  filename: String(r.filename ?? r.name ?? "fichier"),
+                  relativePath:
+                    typeof r.relativePath === "string"
+                      ? r.relativePath
+                      : undefined,
+                  rootId: typeof r.rootId === "string" ? r.rootId : undefined,
+                  sizeBytes:
+                    typeof r.sizeBytes === "number" ? r.sizeBytes : undefined,
+                  mtimeMs:
+                    typeof r.mtimeMs === "number" ? r.mtimeMs : undefined,
+                  extension:
+                    typeof r.extension === "string" ? r.extension : undefined,
+                }))
+                .filter((f) => f.fileId.length > 0)
+                .slice(0, 8);
+              toolSummary =
+                files.length > 0
+                  ? `${files.length} fichier(s) trouvé(s)`
+                  : tc.name === "file_search"
+                    ? "Aucun fichier trouvé"
+                    : tc.name;
+              input.onEvent({
+                type: "tool_done",
+                tool: tc.name,
+                summary: toolSummary,
+                sourceCount: files.length,
+              });
+              if (files.length > 0) {
+                input.onEvent({ type: "files_found", files });
+              }
+            } else if (tc.name.startsWith("email_")) {
+              toolSummary = tc.name;
+              input.onEvent({
+                type: "tool_done",
+                tool: tc.name,
+                summary: toolSummary,
+              });
+              if (
+                tc.name === "email_create_draft" &&
+                result &&
+                typeof result === "object" &&
+                "draftId" in result
+              ) {
+                const draftId = (result as { draftId?: string }).draftId;
+                if (draftId) {
+                  const { getEmailDraftForUser, toEmailDraftPreview } =
+                    await import("@/lib/email/draft");
+                  const draft = await getEmailDraftForUser(
+                    draftId,
+                    toolCtxBase.userId ?? "local"
+                  );
+                  if (draft) {
+                    input.onEvent({
+                      type: "draft_preview",
+                      draft: await toEmailDraftPreview(draft),
+                    });
+                  }
+                }
               }
             } else {
               input.onEvent({

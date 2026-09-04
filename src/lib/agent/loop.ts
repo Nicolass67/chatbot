@@ -252,6 +252,9 @@ async function runMandatoryRouteWebSearch(
       onFileActionPending: (payload) => {
         onEvent({ type: "file_action_pending", ...payload });
       },
+      onFilesFound: (files) => {
+        onEvent({ type: "files_found", files });
+      },
       onSources: (sources) => {
         collectedSources.push(...sources);
         onEvent({ type: "sources", sources });
@@ -514,7 +517,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         freshnessState.blockReason ??
         "Impossible de vérifier les informations actuelles.";
     } else if (freshnessState.requiresFreshWebData && webIntent.allowed) {
-      const webAvailability = await evaluateWebSearchAvailability();
+      const webAvailability = await evaluateWebSearchAvailability({
+        // Hot path agent : fail-fast — ne pas bloquer jusqu'à 45s sur SearXNG starting
+        waitIfStartingMs: 2_000,
+      });
       if (!webAvailability.available) {
         webStopReason =
           webAvailability.reason ??
@@ -835,6 +841,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             },
             onFileActionPending: (payload) => {
               input.onEvent({ type: "file_action_pending", ...payload });
+            },
+            onFilesFound: (files) => {
+              input.onEvent({ type: "files_found", files });
             },
             onSources: (sources) => {
               collectedSources.push(...sources);

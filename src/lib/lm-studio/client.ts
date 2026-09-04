@@ -352,11 +352,14 @@ function mapModelPhaseToRuntimeStatus(
     case "error":
       return "ERROR";
     case "idle":
-      return model.preferredModel ? "LOADING_MODEL" : "READY";
+      // idle sans instance chargée ≠ prêt — ne jamais afficher READY à tort
+      if (model.loadedModel) return "READY";
+      if (model.preferredModel || model.targetModel) return "LOADING_MODEL";
+      return "OFFLINE";
     case "ready":
-      return "READY";
+      return model.loadedModel ? "READY" : "OFFLINE";
     default:
-      return "READY";
+      return model.loadedModel ? "READY" : "OFFLINE";
   }
 }
 

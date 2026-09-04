@@ -20,11 +20,29 @@ export async function POST(req: Request) {
     const mgr = getModelManager();
     mgr.setPreferredModel(modelKey, settings.contextLength);
 
+    // Démarre le switch async ; la réponse 202 ne doit jamais prétendre "ready"
+    // pour un modèle pas encore confirmé chargé.
     void mgr.scheduleSwitch(modelKey, settings.contextLength).catch(() => undefined);
+
+    const snapshot = serializeModelRuntimeState(mgr.getState());
+    const alreadyReady =
+      snapshot.phase === "ready" && snapshot.loadedModel === modelKey;
 
     return Response.json(
       {
-        ...serializeModelRuntimeState(mgr.getState()),
+        ...(alreadyReady
+          ? snapshot
+          : {
+              ...snapshot,
+              phase: "loading" as const,
+              targetModel: modelKey,
+              preferredModel: modelKey,
+              message:
+                snapshot.message ??
+                `Chargement de ${modelKey.split("/").pop() ?? modelKey}…`,
+              error: undefined,
+              progress: undefined,
+            }),
         accepted: true,
       },
       { status: 202 }

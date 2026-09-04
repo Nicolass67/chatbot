@@ -108,44 +108,36 @@ enum MailAssistantContext: Equatable {
     }
 }
 
-/// Bouton signature Assistant contextuel (FAB) — chrome glass, accent de scope.
+/// Bouton signature Assistant contextuel (FAB).
 struct ContextualAssistantButton: View {
-    var accessibilityId: String = A11yID.Assistant.open
-    var accessibilityLabelText: String = "Ouvrir l’assistant"
-    var tint: Color = AppTheme.accent
     var action: () -> Void
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(false)
-            .overlay(alignment: .bottomTrailing) {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
                 Button {
                     AppHaptics.light()
                     action()
                 } label: {
                     Image(systemName: "sparkles")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(tint)
-                        .frame(width: 54, height: 54)
-                        .background {
-                            if reduceTransparency {
-                                Circle().fill(AppTheme.surfaceElevated)
-                            } else {
-                                Circle().fill(.ultraThinMaterial)
-                            }
-                        }
-                        .overlay(Circle().stroke(tint.opacity(0.45), lineWidth: 1.25))
-                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                        .foregroundStyle(AppTheme.accentForeground)
+                        .frame(width: 52, height: 52)
+                        .background(AppTheme.accent)
+                        .clipShape(Circle())
+                        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(accessibilityLabelText)
-                .accessibilityIdentifier(accessibilityId)
-                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("Ouvrir l’assistant")
+                .accessibilityIdentifier(A11yID.Assistant.open)
                 .padding(.trailing, 18)
                 .padding(.bottom, 18)
-                .allowsHitTesting(true)
             }
+        }
     }
 }

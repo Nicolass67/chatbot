@@ -12,6 +12,7 @@ import { MailHandoffCard } from "@/components/mail/MailHandoffCard";
 import type { MailHandoffInfo } from "@/components/mail/MailHandoffCard";
 import { FilesHandoffCard } from "@/components/files/FilesHandoffCard";
 import type { FilesHandoffInfo } from "@/components/files/FilesHandoffCard";
+import { FilesFoundCard } from "@/components/files/FilesFoundCard";
 import {
   FilesMutationConfirmation,
   type FilesMutationPending,
@@ -51,6 +52,7 @@ export interface ChatMessageItem {
   savedMemories?: SavedMemoryItem[];
   mailHandoff?: MailHandoffInfo;
   filesHandoff?: FilesHandoffInfo;
+  filesFound?: import("@/components/files/FilesFoundCard").FilesFoundItem[];
   filesMutationPending?: FilesMutationPending;
 }
 
@@ -247,6 +249,9 @@ export function MessageBubble({
         )}
         {message.filesHandoff && (
           <FilesHandoffCard handoff={message.filesHandoff} />
+        )}
+        {message.filesFound && message.filesFound.length > 0 && (
+          <FilesFoundCard files={message.filesFound} />
         )}
         {message.filesMutationPending && (
           <FilesMutationConfirmation
