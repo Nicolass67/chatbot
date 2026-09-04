@@ -531,8 +531,14 @@ struct MailThreadView: View {
                     MailDraftProposal(
                         draftText: replyDraftBinding,
                         draftId: replyDraftId,
-                        toLabel: summary.from?.email.map { "À : \($0)" } ?? "",
-                        subjectLabel: summary.subject.map { "Objet : Re: \($0)" } ?? "",
+                        toLabel: {
+                            if let email = summary.from?.email { return "À : \(email)" }
+                            return ""
+                        }(),
+                        subjectLabel: {
+                            if let subject = summary.subject { return "Objet : Re: \(subject)" }
+                            return ""
+                        }(),
                         statusLabel: draftStreaming ? "Rédaction…" : "Brouillon",
                         isEditing: editingDraft,
                         busy: aiBusy,
