@@ -458,8 +458,12 @@ struct ChatScreen: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(
-                    DragGesture(minimumDistance: 8).onChanged { _ in
+                    DragGesture(minimumDistance: 10).onChanged { value in
                         Keyboard.dismiss()
+                        // Remonter dans l’historique pendant le stream → coupe l’auto-scroll.
+                        if value.translation.height > 14, !showScrollDown {
+                            showScrollDown = true
+                        }
                     }
                 )
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -469,68 +473,75 @@ struct ChatScreen: View {
                     let bottomInset = geometry.contentInsets.bottom
                     return max(0, contentH + bottomInset - visibleH - offsetY)
                 } action: { _, distanceToBottom in
-                    // Pendant auto-scroll (stream / envoi / bouton), ne pas basculer la pastille.
-                    if Date() < suppressScrollDownUntil { return }
-                    if isSending && !showScrollDown && distanceToBottom < scrollBottomProximityThreshold * 2 {
-                        // Suivi du stream : rester collé bas sans flicker.
+                    let farFromBottom = distanceToBottom > scrollBottomProximityThreshold
+                    let nearBottom = distanceToBottom <= scrollBottomHideThreshold
+
+                    // Même pendant un scroll programmé : si l’utilisateur a quitté le bas, on le laisse.
+                    if farFromBottom {
+                        if !showScrollDown {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                showScrollDown = true
+                            }
+                        }
                         return
                     }
-                    let shouldShow: Bool
-                    if showScrollDown {
-                        shouldShow = distanceToBottom > scrollBottomHideThreshold
-                    } else {
-                        shouldShow = distanceToBottom > scrollBottomProximityThreshold
-                    }
-                    if showScrollDown != shouldShow {
+
+                    if Date() < suppressScrollDownUntil { return }
+
+                    // Redescente en bas → réactive le suivi auto du stream.
+                    if nearBottom, showScrollDown {
                         withAnimation(.easeInOut(duration: 0.18)) {
-                            showScrollDown = shouldShow
+                            showScrollDown = false
                         }
                     }
                 }
                 .onChange(of: streamingText) { _, text in
                     guard !showScrollDown, !text.isEmpty else { return }
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
-                    withAnimation(.easeOut(duration: 0.28)) {
+                    // Suppress court : laisse le prochain geste reprendre la main.
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.12)
+                    withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: messages.count) { _, _ in
                     guard !showScrollDown else { return }
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
-                    withAnimation(.easeOut(duration: 0.32)) {
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.2)
+                    withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: scrollToken) { _, _ in
                     showScrollDown = false
-                    suppressScrollDownUntil = Date().addingTimeInterval(0.6)
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.35)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: isSending) { _, sending in
-                    if sending {
-                        withAnimation(.easeOut(duration: 0.32)) {
-                            proxy.scrollTo(
-                                shouldShowLiveAgentStrip ? "agent-live" : "working-indicator",
-                                anchor: .bottom
-                            )
-                        }
+                    guard sending, !showScrollDown else { return }
+                    suppressScrollDownUntil = Date().addingTimeInterval(0.2)
+                    withAnimation(.easeOut(duration: 0.28)) {
+                        proxy.scrollTo(
+                            shouldShowLiveAgentStrip ? "agent-live" : "working-indicator",
+                            anchor: .bottom
+                        )
                     }
                 }
                 .onChange(of: thinkingKind) { _, kind in
+                    guard !showScrollDown else { return }
                     guard isSending, kind != nil, streamingText.isEmpty, !shouldShowLiveAgentStrip else { return }
                     withAnimation(.easeOut(duration: 0.28)) {
                         proxy.scrollTo("working-indicator", anchor: .bottom)
                     }
                 }
                 .onChange(of: agentActivity.planSteps) { _, _ in
-                    guard shouldShowLiveAgentStrip else { return }
+                    guard !showScrollDown, shouldShowLiveAgentStrip else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo("agent-live", anchor: .bottom)
                     }
                 }
                 .onChange(of: draftCardText) { _, _ in
+                    guard !showScrollDown else { return }
                     guard draftInConversation || draftCardStreaming else { return }
                     proxy.scrollTo("conversation-draft", anchor: .bottom)
                 }
