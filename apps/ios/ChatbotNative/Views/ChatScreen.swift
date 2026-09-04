@@ -320,7 +320,7 @@ struct ChatScreen: View {
                                 },
                                 onOpenFoundFile: { file in
                                     openFoundFilePreview(file)
-                                }
+                                },
                                 onDownloadFoundFile: { file in
                                     Task { await downloadFoundFile(file) }
                                 },
@@ -367,7 +367,7 @@ struct ChatScreen: View {
                                 },
                                 onOpenFoundFile: { file in
                                     openFoundFilePreview(file)
-                                }
+                                },
                                 onDownloadFoundFile: { file in
                                     Task { await downloadFoundFile(file) }
                                 },
@@ -394,7 +394,7 @@ struct ChatScreen: View {
                                 onOpenImage: { _ in },
                                 onOpenFoundFile: { file in
                                     openFoundFilePreview(file)
-                                }
+                                },
                                 onDownloadFoundFile: { file in
                                     Task { await downloadFoundFile(file) }
                                 },
