@@ -476,6 +476,7 @@ struct MailDraftProposal: View {
     var isEditing: Bool
     var busy: Bool
     var isStreaming: Bool = false
+    var isSent: Bool = false
     var candidates: [String] = []
     var onSelectCandidate: ((String) -> Void)? = nil
     var onEditToggle: () -> Void
@@ -485,22 +486,27 @@ struct MailDraftProposal: View {
     var onDiscard: (() -> Void)? = nil
 
     private var sendDisabled: Bool {
-        busy || isStreaming
+        isSent || busy || isStreaming
             || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || draftId == nil
+    }
+
+    private var statusTint: Color {
+        isSent ? AppTheme.success : AppTheme.mailAccent
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
             HStack(spacing: AppTheme.space8) {
-                Text(statusLabel)
+                Label(statusLabel, systemImage: isSent ? "checkmark.circle.fill" : "envelope")
                     .font(CNFont.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.mailAccent)
+                    .foregroundStyle(statusTint)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(AppTheme.mailAccent.opacity(0.14), in: Capsule())
+                    .background(statusTint.opacity(0.14), in: Capsule())
+                    .labelStyle(.titleAndIcon)
                 Spacer(minLength: 0)
-                if let onDiscard {
+                if let onDiscard, !isSent {
                     Button {
                         AppHaptics.warning()
                         onDiscard()
@@ -518,7 +524,7 @@ struct MailDraftProposal: View {
                 if busy || isStreaming {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(AppTheme.mailAccent)
+                        .tint(statusTint)
                 }
             }
 
@@ -537,7 +543,7 @@ struct MailDraftProposal: View {
                 }
             }
 
-            if !candidates.isEmpty {
+            if !candidates.isEmpty && !isSent {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Plusieurs destinataires possibles")
                         .font(CNFont.caption2.weight(.semibold))
@@ -555,7 +561,7 @@ struct MailDraftProposal: View {
                 }
             }
 
-            if isEditing {
+            if isEditing && !isSent {
                 TextEditor(text: $draftText)
                     .frame(minHeight: 160)
                     .padding(AppTheme.space12)
@@ -576,68 +582,85 @@ struct MailDraftProposal: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(AppTheme.space12)
-                    .background(AppTheme.surface.opacity(0.45))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-            }
-
-            // Actions secondaires — capsules Liquid Glass (iOS 26).
-            HStack(spacing: AppTheme.space8) {
-                draftGlassChip(
-                    title: isEditing ? "OK" : "Modifier",
-                    systemImage: isEditing ? "checkmark" : "pencil",
-                    disabled: isStreaming,
-                    action: onEditToggle
-                )
-                .accessibilityIdentifier(A11yID.Mail.draftEdit)
-
-                if let onAttach {
-                    draftGlassChip(
-                        title: "Joindre",
-                        systemImage: "paperclip",
-                        disabled: busy || isStreaming,
-                        action: onAttach
+                    .background(
+                        (isSent ? AppTheme.success.opacity(0.08) : AppTheme.surface.opacity(0.45))
                     )
-                }
-
-                draftGlassChip(
-                    title: "Réécrire",
-                    systemImage: "arrow.triangle.2.circlepath",
-                    disabled: busy || isStreaming,
-                    action: onRetry
-                )
-                .accessibilityIdentifier(A11yID.Mail.draftRetry)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                            .stroke(isSent ? AppTheme.success.opacity(0.35) : Color.clear, lineWidth: 1)
+                    )
             }
 
-            Button {
-                AppHaptics.medium()
-                onSend()
-            } label: {
+            if isSent {
                 HStack(spacing: 8) {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("Envoyer")
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(AppTheme.success)
+                    Text("Message envoyé")
                         .font(CNFont.callout.weight(.semibold))
+                        .foregroundStyle(AppTheme.success)
+                    Spacer(minLength: 0)
                 }
-                .foregroundStyle(sendDisabled ? AppTheme.muted : AppTheme.accentForeground)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 48)
-                .background {
-                    let shape = Capsule(style: .continuous)
-                    if reduceTransparency || sendDisabled {
-                        shape.fill(AppTheme.mailAccent.opacity(sendDisabled ? 0.32 : 0.92))
-                    } else {
-                        Color.clear
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .glassEffect(
-                                .regular.tint(AppTheme.mailAccent.opacity(0.65)),
-                                in: shape
-                            )
+                .padding(.top, 2)
+            } else {
+                HStack(spacing: AppTheme.space8) {
+                    draftGlassChip(
+                        title: isEditing ? "OK" : "Modifier",
+                        systemImage: isEditing ? "checkmark" : "pencil",
+                        disabled: isStreaming,
+                        action: onEditToggle
+                    )
+                    .accessibilityIdentifier(A11yID.Mail.draftEdit)
+
+                    if let onAttach {
+                        draftGlassChip(
+                            title: "Joindre",
+                            systemImage: "paperclip",
+                            disabled: busy || isStreaming,
+                            action: onAttach
+                        )
+                    }
+
+                    draftGlassChip(
+                        title: "Réécrire",
+                        systemImage: "arrow.triangle.2.circlepath",
+                        disabled: busy || isStreaming,
+                        action: onRetry
+                    )
+                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
+                }
+
+                Button {
+                    AppHaptics.medium()
+                    onSend()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Envoyer")
+                            .font(CNFont.callout.weight(.semibold))
+                    }
+                    .foregroundStyle(sendDisabled ? AppTheme.muted : AppTheme.accentForeground)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 48)
+                    .background {
+                        let shape = Capsule(style: .continuous)
+                        if reduceTransparency || sendDisabled {
+                            shape.fill(AppTheme.mailAccent.opacity(sendDisabled ? 0.32 : 0.92))
+                        } else {
+                            Color.clear
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .glassEffect(
+                                    .regular.tint(AppTheme.mailAccent.opacity(0.65)),
+                                    in: shape
+                                )
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .disabled(sendDisabled)
+                .accessibilityIdentifier(A11yID.Mail.send)
             }
-            .buttonStyle(.plain)
-            .disabled(sendDisabled)
-            .accessibilityIdentifier(A11yID.Mail.send)
         }
         .padding(AppTheme.space14)
         .background {
@@ -647,14 +670,19 @@ struct MailDraftProposal: View {
             } else {
                 Color.clear
                     .glassEffect(
-                        .regular.tint(AppTheme.mailAccent.opacity(0.06)),
+                        .regular.tint(
+                            (isSent ? AppTheme.success : AppTheme.mailAccent).opacity(0.06)
+                        ),
                         in: shape
                     )
             }
         }
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous)
-                .stroke(AppTheme.glassBorder, lineWidth: 1)
+                .stroke(
+                    isSent ? AppTheme.success.opacity(0.28) : AppTheme.glassBorder,
+                    lineWidth: 1
+                )
         )
         .accessibilityIdentifier(A11yID.Mail.draft)
     }

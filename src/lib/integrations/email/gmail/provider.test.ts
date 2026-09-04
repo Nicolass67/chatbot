@@ -6,6 +6,7 @@ const mockMessagesGet = vi.fn();
 const mockThreadsGet = vi.fn();
 const mockDraftsCreate = vi.fn();
 const mockDraftsSend = vi.fn();
+const mockDraftsDelete = vi.fn();
 const mockMessagesTrash = vi.fn();
 
 vi.mock("./client", () => ({
@@ -25,6 +26,7 @@ vi.mock("./client", () => ({
       drafts: {
         create: mockDraftsCreate,
         send: mockDraftsSend,
+        delete: mockDraftsDelete,
       },
     },
   }),
@@ -176,6 +178,15 @@ describe("GmailProvider", () => {
     expect(result).toEqual({
       messageId: "sent-msg",
       threadId: "thread-3",
+    });
+  });
+
+  it("deleteDraft appelle Gmail drafts.delete", async () => {
+    mockDraftsDelete.mockResolvedValue({ data: {} });
+    await provider.deleteDraft("draft-old");
+    expect(mockDraftsDelete).toHaveBeenCalledWith({
+      userId: "me",
+      id: "draft-old",
     });
   });
 

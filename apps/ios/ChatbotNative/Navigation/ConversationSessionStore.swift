@@ -36,6 +36,7 @@ enum ConversationSessionStore {
         let storage = scopedKey(scope: scope, contextKey: contextKey)
         if let id = UserDefaults.standard.string(forKey: storage) {
             chromeMemory.removeValue(forKey: id)
+            draftCardMemory.removeValue(forKey: id)
         }
         UserDefaults.standard.removeObject(forKey: storage)
     }
@@ -43,6 +44,7 @@ enum ConversationSessionStore {
     static func clear(conversationId: String, scope: ConversationScope, contextKey: String? = nil) {
         UserDefaults.standard.removeObject(forKey: scopedKey(scope: scope, contextKey: contextKey))
         chromeMemory.removeValue(forKey: conversationId)
+        draftCardMemory.removeValue(forKey: conversationId)
     }
 
     // MARK: - Chrome structuré (filesFound, drafts meta, handoffs) en mémoire process
@@ -100,5 +102,31 @@ enum ConversationSessionStore {
             chromeMemory[conversationId] = map
         }
         return map
+    }
+
+    // MARK: - Draft card snapshot (survit à la fermeture de l’assistant)
+
+    struct DraftCardSnapshot: Codable, Equatable {
+        var draftId: String?
+        var text: String
+        var to: String
+        var subject: String
+        var status: String
+        var sent: Bool
+        var inConversation: Bool
+    }
+
+    private static var draftCardMemory: [String: DraftCardSnapshot] = [:]
+
+    static func draftCard(conversationId: String) -> DraftCardSnapshot? {
+        draftCardMemory[conversationId]
+    }
+
+    static func saveDraftCard(conversationId: String, _ snap: DraftCardSnapshot) {
+        draftCardMemory[conversationId] = snap
+    }
+
+    static func clearDraftCard(conversationId: String) {
+        draftCardMemory.removeValue(forKey: conversationId)
     }
 }

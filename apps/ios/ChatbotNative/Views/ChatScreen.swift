@@ -59,6 +59,8 @@ struct ChatScreen: View {
     @State private var draftCardEditing = false
     @State private var draftCardBusy = false
     @State private var draftCardStreaming = false
+    @State private var draftCardSent = false
+    @State private var confirmSendDraft = false
     @State private var draftInConversation = false
     @State private var lastSources: [SearchSourceDTO] = []
     @State private var lastMailHandoff: MailHandoffDTO?
@@ -116,7 +118,7 @@ struct ChatScreen: View {
                     PersistentProductActionsBar(
                         scope: scope,
                         hasMailThread: forcedActiveContext?.mailThreadId != nil,
-                        hasDraft: draftCardId != nil,
+                        hasDraft: draftCardId != nil && !draftCardSent,
                         onAction: { action in
                             Task { await runQuickAction(action) }
                         }
@@ -203,11 +205,23 @@ struct ChatScreen: View {
                 }
             }
         }
+        .alert(
+            "Envoyer ce mail ?",
+            isPresented: $confirmSendDraft
+        ) {
+            Button("Annuler", role: .cancel) {}
+            Button("Confirmer") {
+                Task { await sendDraftCard() }
+            }
+        } message: {
+            Text("À \(draftCardTo.isEmpty ? "le destinataire" : draftCardTo)\nObjet : \(draftCardSubject.isEmpty ? "(sans objet)" : draftCardSubject)")
+        }
         .task {
             conversationTitle = conversation.title ?? ""
             chatMode = conversation.chatMode ?? "chat"
             reasoningEffort = conversation.reasoningEffort ?? ""
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
+            restoreDraftCardSnapshot()
             persistActiveConversation()
             if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id) {
                 messages = cached
@@ -447,7 +461,7 @@ struct ChatScreen: View {
                             InStreamWorkingIndicator(label: thinkingKind.label)
                                 .id("working-indicator")
                         }
-                        if draftInConversation || draftCardId != nil || draftCardStreaming {
+                        if draftInConversation || draftCardId != nil || draftCardStreaming || draftCardSent {
                             MailDraftProposal(
                                 draftText: $draftCardText,
                                 draftId: draftCardId,
@@ -457,6 +471,7 @@ struct ChatScreen: View {
                                 isEditing: draftCardEditing,
                                 busy: draftCardBusy,
                                 isStreaming: draftCardStreaming,
+                                isSent: draftCardSent,
                                 candidates: draftCardCandidates,
                                 onSelectCandidate: { email in
                                     draftCardTo = email
@@ -468,7 +483,7 @@ struct ChatScreen: View {
                                     Task { await rewriteOpenDraft() }
                                 },
                                 onSend: {
-                                    Task { await sendDraftCard() }
+                                    confirmSendDraft = true
                                 },
                                 onAttach: {
                                     showDocImporter = true
@@ -627,7 +642,7 @@ struct ChatScreen: View {
                 showDocImporter = true
                 return
             case .searchUnread:
-                await sendDraftCard()
+                confirmSendDraft = true
                 return
             default:
                 break
@@ -764,7 +779,9 @@ struct ChatScreen: View {
             }
             draftCardTo = result.to.joined(separator: ", ")
             draftCardSubject = result.subject ?? ""
+            draftCardSent = false
             draftInConversation = true
+            persistDraftCardSnapshot()
             AppHaptics.success()
             scrollToken += 1
         } catch {
@@ -932,7 +949,7 @@ struct ChatScreen: View {
     }
 
     private func sendDraftCard() async {
-        guard let draftId = draftCardId else { return }
+        guard let draftId = draftCardId, !draftCardSent else { return }
         draftCardBusy = true
         defer { draftCardBusy = false }
         do {
@@ -945,7 +962,17 @@ struct ChatScreen: View {
                 confirmationToken: proposal.confirmationToken,
                 conversationId: conversation.id
             )
-            discardDraftCard()
+            // Carte → reçu vert ; PJ composer retirées.
+            pendingAttachments = []
+            draftCardSent = true
+            draftCardStatus = "Envoyé"
+            draftCardEditing = false
+            draftCardStreaming = false
+            draftCardCandidates = []
+            draftInConversation = true
+            awaitingDraftRewrite = false
+            draftPreviewReceivedThisTurn = false
+            persistDraftCardSnapshot()
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -961,11 +988,46 @@ struct ChatScreen: View {
         draftCardCandidates = []
         draftCardEditing = false
         draftCardStreaming = false
+        draftCardSent = false
         draftInConversation = false
         awaitingDraftRewrite = false
         draftPreviewReceivedThisTurn = false
         draftCardStatus = "Brouillon"
+        ConversationSessionStore.clearDraftCard(conversationId: conversation.id)
         AppHaptics.light()
+    }
+
+    private func persistDraftCardSnapshot() {
+        guard draftInConversation || draftCardId != nil || draftCardSent || draftCardStreaming else {
+            ConversationSessionStore.clearDraftCard(conversationId: conversation.id)
+            return
+        }
+        ConversationSessionStore.saveDraftCard(
+            conversationId: conversation.id,
+            .init(
+                draftId: draftCardId,
+                text: draftCardText,
+                to: draftCardTo,
+                subject: draftCardSubject,
+                status: draftCardStatus,
+                sent: draftCardSent,
+                inConversation: true
+            )
+        )
+    }
+
+    private func restoreDraftCardSnapshot() {
+        guard let snap = ConversationSessionStore.draftCard(conversationId: conversation.id) else { return }
+        // Ne pas écraser un brouillon déjà hydraté dans cette session.
+        guard draftCardId == nil, !draftCardStreaming, !draftCardSent else { return }
+        draftCardId = snap.draftId
+        draftCardText = snap.text
+        draftCardTo = snap.to
+        draftCardSubject = snap.subject
+        draftCardStatus = snap.status
+        draftCardSent = snap.sent
+        draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
+        draftCardEditing = false
     }
 
     /// Après « Réécrire » : si l’outil a mis à jour la carte, OK ; sinon appliquer le texte streamé via PATCH.
@@ -2443,6 +2505,7 @@ struct ChatScreen: View {
                     draftCardTo = ((draft["to"] as? [String]) ?? []).joined(separator: ", ")
                     draftCardSubject = (draft["subject"] as? String) ?? ""
                     draftCardStatus = "Brouillon"
+                    draftCardSent = false
                     draftInConversation = true
                     draftCardStreaming = false
                     draftPreviewReceivedThisTurn = true
@@ -2450,6 +2513,7 @@ struct ChatScreen: View {
                     streamingText = ""
                     draftCardEditing = false
                     thinkingKind = nil
+                    persistDraftCardSnapshot()
                 }
             }
         case "conversation_title":

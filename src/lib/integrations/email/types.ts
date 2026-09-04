@@ -115,6 +115,8 @@ export interface EmailProvider {
   searchPage(params: SearchMessagesParams): Promise<MailMessagesPage>;
   createDraft(input: NormalizedDraftInput): Promise<NormalizedDraft>;
   sendDraft(providerDraftId: string): Promise<SendDraftResult>;
+  /** Supprime un brouillon provider (best-effort ; ignore NOT_FOUND). */
+  deleteDraft(providerDraftId: string): Promise<void>;
   trashMessage(messageId: string): Promise<void>;
   markMessageRead(messageId: string): Promise<void>;
   getAttachment(

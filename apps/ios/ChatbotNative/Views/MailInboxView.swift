@@ -1021,15 +1021,15 @@ struct MailThreadView: View {
         .onChange(of: nav.assistantDismissToken) { _, _ in
             showAssistant = false
         }
-        .alert(
-            "Envoyer cette réponse à \(summary.from?.email ?? "destinataire") ?",
-            isPresented: $confirmSend
-        ) {
-            Button("Annuler", role: .cancel) {}
-            Button("Envoyer") { Task { await sendDraft() } }
-        } message: {
-            Text("Une confirmation serveur sera demandée. L’envoi n’est jamais automatique.")
-        }
+            .alert(
+                "Envoyer cette réponse ?",
+                isPresented: $confirmSend
+            ) {
+                Button("Annuler", role: .cancel) {}
+                Button("Confirmer") { Task { await sendDraft() } }
+            } message: {
+                Text("À \(summary.from?.email ?? "destinataire")")
+            }
         .task { await load() }
     }
 

@@ -200,6 +200,27 @@ async function loadOutgoingAttachments(attachmentIdsJson: string) {
   });
 }
 
+/** Charge les PJ pour un createDraft Gmail (outil create-draft). */
+export async function loadOutgoingAttachmentsByIds(attachmentIds: string[]) {
+  return loadOutgoingAttachments(serializeAttachmentIds(attachmentIds));
+}
+
+async function deleteProviderDraftBestEffort(
+  userId: string,
+  providerDraftId: string | null | undefined
+): Promise<void> {
+  if (!providerDraftId) return;
+  try {
+    const provider = await getEmailProvider(userId);
+    await provider.deleteDraft(providerDraftId);
+  } catch (error) {
+    console.warn(
+      "[email/draft] deleteProviderDraft ignored:",
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
 async function syncGmailProviderDraft(
   draft: EmailDraft,
   userId: string
@@ -230,6 +251,14 @@ async function syncGmailProviderDraft(
     referencesHeader,
     attachments,
   });
+
+  // Remplace l’ancien brouillon Gmail (sinon il reste « Brouillon » dans le thread).
+  if (
+    draft.providerDraftId &&
+    draft.providerDraftId !== created.providerDraftId
+  ) {
+    await deleteProviderDraftBestEffort(userId, draft.providerDraftId);
+  }
 
   return created.providerDraftId;
 }
@@ -297,6 +326,11 @@ export async function updateEmailDraft(
 
   const now = new Date().toISOString();
   const db = getDb();
+
+  // Invalide le brouillon Gmail figé : il sera recréé au validate (avec PJ à jour).
+  if (existing.providerDraftId) {
+    await deleteProviderDraftBestEffort(userId, existing.providerDraftId);
+  }
 
   await db
     .update(emailDrafts)

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  loadOutgoingAttachmentsByIds,
   persistEmailDraft,
   toEmailDraftPreview,
 } from "@/lib/email/draft";
@@ -74,6 +75,22 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       referencesHeader = replyTarget.id;
     }
 
+    const attachmentIds = [
+      ...new Set(
+        [
+          ...(input.attachmentIds ?? []),
+          ...(ctx.pendingAttachmentIds ?? []),
+        ].filter(Boolean)
+      ),
+    ];
+
+    // PJ dans le raw Gmail dès la création — sinon validate recrée un 2e brouillon
+    // et l’ancien reste visible (« Brouillon » + mail envoyé).
+    const outgoingAttachments =
+      attachmentIds.length > 0
+        ? await loadOutgoingAttachmentsByIds(attachmentIds)
+        : [];
+
     const draft = await provider.createDraft({
       to,
       cc,
@@ -84,16 +101,8 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       inReplyToMessageId: input.inReplyToMessageId,
       inReplyToHeader,
       referencesHeader,
+      attachments: outgoingAttachments,
     });
-
-    const attachmentIds = [
-      ...new Set(
-        [
-          ...(input.attachmentIds ?? []),
-          ...(ctx.pendingAttachmentIds ?? []),
-        ].filter(Boolean)
-      ),
-    ];
 
     const stored = await persistEmailDraft({
       userId,

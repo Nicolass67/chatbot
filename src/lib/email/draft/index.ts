@@ -19,6 +19,7 @@ export {
 export {
   cancelEmailDraft,
   getEmailDraftForUser,
+  loadOutgoingAttachmentsByIds,
   markEmailDraftSent,
   persistEmailDraft,
   requireEmailDraftForUser,

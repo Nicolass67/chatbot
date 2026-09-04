@@ -291,6 +291,23 @@ export class GmailProvider implements EmailProvider {
     }
   }
 
+  async deleteDraft(providerDraftId: string): Promise<void> {
+    try {
+      await this.client.users.drafts.delete({
+        userId: "me",
+        id: providerDraftId,
+      });
+    } catch (error) {
+      // Déjà parti / sync Gmail : ne pas faire échouer update/validate.
+      if (isGmailNotFoundError(error)) return;
+      if (error instanceof EmailProviderError) throw error;
+      throw new EmailProviderError(
+        "PROVIDER_ERROR",
+        error instanceof Error ? error.message : "Erreur Gmail deleteDraft."
+      );
+    }
+  }
+
   async trashMessage(messageId: string): Promise<void> {
     try {
       await this.client.users.messages.trash({
@@ -364,4 +381,12 @@ function isGmailQuotaError(error: unknown): boolean {
       ? `${error.message} ${(error as { code?: string }).code ?? ""}`
       : String(error);
   return /quota|rate.?limit|user.?rate|queries per|units per minute/i.test(msg);
+}
+
+function isGmailNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: number | string; status?: number; message?: string };
+  if (err.code === 404 || err.status === 404 || err.code === "404") return true;
+  const msg = err.message ?? (error instanceof Error ? error.message : String(error));
+  return /not\s*found|404/i.test(msg);
 }
