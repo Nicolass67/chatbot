@@ -73,17 +73,25 @@ struct MailInboxView: View {
         if sort == .newest {
             let start = max(1, (pageTokenStack.count - 1) * pageSize + 1)
             let end = start + count - 1
-            if let estimate = resultSizeEstimate, estimate > 0 {
+            let estimate = resultSizeEstimate ?? 0
+            // Gmail `resultSizeEstimate` est approximatif et souvent trop bas :
+            // ne jamais afficher « 251–275 sur ~201 ».
+            if nextPageToken != nil {
+                if estimate > end {
+                    return "\(start)–\(end) sur ~\(estimate)"
+                }
+                return "\(start)–\(end)+"
+            }
+            if estimate > end {
                 return "\(start)–\(end) sur ~\(estimate)"
             }
-            let more = nextPageToken != nil ? "+" : ""
-            return "\(start)–\(end)\(more)"
+            return "\(start)–\(end)"
         }
         let start = localPageIndex * pageSize + 1
         let end = start + count - 1
         let total = sortedWindow.count
-        if let estimate = resultSizeEstimate, estimate > total {
-            return "\(start)–\(end) sur \(total) (~\(estimate))"
+        if let estimate = resultSizeEstimate, estimate > total, !windowExhausted {
+            return "\(start)–\(end) sur \(total)+"
         }
         return "\(start)–\(end) sur \(total)"
     }
@@ -562,7 +570,15 @@ struct MailInboxView: View {
                 messages = sortedMessages(filtered, by: activeSort)
                 nextPageToken = page.nextPageToken
                 let est = page.resultSizeEstimate ?? 0
-                resultSizeEstimate = est > 0 ? est : nil
+                let pageEnd = max(1, (pageTokenStack.count - 1) * pageSize) + max(filtered.count, 1) - 1
+                // Garde un plancher cohérent avec la page affichée (estimate Gmail flaky).
+                if est > 0 {
+                    resultSizeEstimate = max(est, pageEnd, resultSizeEstimate ?? 0)
+                } else if let prev = resultSizeEstimate {
+                    resultSizeEstimate = max(prev, pageEnd)
+                } else {
+                    resultSizeEstimate = nil
+                }
                 sortedWindow = []
                 error = nil
             } else {
