@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Hub Réglages / Mémoire / À propos (ex-tab « Plus » — désormais sheet).
 struct SettingsHubView: View {
+    @EnvironmentObject private var appearance: AppearanceStore
     @Environment(AppNavigation.self) private var nav
     @EnvironmentObject private var appearance: AppearanceStore
     @State private var path = NavigationPath()
