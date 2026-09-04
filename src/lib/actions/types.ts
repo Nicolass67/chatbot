@@ -5,7 +5,8 @@ export type ActionType =
   | "trash_email"
   | "create_directory"
   | "rename_file"
-  | "move_file";
+  | "move_file"
+  | "delete_file";
 
 export type ActionStatus =
   | "proposed"

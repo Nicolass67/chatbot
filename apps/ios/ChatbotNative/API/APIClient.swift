@@ -911,6 +911,13 @@ final class APIClient: @unchecked Sendable {
         ])
     }
 
+    func proposeDeleteFile(sourceFileId: String) async throws -> FilesProposeResult {
+        try await proposeFilesMutation([
+            "op": "delete_file",
+            "sourceFileId": sourceFileId,
+        ])
+    }
+
     private func proposeFilesMutation(_ body: [String: Any]) async throws -> FilesProposeResult {
         var req = authorizedRequest(path: "api/files/propose", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

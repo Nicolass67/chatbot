@@ -10,7 +10,8 @@ export type PermissionScope =
   | "ANALYZE_FILE"
   | "CREATE_DIRECTORY"
   | "RENAME_FILE"
-  | "MOVE_FILE";
+  | "MOVE_FILE"
+  | "DELETE_FILE";
 
 export type RiskLevel = "safe" | "moderate" | "critical";
 
@@ -52,7 +53,8 @@ export type PolicyDecision =
         | "trash_email"
         | "create_directory"
         | "rename_file"
-        | "move_file";
+        | "move_file"
+        | "delete_file";
     };
 
 export interface ActionProposal {

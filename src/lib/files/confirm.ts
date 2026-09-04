@@ -12,6 +12,7 @@ import {
   mkdirUnderRoot,
   moveAcrossRoots,
   renameUnderRoot,
+  deleteFileUnderRoot,
 } from "./provider";
 import { getFileRoot, hasConfiguredRoots } from "./roots";
 import { resolveUnderRoot } from "./path-guard";
@@ -73,7 +74,8 @@ export async function confirmFilesMutationAction(input: {
       actionType: action.actionType as
         | "create_directory"
         | "rename_file"
-        | "move_file",
+        | "move_file"
+        | "delete_file",
       hasConfirmation: true,
       filesEnabled: true,
       hasConfiguredRoots: await hasConfiguredRoots(input.userId),
@@ -168,6 +170,13 @@ export async function confirmFilesMutationAction(input: {
         destRootAbsolute: destRoot.absolutePath,
         destRelative: payload.destRelativePath,
       });
+    } else if (payload.op === "delete_file") {
+      if (!payload.sourceRootId || !payload.sourceRelativePath) {
+        throw new Error("Delete invalide.");
+      }
+      const root = await getFileRoot(input.userId, payload.sourceRootId);
+      if (!root?.enabled) throw new Error("Root source inactive.");
+      deleteFileUnderRoot(root.absolutePath, payload.sourceRelativePath);
     } else {
       throw new Error("Opération inconnue.");
     }

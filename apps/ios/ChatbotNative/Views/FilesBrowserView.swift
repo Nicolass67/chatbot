@@ -55,6 +55,10 @@ struct FilesBrowserView: View {
     @State private var showAssistant = false
     @State private var sheetContext: FilesAssistantContext = .global
     @State private var assistantDetent: PresentationDetent = .large
+    @State private var selection = FilesSelectionStore()
+    @State private var showDeleteConfirm = false
+    @State private var deletingSelection = false
+    @State private var selectionError: String?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -76,32 +80,68 @@ struct FilesBrowserView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                ContextualAssistantButton(tint: AppTheme.filesAccent) {
-                    openFilesAssistant(.global)
+                if !selection.isSelecting {
+                    ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                        openFilesAssistant(.global)
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selection.isSelecting {
+                    FilesMultiSelectBar(
+                        count: selection.count,
+                        busy: deletingSelection,
+                        onMail: {
+                            let files = selection.items.map { (fileId: $0.fileId, filename: $0.filename) }
+                            guard !files.isEmpty else { return }
+                            selection.endSelecting()
+                            nav.shareFilesToMail(files: files)
+                            AppHaptics.light()
+                        },
+                        onDelete: { showDeleteConfirm = true },
+                        onClear: { selection.clear() },
+                        onDone: { selection.endSelecting() }
+                    )
                 }
             }
             .navigationTitle("Files")
             .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Files.root)
+            .environment(selection)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            Task { await reindexAllRoots() }
-                        } label: {
-                            Label("Réindexer tous les disques", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .disabled(indexStatus.isIndexing || roots.isEmpty)
-                        Button {
-                            nav.openSettings()
-                        } label: {
-                            Label("Réglages", systemImage: "person.crop.circle")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                ToolbarItem(placement: .topBarLeading) {
+                    if selection.isSelecting {
+                        Button("OK") { selection.endSelecting() }
                     }
-                    .accessibilityLabel("Actions Files")
-                    .accessibilityIdentifier(A11yID.Files.settings)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if selection.isSelecting {
+                        EmptyView()
+                    } else {
+                        Menu {
+                            Button {
+                                selection.beginSelecting()
+                                AppHaptics.light()
+                            } label: {
+                                Label("Sélectionner", systemImage: "checkmark.circle")
+                            }
+                            Button {
+                                Task { await reindexAllRoots() }
+                            } label: {
+                                Label("Réindexer tous les disques", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(indexStatus.isIndexing || roots.isEmpty)
+                            Button {
+                                nav.openSettings()
+                            } label: {
+                                Label("Réglages", systemImage: "person.crop.circle")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("Actions Files")
+                        .accessibilityIdentifier(A11yID.Files.settings)
+                    }
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -195,11 +235,58 @@ struct FilesBrowserView: View {
             .onChange(of: nav.assistantDismissToken) { _, _ in
                 showAssistant = false
             }
+            .alert(
+                selection.count <= 1 ? "Supprimer le fichier ?" : "Supprimer \(selection.count) fichiers ?",
+                isPresented: $showDeleteConfirm
+            ) {
+                Button("Annuler", role: .cancel) {}
+                Button("Supprimer", role: .destructive) {
+                    Task { await deleteSelectedFiles() }
+                }
+            } message: {
+                Text("Cette action est définitive. Une confirmation serveur est demandée pour chaque fichier.")
+            }
+            .alert("Files", isPresented: Binding(
+                get: { selectionError != nil },
+                set: { if !$0 { selectionError = nil } }
+            )) {
+                Button("OK", role: .cancel) { selectionError = nil }
+            } message: {
+                Text(selectionError ?? "")
+            }
         }
     }
 
-    /// Navigation exacte : preview fichier, dossier parent, ou recherche.
-    private func applyFilesDeepLink(_ link: FilesDeepLink) {
+    private func deleteSelectedFiles() async {
+        let targets = selection.items
+        guard !targets.isEmpty else { return }
+        deletingSelection = true
+        defer { deletingSelection = false }
+        var failed: [String] = []
+        var deletedIds = Set<String>()
+        for item in targets {
+            do {
+                let proposal = try await client.proposeDeleteFile(sourceFileId: item.fileId)
+                try await client.confirmFilesAction(
+                    actionId: proposal.actionId,
+                    confirmationToken: proposal.confirmationToken,
+                    confirm: true
+                )
+                deletedIds.insert(item.fileId)
+            } catch {
+                failed.append(item.filename)
+            }
+        }
+        selection.remove(fileIds: deletedIds)
+        selection.bumpContent()
+        if failed.isEmpty {
+            AppHaptics.success()
+            if selection.isEmpty { selection.endSelecting() }
+        } else {
+            AppHaptics.warning()
+            selectionError = "Échec pour : \(failed.joined(separator: ", "))"
+        }
+    }
         switch link.intent {
         case .search:
             if let q = link.query, !q.isEmpty {
@@ -552,6 +639,7 @@ struct FilesBrowserView: View {
 struct FileFolderView: View {
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
+    @Environment(FilesSelectionStore.self) private var selection
     let root: FileRootDTO
     let path: String
     let title: String
@@ -642,9 +730,11 @@ struct FileFolderView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            ContextualAssistantButton(tint: AppTheme.filesAccent) {
-                assistantDetent = .large
-                showAssistant = true
+            if !selection.isSelecting {
+                ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                    assistantDetent = .large
+                    showAssistant = true
+                }
             }
         }
         .navigationTitle(title)
@@ -660,33 +750,43 @@ struct FileFolderView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if let onReindex {
+                if selection.isSelecting {
+                    Button("OK") { selection.endSelecting() }
+                } else {
+                    Menu {
                         Button {
-                            onReindex()
+                            selection.beginSelecting()
+                            AppHaptics.light()
                         } label: {
-                            Label("Réindexer ce disque", systemImage: "arrow.triangle.2.circlepath")
+                            Label("Sélectionner", systemImage: "checkmark.circle")
                         }
-                        .disabled(isReindexing)
-                        .accessibilityIdentifier(A11yID.Files.reindex)
+                        if let onReindex {
+                            Button {
+                                onReindex()
+                            } label: {
+                                Label("Réindexer ce disque", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(isReindexing)
+                            .accessibilityIdentifier(A11yID.Files.reindex)
+                            Divider()
+                        }
+                        Button { showMkdir = true } label: { Label("Nouveau dossier", systemImage: "folder.badge.plus") }
+                        Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
+                            .disabled(uploading)
                         Divider()
+                        Picker("Vue", selection: $viewMode) {
+                            Label("Liste", systemImage: "list.bullet").tag(FilesViewMode.list)
+                            Label("Grille", systemImage: "square.grid.2x2").tag(FilesViewMode.grid)
+                        }
+                        Divider()
+                        Picker("Filtrer", selection: $typeFilter) {
+                            ForEach(FilesTypeFilter.allCases) { f in Text(f.label).tag(f) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
-                    Button { showMkdir = true } label: { Label("Nouveau dossier", systemImage: "folder.badge.plus") }
-                    Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
-                        .disabled(uploading)
-                    Divider()
-                    Picker("Vue", selection: $viewMode) {
-                        Label("Liste", systemImage: "list.bullet").tag(FilesViewMode.list)
-                        Label("Grille", systemImage: "square.grid.2x2").tag(FilesViewMode.grid)
-                    }
-                    Divider()
-                    Picker("Filtrer", selection: $typeFilter) {
-                        ForEach(FilesTypeFilter.allCases) { f in Text(f.label).tag(f) }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                    .accessibilityLabel("Options du dossier")
                 }
-                .accessibilityLabel("Options du dossier")
             }
         }
         .sheet(isPresented: $showAssistant) {
@@ -755,27 +855,72 @@ struct FileFolderView: View {
         .onChange(of: nav.assistantDismissToken) { _, _ in
             showAssistant = false
         }
+        .onChange(of: selection.contentEpoch) { _, _ in
+            Task { await load(reset: true) }
+        }
         .task { await load(reset: true) }
     }
 
     private func isFolder(_ entry: FileEntryDTO) -> Bool { entry.isDirectory == true }
 
+    private func selectedItem(for entry: FileEntryDTO) -> FilesSelectedItem? {
+        guard let fileId = entry.fileId, !isFolder(entry) else { return nil }
+        return FilesSelectedItem(
+            fileId: fileId,
+            filename: entry.name ?? entry.relativePath,
+            rootId: root.id,
+            relativePath: entry.relativePath
+        )
+    }
+
+    private func handleEntryTap(_ entry: FileEntryDTO) {
+        if selection.isSelecting {
+            if let item = selectedItem(for: entry) {
+                selection.toggle(item)
+                AppHaptics.light()
+            } else if isFolder(entry) {
+                onOpenFolder(entry)
+            }
+            return
+        }
+        if isFolder(entry) { onOpenFolder(entry) } else { onOpenFile(entry) }
+    }
+
     private var list: some View {
         List {
             ForEach(filtered) { entry in
                 Button {
-                    if isFolder(entry) { onOpenFolder(entry) } else { onOpenFile(entry) }
+                    handleEntryTap(entry)
                 } label: {
-                    fileRow(entry)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+                    HStack(spacing: 10) {
+                        if selection.isSelecting, !isFolder(entry) {
+                            Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(
+                                    selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
+                                )
+                                .font(.title3)
+                        }
+                        fileRow(entry)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
-                .listRowBackground(AppTheme.surface.opacity(0.35))
+                .listRowBackground(
+                    selection.contains(entry.fileId ?? "")
+                        ? AppTheme.accent.opacity(0.12)
+                        : AppTheme.surface.opacity(0.35)
+                )
                 .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 .contextMenu {
                     if let fileId = entry.fileId, entry.isDirectory != true {
+                        Button {
+                            if !selection.isSelecting { selection.beginSelecting() }
+                            if let item = selectedItem(for: entry) { selection.select(item) }
+                        } label: {
+                            Label("Sélectionner", systemImage: "checkmark.circle")
+                        }
                         Button {
                             nav.shareFilesToMail(
                                 files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
@@ -818,27 +963,55 @@ struct FileFolderView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 12) {
                 ForEach(filtered) { entry in
                     Button {
-                        if isFolder(entry) { onOpenFolder(entry) } else { onOpenFile(entry) }
+                        handleEntryTap(entry)
                     } label: {
-                        VStack(spacing: 8) {
-                            Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                                .font(.system(size: 28))
-                                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
-                                .frame(height: 48)
-                            Text(entry.name ?? entry.relativePath)
-                                .font(.caption2)
-                                .foregroundStyle(AppTheme.foreground)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
+                        ZStack(alignment: .topTrailing) {
+                            VStack(spacing: 8) {
+                                Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
+                                    .font(.system(size: 28))
+                                    .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
+                                    .frame(height: 48)
+                                Text(entry.name ?? entry.relativePath)
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.foreground)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                selection.contains(entry.fileId ?? "")
+                                    ? AppTheme.accent.opacity(0.15)
+                                    : AppTheme.surface
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                    .stroke(
+                                        selection.contains(entry.fileId ?? "")
+                                            ? AppTheme.accent.opacity(0.55)
+                                            : Color.clear,
+                                        lineWidth: 1.5
+                                    )
+                            )
+                            if selection.isSelecting, !isFolder(entry) {
+                                Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(
+                                        selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
+                                    )
+                                    .padding(8)
+                            }
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity)
-                        .background(AppTheme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
                         if let fileId = entry.fileId, !isFolder(entry) {
+                            Button {
+                                if !selection.isSelecting { selection.beginSelecting() }
+                                if let item = selectedItem(for: entry) { selection.select(item) }
+                            } label: {
+                                Label("Sélectionner", systemImage: "checkmark.circle")
+                            }
                             Button {
                                 nav.shareFilesToMail(
                                     files: [(fileId: fileId, filename: entry.name ?? entry.relativePath)]
@@ -1201,5 +1374,55 @@ private struct MkdirConfirmSheet: View {
         }
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// Barre d’actions multi-sélection Files (mail + supprimer).
+private struct FilesMultiSelectBar: View {
+    let count: Int
+    let busy: Bool
+    let onMail: () -> Void
+    let onDelete: () -> Void
+    let onClear: () -> Void
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider().overlay(AppTheme.borderSubtle)
+            HStack(spacing: 12) {
+                Button(action: onClear) {
+                    Text(count == 0 ? "Aucun" : "\(count)")
+                        .font(CNFont.callout.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                        .frame(minWidth: 44)
+                }
+                .disabled(busy || count == 0)
+                .accessibilityLabel(count == 0 ? "Aucun fichier sélectionné" : "\(count) sélectionnés, tout désélectionner")
+
+                Spacer(minLength: 0)
+
+                Button(action: onMail) {
+                    Label("Mail", systemImage: "envelope.badge")
+                        .font(CNFont.callout.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.mailAccent)
+                .disabled(busy || count == 0)
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("Supprimer", systemImage: "trash")
+                        .font(CNFont.callout.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .disabled(busy || count == 0)
+
+                Button("OK", action: onDone)
+                    .font(CNFont.callout.weight(.semibold))
+                    .disabled(busy)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+        }
     }
 }

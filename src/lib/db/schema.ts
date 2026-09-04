@@ -299,6 +299,7 @@ export const pendingActions = sqliteTable(
         "create_directory",
         "rename_file",
         "move_file",
+        "delete_file",
       ],
     }).notNull(),
     status: text("status", {

@@ -35,6 +35,7 @@ export type FilesCapabilities = {
   mkdir: boolean;
   rename: boolean;
   move: boolean;
+  delete: boolean;
 };
 
 export const DEFAULT_FILES_CAPABILITIES: FilesCapabilities = {
@@ -44,6 +45,7 @@ export const DEFAULT_FILES_CAPABILITIES: FilesCapabilities = {
   mkdir: true,
   rename: true,
   move: true,
+  delete: true,
 };
 
 export const filesCapabilitiesSchema = z.object({
@@ -53,6 +55,7 @@ export const filesCapabilitiesSchema = z.object({
   mkdir: z.boolean().default(true),
   rename: z.boolean().default(true),
   move: z.boolean().default(true),
+  delete: z.boolean().default(true),
 });
 
 export type FileRootRecord = {
@@ -123,7 +126,11 @@ export type FileStatResult = {
   access: FileAccessAxes;
 };
 
-export type FilesMutationOp = "create_directory" | "rename_file" | "move_file";
+export type FilesMutationOp =
+  | "create_directory"
+  | "rename_file"
+  | "move_file"
+  | "delete_file";
 
 export type FrozenFilesMutationPayload = {
   op: FilesMutationOp;

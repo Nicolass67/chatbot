@@ -58,7 +58,7 @@ export const POST = withAuth(apiAuthGuard, async (request, auth) => {
   const userId = auth.userId ?? "local";
   const caps = getFilesCapabilities();
   const body = (await request.json()) as {
-    op?: "create_directory" | "rename_file" | "move_file";
+    op?: "create_directory" | "rename_file" | "move_file" | "delete_file";
     sourceFileId?: string;
     destRootId?: string;
     destRelativePath?: string;
@@ -197,6 +197,50 @@ export const POST = withAuth(apiAuthGuard, async (request, auth) => {
           sourceRelativePath: resolved.relativePath,
           destRootId: destRoot.id,
           destRelativePath: destRel,
+        },
+      });
+    }
+
+    if (body.op === "delete_file") {
+      if (!caps.delete) throw new Error("Suppression désactivée.");
+      if (!body.sourceFileId) {
+        return Response.json({ error: "sourceFileId requis" }, { status: 400 });
+      }
+      const resolved = await resolveFileReference(userId, body.sourceFileId);
+      if (resolved.isDirectory) {
+        return Response.json(
+          { error: "La suppression de dossiers n’est pas supportée ici." },
+          { status: 400 }
+        );
+      }
+      if (!resolved.access.canMutate) {
+        return Response.json({ error: "Mutation non autorisée" }, { status: 403 });
+      }
+      const proposed = await createFilesMutationAction({
+        userId,
+        conversationId,
+        actionType: "delete_file",
+        payload: {
+          op: "delete_file",
+          sourceFileId: resolved.fileId,
+          sourceRootId: resolved.rootId,
+          sourceRelativePath: resolved.relativePath,
+          destRootId: resolved.rootId,
+          destRelativePath: resolved.relativePath,
+          expectedSizeBytes: resolved.sizeBytes,
+          expectedMtimeMs: resolved.mtimeMs,
+          overwrite: false,
+        },
+      });
+      return Response.json({
+        actionId: proposed.actionId,
+        confirmationToken: proposed.confirmationToken,
+        expiresAt: proposed.expiresAt,
+        op: "delete_file",
+        payload: {
+          sourceRelativePath: resolved.relativePath,
+          destRootId: resolved.rootId,
+          destRelativePath: resolved.relativePath,
         },
       });
     }

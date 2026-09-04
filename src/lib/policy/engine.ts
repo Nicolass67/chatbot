@@ -38,7 +38,8 @@ function isFilesPermission(p: PermissionScope): boolean {
     p === "ANALYZE_FILE" ||
     p === "CREATE_DIRECTORY" ||
     p === "RENAME_FILE" ||
-    p === "MOVE_FILE"
+    p === "MOVE_FILE" ||
+    p === "DELETE_FILE"
   );
 }
 
@@ -105,6 +106,9 @@ function evaluateFilesPermissions(
     }
     if (permission === "MOVE_FILE" && !caps.move) {
       return deny("CAPABILITY_DISABLED", "Capacité move désactivée.");
+    }
+    if (permission === "DELETE_FILE" && !caps.delete) {
+      return deny("CAPABILITY_DISABLED", "Capacité delete désactivée.");
     }
   }
 
@@ -199,7 +203,8 @@ export function evaluateActionConfirm(
       | "trash_email"
       | "create_directory"
       | "rename_file"
-      | "move_file";
+      | "move_file"
+      | "delete_file";
   }
 ): PolicyDecision {
   const authError = requireAuthenticated(confirmation.userId);
@@ -232,6 +237,7 @@ export function evaluateActionConfirm(
     "create_directory",
     "rename_file",
     "move_file",
+    "delete_file",
   ]);
 
   if (ctx.actionType && fileActions.has(ctx.actionType)) {
@@ -240,7 +246,9 @@ export function evaluateActionConfirm(
         ? "CREATE_DIRECTORY"
         : ctx.actionType === "rename_file"
           ? "RENAME_FILE"
-          : "MOVE_FILE";
+          : ctx.actionType === "delete_file"
+            ? "DELETE_FILE"
+            : "MOVE_FILE";
     const filesError = evaluateFilesPermissions(ctx, [perm]);
     if (filesError) return filesError;
   } else {
@@ -269,5 +277,6 @@ export function defaultFilesGrantedPermissions(): PermissionScope[] {
     "CREATE_DIRECTORY",
     "RENAME_FILE",
     "MOVE_FILE",
+    "DELETE_FILE",
   ];
 }

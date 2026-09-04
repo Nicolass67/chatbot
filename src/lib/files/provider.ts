@@ -404,3 +404,19 @@ export function moveAcrossRoots(input: {
   }
   fs.renameSync(src, dest);
 }
+
+/** Supprime un fichier (pas un dossier) sous la root. */
+export function deleteFileUnderRoot(
+  rootAbsolute: string,
+  relativePath: string
+): void {
+  const abs = resolveUnderRoot(rootAbsolute, relativePath);
+  if (!fs.existsSync(abs)) {
+    throw new Error("Fichier introuvable.");
+  }
+  const st = fs.lstatSync(abs);
+  if (st.isDirectory()) {
+    throw new Error("La suppression de dossiers n’est pas autorisée ici.");
+  }
+  fs.unlinkSync(abs);
+}

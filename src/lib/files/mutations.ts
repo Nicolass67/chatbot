@@ -47,7 +47,7 @@ export async function createFilesMutationAction(input: {
   conversationId: string;
   actionType: Extract<
     ActionType,
-    "create_directory" | "rename_file" | "move_file"
+    "create_directory" | "rename_file" | "move_file" | "delete_file"
   >;
   payload: FrozenFilesMutationPayload;
 }): Promise<{
