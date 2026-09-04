@@ -18,7 +18,8 @@ import { resolveGhRepo } from "./gh-repo.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "../..");
 const repo = resolveGhRepo(root);
-const workflowFile = "ios-native-qa.yml";
+const workflowFile = process.env.IOS_IPA_WORKFLOW || "ios-native-qa.yml";
+const flashWorkflowFile = "ios-native-ipa-flash.yml";
 const artifactName = "chatbot-ios-native-qa-unsigned";
 const expectedBundle = "fr.nicolazer.chatbot.native";
 const outDir = path.join(root, "sidestore-prep", "ipa");
@@ -106,14 +107,14 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function findRunForSha(sha, { preferInProgress = true } = {}) {
+function findRunForSha(sha, { preferInProgress = true, workflow = workflowFile } = {}) {
   const json = sh("gh", [
     "run",
     "list",
     "--repo",
     repo,
     "--workflow",
-    workflowFile,
+    workflow,
     "--commit",
     sha,
     "--limit",
@@ -132,9 +133,13 @@ function findRunForSha(sha, { preferInProgress = true } = {}) {
   return runs[0];
 }
 
-function triggerWorkflow(ref) {
-  console.log(`[ios:deploy] workflow_dispatch ${workflowFile} --ref ${ref}`);
-  sh("gh", ["workflow", "run", workflowFile, "--repo", repo, "--ref", ref]);
+function triggerWorkflow(ref, { workflow = workflowFile, inputs = {} } = {}) {
+  console.log(`[ios:deploy] workflow_dispatch ${workflow} --ref ${ref}`);
+  const args = ["workflow", "run", workflow, "--repo", repo, "--ref", ref];
+  for (const [k, v] of Object.entries(inputs)) {
+    if (v != null && String(v).length) args.push("-f", `${k}=${v}`);
+  }
+  sh("gh", args);
 }
 
 function watchRun(runId) {
@@ -187,8 +192,8 @@ function verifyMeta(expectedSha) {
   if (meta.bundle_id && meta.bundle_id !== expectedBundle) {
     issues.push(`bundle_id mismatch: ${meta.bundle_id} expected ${expectedBundle}`);
   }
-  if (meta.workflow && meta.workflow !== "qa") {
-    issues.push(`workflow != qa (${meta.workflow})`);
+  if (meta.workflow && meta.workflow !== "qa" && meta.workflow !== "ipa-flash") {
+    issues.push(`workflow invalide (${meta.workflow}) — attendu qa|ipa-flash`);
   }
   if (issues.length) {
     throw new Error(`REFUSE install — qa-meta.json invalide:\n- ${issues.join("\n- ")}`);
@@ -197,6 +202,60 @@ function verifyMeta(expectedSha) {
     `[ios:deploy] meta OK sha=${meta.git_sha.slice(0, 7)} build=${meta.build} bundle=${meta.bundle_id} run=${meta.run_id}`
   );
   return meta;
+}
+
+async function cmdFlashBuild({ sha, ref, force = false, baseUrl = null }) {
+  ensureGh();
+  const expectSha = resolveSha(sha);
+  const branch = ref || gitBranch();
+  const wf = flashWorkflowFile;
+  console.log(`[ios:deploy] IPA Flash for SHA ${expectSha} (ref ${branch})${force ? " [force]" : ""}`);
+
+  let run = force ? null : findRunForSha(expectSha, { workflow: wf });
+  if (force || !run || (run.status === "completed" && run.conclusion !== "success")) {
+    const inputs = {};
+    if (baseUrl) inputs.base_url = baseUrl;
+    triggerWorkflow(branch, { workflow: wf, inputs });
+    for (let i = 0; i < 90; i++) {
+      sleep(2000);
+      const json = sh("gh", [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--workflow",
+        wf,
+        "--commit",
+        expectSha,
+        "--limit",
+        "5",
+        "--json",
+        "databaseId,status,conclusion,headSha,url,createdAt",
+      ]).stdout;
+      const runs = JSON.parse(json || "[]");
+      if (!runs.length) continue;
+      const active = runs.find((r) => r.status === "queued" || r.status === "in_progress" || r.status === "waiting");
+      run = active || runs[0];
+      if (active) break;
+      if (runs[0].status === "completed") {
+        run = runs[0];
+        break;
+      }
+    }
+  }
+  if (!run) {
+    throw new Error(`Aucun run ${wf} pour commit ${expectSha}.`);
+  }
+  if (run.status !== "completed") {
+    watchRun(run.databaseId);
+    run = findRunForSha(expectSha, { preferInProgress: false, workflow: wf });
+  }
+  if (!run || run.conclusion !== "success") {
+    throw new Error(`IPA Flash run échoué pour ${expectSha}: ${run?.url || "no url"}`);
+  }
+  downloadArtifact(run.databaseId);
+  const meta = verifyMeta(expectSha);
+  return { runId: String(run.databaseId), meta, ipaPath, metaPath };
 }
 
 async function cmdFastBuild({ sha, ref, force = false }) {
@@ -347,6 +406,7 @@ async function cmdDeploy(opts) {
 
 function usage() {
   console.log(`Usage:
+  node scripts/ios/deploy.mjs flash-build [--sha SHA] [--ref branch] [--force]
   node scripts/ios/deploy.mjs fast-build [--sha SHA] [--ref branch] [--force]
   node scripts/ios/deploy.mjs download [--sha SHA] [--run id]
   node scripts/ios/deploy.mjs install [ipa]
@@ -357,6 +417,11 @@ function usage() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   try {
+    if (opts.cmd === "flash-build") {
+      const r = await cmdFlashBuild(opts);
+      console.log(JSON.stringify({ ok: true, ...r, ipaPath, metaPath }, null, 2));
+      return;
+    }
     if (opts.cmd === "fast-build") {
       const r = await cmdFastBuild(opts);
       console.log(JSON.stringify({ ok: true, ...r, ipaPath, metaPath }, null, 2));

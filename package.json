@@ -37,6 +37,7 @@
     "ios:deploy-prep": "node scripts/ios-deploy-prep.mjs",
     "ios:deploy-prep:build": "node scripts/ios-deploy-prep.mjs --trigger",
     "ios:fast-build": "node scripts/ios/deploy.mjs fast-build",
+    "ios:ipa:flash": "node scripts/ios/deploy.mjs flash-build",
     "ios:deploy": "node scripts/ios/deploy.mjs deploy",
     "ios:deploy:direct": "node scripts/ios/deploy.mjs deploy --direct-install",
     "ios:install": "node scripts/ios/deploy.mjs install",
