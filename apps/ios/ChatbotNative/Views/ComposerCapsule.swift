@@ -370,12 +370,9 @@ struct PersistentProductActionsBar: View {
 
     private var actions: [(ChatScreen.QuickAction, String, String)] {
         if scope == .mail {
+            // Brouillon ouvert : actions uniquement sur la carte (pas de barre redondante).
             if hasDraft {
-                return [
-                    (.improve, "Modifier avec IA", "wand.and.stars"),
-                    (.extractTasks, "Ajouter PJ", "paperclip"),
-                    (.searchUnread, "Envoyer", "paperplane"),
-                ]
+                return []
             }
             if hasMailThread {
                 return [

@@ -561,52 +561,59 @@ struct MailDraftProposal: View {
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
             }
 
-            // Ligne 1 : actions secondaires (icônes + label court, pas de wrap).
-            HStack(spacing: AppTheme.space8) {
-                Button(isEditing ? "OK" : "Modifier") { onEditToggle() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isStreaming)
+            // Actions : secondaires discrètes + Envoyer principal.
+            VStack(spacing: AppTheme.space10) {
+                HStack(spacing: AppTheme.space8) {
+                    draftSecondaryButton(
+                        title: isEditing ? "OK" : "Modifier",
+                        systemImage: isEditing ? "checkmark" : "pencil",
+                        disabled: isStreaming,
+                        action: onEditToggle
+                    )
                     .accessibilityIdentifier(A11yID.Mail.draftEdit)
-                if let onAttach {
-                    Button {
-                        onAttach()
-                    } label: {
-                        Label("PJ", systemImage: "paperclip")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(busy || isStreaming)
-                }
-                Button {
-                    onRetry()
-                } label: {
-                    Label("Réécrire", systemImage: "arrow.clockwise")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(busy || isStreaming)
-                .accessibilityIdentifier(A11yID.Mail.draftRetry)
-                Spacer(minLength: 0)
-            }
 
-            // Ligne 2 : Envoyer pleine largeur.
-            Button {
-                AppHaptics.medium()
-                onSend()
-            } label: {
-                Label("Envoyer", systemImage: "paperplane.fill")
-                    .font(CNFont.callout.weight(.semibold))
+                    if let onAttach {
+                        draftSecondaryButton(
+                            title: "Joindre",
+                            systemImage: "paperclip",
+                            disabled: busy || isStreaming,
+                            action: onAttach
+                        )
+                    }
+
+                    draftSecondaryButton(
+                        title: "Réécrire",
+                        systemImage: "arrow.clockwise",
+                        disabled: busy || isStreaming,
+                        action: onRetry
+                    )
+                    .accessibilityIdentifier(A11yID.Mail.draftRetry)
+                }
+
+                Button {
+                    AppHaptics.medium()
+                    onSend()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Envoyer")
+                            .font(CNFont.callout.weight(.semibold))
+                    }
+                    .foregroundStyle(Color.white)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    .frame(minHeight: 48)
+                    .background(
+                        (busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+                            ? Color(red: 0.23, green: 0.51, blue: 0.96).opacity(0.4)
+                            : Color(red: 0.23, green: 0.51, blue: 0.96),
+                        in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
+                .accessibilityIdentifier(A11yID.Mail.send)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.mailAccent)
-            .controlSize(.large)
-            .disabled(busy || isStreaming || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftId == nil)
-            .accessibilityIdentifier(A11yID.Mail.send)
         }
         .padding(AppTheme.space14)
         .background(AppTheme.surfaceElevated.opacity(0.9))
@@ -616,5 +623,33 @@ struct MailDraftProposal: View {
                 .stroke(AppTheme.borderSubtle, lineWidth: 1)
         )
         .accessibilityIdentifier(A11yID.Mail.draft)
+    }
+
+    private func draftSecondaryButton(
+        title: String,
+        systemImage: String,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(title)
+                    .font(CNFont.caption2.weight(.medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(disabled ? AppTheme.muted : AppTheme.foreground)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 52)
+            .background(AppTheme.surface.opacity(0.9), in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                    .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(title)
     }
 }
