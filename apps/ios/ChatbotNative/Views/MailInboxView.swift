@@ -316,6 +316,13 @@ struct MailInboxView: View {
                     nav.presentMailAssistant = false
                 }
             }
+            .onAppear {
+                // Deep-link posé avant l’apparition de l’onglet (ex. Files → Mail).
+                if nav.presentMailAssistant {
+                    openMailAssistant(nav.mailAssistantContext)
+                    nav.presentMailAssistant = false
+                }
+            }
             .onChange(of: nav.qaIntent) { _, intent in
                 handleQaIntent(intent)
             }
@@ -341,6 +348,8 @@ struct MailInboxView: View {
                 if presented { assistantDetent = .large }
             }
             .onChange(of: nav.assistantDismissToken) { _, _ in
+                // Ne pas fermer si une ouverture Mail vient d’être armée (Files → mail).
+                guard !nav.presentMailAssistant else { return }
                 showAssistant = false
             }
             .alert(

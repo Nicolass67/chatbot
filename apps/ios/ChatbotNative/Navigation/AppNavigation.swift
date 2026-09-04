@@ -181,22 +181,23 @@ final class AppNavigation {
     }
 
     /// Ouvre l’assistant Mail avec des fichiers Files déjà prêts à joindre.
+    /// Composer : PJ seules — aucun texte prérempli (sauf `prefill` explicite).
     func shareFilesToMail(
         files: [(fileId: String, filename: String)],
         prefill: String? = nil
     ) {
         guard !files.isEmpty else { return }
-        // Ferme Files Assistant sans toucher aux handoffs mail.
-        presentFilesAssistant = false
-        assistantDismissToken &+= 1
         mailAttachHandoffs = files.map {
             MailAttachHandoff(fileId: $0.fileId, filename: $0.filename)
         }
         mailComposerPrefill = prefill
-            ?? (files.count == 1
-                ? "Je veux envoyer « \(files[0].filename) » en pièce jointe. Indique le destinataire, l’objet et le message — je rédige le brouillon."
-                : "Je veux envoyer \(files.count) fichiers en pièces jointes. Indique le destinataire, l’objet et le message — je rédige le brouillon.")
-        openMailAssistant(.global)
+        // Armer Mail AVANT le dismiss Files : sinon `assistantDismissToken`
+        // ferme aussi la sheet Mail qu’on vient d’ouvrir (course SwiftUI).
+        mailAssistantContext = .global
+        presentMailAssistant = true
+        presentFilesAssistant = false
+        assistantDismissToken &+= 1
+        selectedTab = .mail
     }
 
     /// Files Assistant sheet (in-place, comme Mail — pas de redirect Chat).

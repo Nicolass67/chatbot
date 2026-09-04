@@ -855,18 +855,10 @@ struct ChatScreen: View {
     private func consumeMailAttachHandoffs() async {
         guard forcedScope == .mail else { return }
         let items = nav.mailAttachHandoffs
-        guard !items.isEmpty else {
-            if let text = nav.mailComposerPrefill, !text.isEmpty {
-                draft = text
-                nav.mailComposerPrefill = nil
-            }
-            return
-        }
+        guard !items.isEmpty else { return }
         nav.mailAttachHandoffs = []
-        if let text = nav.mailComposerPrefill, !text.isEmpty {
-            draft = text
-            nav.mailComposerPrefill = nil
-        }
+        // Handoff Files → Mail : PJ seulement, jamais de texte prérempli.
+        nav.mailComposerPrefill = nil
         for item in items {
             await attachFilesEntryToComposer(fileId: item.fileId, filename: item.filename)
         }
