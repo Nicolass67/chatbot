@@ -77,15 +77,8 @@ struct MailInboxView: View {
         NavigationStack(path: $path) {
             ZStack {
                 AmbientBackground()
-                VStack(spacing: 0) {
-                    mailChrome
-                    content
-                }
-                ContextualAssistantButton(
-                    accessibilityId: A11yID.Mail.assistant,
-                    accessibilityLabelText: "Assistant Mail",
-                    tint: AppTheme.mailAccent
-                ) {
+                mailStack
+                ContextualAssistantButton {
                     openMailAssistant(.global)
                 }
             }
@@ -162,6 +155,13 @@ struct MailInboxView: View {
             } message: {
                 Text(trashTarget?.subject ?? "Ce message sera proposé à la suppression (confirmation serveur).")
             }
+        }
+    }
+
+    private var mailStack: some View {
+        VStack(spacing: 0) {
+            mailChrome
+            content
         }
     }
 
@@ -466,17 +466,14 @@ struct MailThreadView: View {
                         systemImage: "envelope.badge.shield.half.filled",
                         title: "Impossible de charger",
                         message: error,
-                        actionTitle: "Réessayer"
-                    ) { Task { await load() } }
+                        actionTitle: "Réessayer",
+                        action: { Task { await load() } }
+                    )
                 } else if let thread {
                     threadContent(thread)
                 }
             }
-            ContextualAssistantButton(
-                accessibilityId: A11yID.Mail.assistant,
-                accessibilityLabelText: "Assistant Mail",
-                tint: AppTheme.mailAccent
-            ) {
+            ContextualAssistantButton {
                 showAssistant = true
             }
         }
