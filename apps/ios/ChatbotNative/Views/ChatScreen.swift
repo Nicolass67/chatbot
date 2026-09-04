@@ -14,6 +14,10 @@ struct ChatScreen: View {
     /// Scope forcé (Assistant Mail/Files). Nil = Chat général.
     var forcedScope: ConversationScope? = nil
     var forcedActiveContext: ActiveContextHint? = nil
+    /// Clé de persistance folder:/file:/… (sinon on tombait sur `__global__` et on écrasait la conv).
+    var persistenceKeyOverride: String? = nil
+    /// Fermeture explicite de la sheet Assistant (évite le no-op de `dismiss` dans NavigationStack).
+    var onRequestClose: (() -> Void)? = nil
 
     @State private var messages: [MessageDTO] = []
     @State private var draft = ""
@@ -75,7 +79,6 @@ struct ChatScreen: View {
     @State private var streamingService = ChatStreamingService()
     /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
     @State private var suppressAssistantNarration = false
-    @State private var exportShareURL: IdentifiedURL?
     @State private var settingsHydrated = false
 
     struct PendingFileAction: Identifiable, Equatable {
@@ -114,11 +117,8 @@ struct ChatScreen: View {
                 if shouldShowAgentStrip {
                     AgentActivityView(state: agentActivity)
                         .padding(.horizontal, 14)
-                        .padding(.bottom, 4)
+                        .padding(.bottom, 6)
                         .transition(.opacity.combined(with: .move(edge: .top)))
-                } else if let thinkingKind, isSending {
-                    ThinkingStatusView(kind: thinkingKind)
-                        .transition(.opacity)
                 }
                 if let pendingFileAction {
                     FileActionPendingCard(
@@ -153,18 +153,22 @@ struct ChatScreen: View {
                     .padding(.horizontal, AppTheme.space16)
                     .padding(.vertical, AppTheme.space8)
                 }
-                HStack {
-                    RuntimeStatusPill(status: displayRuntimeStatus)
-                    Spacer(minLength: 0)
-                    if !assistantReadyForSend {
-                        Text(sendBlockedHint)
-                            .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.mutedForeground)
-                            .lineLimit(1)
+                // Pastille runtime uniquement hors génération — le feedback « travail » est dans le fil.
+                if !isSending {
+                    HStack {
+                        RuntimeStatusPill(status: displayRuntimeStatus)
+                        Spacer(minLength: 0)
+                        if !assistantReadyForSend {
+                            Text(sendBlockedHint)
+                                .font(CNFont.caption2)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                                .lineLimit(1)
+                        }
                     }
+                    .padding(.horizontal, AppTheme.space16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 6)
                 }
-                .padding(.horizontal, AppTheme.space16)
-                .padding(.bottom, 2)
                 composer
             }
         }
@@ -280,23 +284,6 @@ struct ChatScreen: View {
                 }
             }
             .presentationDetents([.large])
-        }
-        .sheet(item: $exportShareURL) { item in
-            NavigationStack {
-                ShareLink(item: item.url) {
-                    Label("Partager « \(item.title) »", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .padding()
-                .navigationTitle("Télécharger")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Fermer") { exportShareURL = nil }
-                    }
-                }
-            }
-            .presentationDetents([.medium])
         }
         .fileImporter(
             isPresented: $showDocImporter,
@@ -434,6 +421,15 @@ struct ChatScreen: View {
                                 }
                             )
                             .id("streaming-files")
+                        } else if isSending,
+                                  streamingText.isEmpty,
+                                  streamFilesFound.isEmpty,
+                                  streamingAssistantId == nil,
+                                  !shouldShowAgentStrip,
+                                  let thinkingKind {
+                            // Indicateur ChatGPT-like dans le fil, à l’emplacement de la réponse.
+                            InStreamWorkingIndicator(label: thinkingKind.label)
+                                .id("working-indicator")
                         }
                         if draftInConversation || draftCardId != nil || draftCardStreaming {
                             MailDraftProposal(
@@ -468,8 +464,17 @@ struct ChatScreen: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        Keyboard.dismiss()
+                    }
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 8).onChanged { _ in
+                        Keyboard.dismiss()
+                    }
+                )
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
                     let contentH = geometry.contentSize.height
                     let visibleH = geometry.containerSize.height
@@ -486,15 +491,37 @@ struct ChatScreen: View {
                 }
                 .onChange(of: streamingText) { _, text in
                     guard !showScrollDown, !text.isEmpty else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    withAnimation(.easeOut(duration: 0.28)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
                 .onChange(of: messages.count) { _, _ in
                     guard !showScrollDown else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    withAnimation(.easeOut(duration: 0.32)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
                 .onChange(of: scrollToken) { _, _ in
                     showScrollDown = false
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: isSending) { _, sending in
+                    if sending {
+                        withAnimation(.easeOut(duration: 0.32)) {
+                            proxy.scrollTo(
+                                shouldShowAgentStrip ? "bottom" : "working-indicator",
+                                anchor: .bottom
+                            )
+                        }
+                    }
+                }
+                .onChange(of: thinkingKind) { _, kind in
+                    guard isSending, kind != nil, streamingText.isEmpty, !shouldShowAgentStrip else { return }
+                    withAnimation(.easeOut(duration: 0.28)) {
+                        proxy.scrollTo("working-indicator", anchor: .bottom)
+                    }
                 }
                 .onChange(of: draftCardText) { _, _ in
                     guard draftInConversation || draftCardStreaming else { return }
@@ -680,6 +707,18 @@ struct ChatScreen: View {
         let scope = forcedScope ?? .general
         let key: String? = {
             if scope == .general { return nil }
+            if let override = persistenceKeyOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !override.isEmpty {
+                return override
+            }
+            // Folder context: prefer folder:rootId:path over global.
+            if let rootId = forcedActiveContext?.rootId, !rootId.isEmpty {
+                let path = forcedActiveContext?.label ?? ""
+                // label may be title — still better than __global__ for root-level folders.
+                if forcedActiveContext?.fileId == nil {
+                    return "folder:\(rootId):\(path)"
+                }
+            }
             return forcedActiveContext?.mailThreadId
                 ?? forcedActiveContext?.fileId
                 ?? ConversationSessionStore.globalContextKey
@@ -691,11 +730,24 @@ struct ChatScreen: View {
         )
     }
 
+    /// Ferme la sheet assistant (Mail/Files) tout en gardant la conversation en store.
+    private func dismissAssistantKeepingContext() {
+        persistActiveConversation()
+        Keyboard.dismiss()
+        // Token global : ferme les sheets locales Files/Mail même si `dismiss` est un no-op.
+        nav.dismissAssistantSheets()
+        if let onRequestClose {
+            onRequestClose()
+        } else if forcedScope != nil {
+            dismiss()
+        }
+    }
+
     private func openFoundFilePreview(_ file: FilesFoundFileDTO) {
         persistActiveConversation()
-        // Mail sheet uniquement : fermer pour révéler l’onglet Files.
-        // Chat général : conserver l’écran (TabView) pour retrouver la conversation.
-        if forcedScope == .mail { dismiss() }
+        Keyboard.dismiss()
+        nav.dismissAssistantSheets()
+        onRequestClose?()
         let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
         nav.openFilePreview(
             fileId: file.id,
@@ -707,7 +759,9 @@ struct ChatScreen: View {
 
     private func revealFoundFileFolder(_ file: FilesFoundFileDTO) {
         persistActiveConversation()
-        if forcedScope == .mail { dismiss() }
+        Keyboard.dismiss()
+        nav.dismissAssistantSheets()
+        onRequestClose?()
         let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
         nav.openFileFolder(
             rootId: file.rootId,
@@ -723,14 +777,20 @@ struct ChatScreen: View {
             let content = try await client.fetchFileContent(fileId: file.id)
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent(file.filename)
-            if let binary = content.binary {
+            if let binary = content.binary, !binary.isEmpty {
                 try binary.write(to: tmp, options: .atomic)
-            } else if let text = content.text {
+            } else if let text = content.text, !text.isEmpty {
                 try Data(text.utf8).write(to: tmp, options: .atomic)
             } else {
                 throw APIClientError.decode
             }
-            exportShareURL = IdentifiedURL(url: tmp, title: file.filename)
+            persistActiveConversation()
+            Keyboard.dismiss()
+            nav.dismissAssistantSheets()
+            onRequestClose?()
+            // Laisse la sheet se fermer avant le share sheet système.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            NativeShare.present(url: tmp, title: file.filename)
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -943,6 +1003,41 @@ struct ChatScreen: View {
             }
         }
         return ordered
+    }
+
+    /// Évite une double bulle assistant après promote + reload serveur (IDs différents, même contenu).
+    private func dedupeTrailingAssistant(matching content: String, preferId: String) {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            // Même fichiers trouvés sans texte : fusionne chrome + drop orphan asst-*
+            if messages.count >= 2 {
+                let lastTwo = messages.suffix(2)
+                if lastTwo.allSatisfy({ $0.role == "assistant" }) {
+                    let ids = lastTwo.map(\.id)
+                    if let drop = ids.first(where: { $0 != preferId && $0.hasPrefix("asst-") }) {
+                        messages.removeAll { $0.id == drop }
+                        chromeById.removeValue(forKey: drop)
+                    }
+                }
+            }
+            return
+        }
+        var seenContent = false
+        var keep: [MessageDTO] = []
+        for msg in messages {
+            if msg.role == "assistant",
+               msg.content.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+                if seenContent {
+                    if msg.id != preferId {
+                        chromeById.removeValue(forKey: msg.id)
+                        continue
+                    }
+                }
+                seenContent = true
+            }
+            keep.append(msg)
+        }
+        messages = keep
     }
 
     private func loadSettings() async {
@@ -1320,6 +1415,8 @@ struct ChatScreen: View {
         }
 
         isSending = true
+        Keyboard.dismiss()
+        scrollToken += 1
         streamingText = ""
         // Ne pas écraser un statut Mail déjà posé (brouillon / destinataire / résumé).
         if case .custom = thinkingKind {
@@ -1394,6 +1491,10 @@ struct ChatScreen: View {
                 )
             }
             streamingText = ""
+            streamFilesFound = []
+            streamSources = []
+            streamMailHandoff = nil
+            streamFilesHandoff = nil
             suppressAssistantNarration = false
             // ID serveur déjà stable (assistant_start) : sync soft sans remplacer l’identité ForEach.
             if streamingAssistantId != nil {
@@ -1404,6 +1505,8 @@ struct ChatScreen: View {
                 }
             } else {
                 await loadMessages(preserveAssistantId: promoteId)
+                // Dédupliquer : si le serveur a un autre ID pour le même contenu, garder un seul.
+                dedupeTrailingAssistant(matching: finalText, preferId: promoteId)
                 if let last = messages.last(where: { $0.role == "assistant" }) {
                     var meta = chromeById[last.id] ?? MessageChromeMeta()
                     if meta.sources.isEmpty { meta.sources = finalSources }
@@ -1558,17 +1661,28 @@ struct ChatScreen: View {
         case "agent_plan":
             thinkingKind = nil
             agentActivity.visible = true
+            agentActivity.completed = false
             agentActivity.phase = "planning"
             if let plan = obj["plan"] as? [String: Any],
                let steps = plan["steps"] as? [[String: Any]] {
                 agentActivity.planSteps = steps.enumerated().map { idx, s in
-                    AgentPlanStep(
+                    let rawStatus = (s["status"] as? String) ?? "pending"
+                    return AgentPlanStep(
                         id: (s["id"] as? String) ?? "\(idx)",
-                        title: (s["title"] as? String) ?? (s["goal"] as? String) ?? "Étape \(idx + 1)",
-                        status: "pending"
+                        title: AgentToolLabels.friendlyStepTitle(
+                            (s["title"] as? String) ?? (s["goal"] as? String) ?? "Étape \(idx + 1)"
+                        ),
+                        status: AgentToolLabels.normalizeStepStatus(rawStatus)
                     )
                 }
                 agentActivity.totalSteps = agentActivity.planSteps.count
+                if let running = agentActivity.planSteps.first(where: { $0.status == "running" }) {
+                    agentActivity.currentStepTitle = running.title
+                    agentActivity.phase = "executing"
+                    agentActivity.stepIndex = agentActivity.planSteps.firstIndex(where: { $0.id == running.id }) ?? 0
+                } else if let first = agentActivity.planSteps.first {
+                    agentActivity.currentStepTitle = first.title
+                }
             }
         case "agent_step", "agent_step_update":
             thinkingKind = nil
@@ -1578,14 +1692,24 @@ struct ChatScreen: View {
             if let total = obj["totalSteps"] as? Int { agentActivity.totalSteps = total }
             if let stepId = obj["stepId"] as? String,
                let i = agentActivity.planSteps.firstIndex(where: { $0.id == stepId }) {
-                let st = (obj["status"] as? String) ?? "running"
+                let st = AgentToolLabels.normalizeStepStatus((obj["status"] as? String) ?? "running")
                 agentActivity.planSteps[i].status = st
+                if let title = obj["title"] as? String, !title.isEmpty {
+                    agentActivity.planSteps[i].title = AgentToolLabels.friendlyStepTitle(title)
+                }
                 agentActivity.currentStepTitle = agentActivity.planSteps[i].title
+                // Marque les étapes précédentes comme done si le serveur ne l’a pas encore fait.
+                if st == "running" || st == "done" {
+                    for j in 0..<i where agentActivity.planSteps[j].status == "pending"
+                        || agentActivity.planSteps[j].status == "running" {
+                        if j < i { agentActivity.planSteps[j].status = "done" }
+                    }
+                }
                 if st == "error" {
                     agentActivity.lastError = AgentToolLabels.friendlyError(obj["message"] as? String)
                 }
             } else if let msg = obj["message"] as? String {
-                agentActivity.currentStepTitle = msg
+                agentActivity.currentStepTitle = AgentToolLabels.friendlyStepTitle(msg)
             }
         case "agent_action_start":
             agentActivity.visible = true

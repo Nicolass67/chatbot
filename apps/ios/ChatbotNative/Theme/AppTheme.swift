@@ -218,8 +218,8 @@ struct RuntimeStatusPill: View {
 
     private var label: String {
         switch status.uppercased() {
-        case "READY": return "Assistant prêt"
-        case "BUSY": return "Assistant occupé"
+        case "READY": return "Disponible"
+        case "BUSY": return "En cours de réponse…"
         case "LOADING", "LOADING_MODEL": return "Chargement du modèle…"
         case "SWITCHING": return "Changement de modèle…"
         case "OFFLINE": return "Aucun modèle chargé"
@@ -230,14 +230,15 @@ struct RuntimeStatusPill: View {
 
     var body: some View {
         HStack(spacing: AppTheme.space8) {
-            Circle().fill(color).frame(width: 6, height: 6)
+            Circle().fill(color).frame(width: 7, height: 7)
             Text(label)
-                .font(CNFont.caption2.weight(.semibold))
+                .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.muted)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 7)
         .background(AppTheme.surfaceElevated.opacity(0.92))
         .clipShape(Capsule())
         .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 0.5))

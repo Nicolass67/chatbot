@@ -1218,7 +1218,8 @@ struct FileContentDTO: Codable, Hashable {
     }
 }
 
-struct FilesProposeResult: Sendable {
+struct FilesProposeResult: Sendable, Identifiable {
+    var id: String { actionId }
     let actionId: String
     let confirmationToken: String
     let expiresAt: String?

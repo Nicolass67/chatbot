@@ -150,8 +150,16 @@ struct MailInboxView: View {
             sortedWindow = []
             windowExhausted = false
             resultSizeEstimate = nil
+            // Clear stale rows immediately so a failed refresh can't show the wrong filter.
+            messages = []
         }
         loadTask = Task { await load(pageToken: nil) }
+    }
+
+    /// Enforce unread filter client-side (API can lag / mis-estimate).
+    private func applyUnreadFilter(_ items: [MailMessageSummary]) -> [MailMessageSummary] {
+        guard unreadOnly else { return items }
+        return items.filter { $0.isUnread == true }
     }
 
     private func goPreviousPage() {
@@ -263,6 +271,9 @@ struct MailInboxView: View {
             }
             .onChange(of: showAssistant) { _, presented in
                 if presented { assistantDetent = .large }
+            }
+            .onChange(of: nav.assistantDismissToken) { _, _ in
+                showAssistant = false
             }
             .alert(
                 "Mettre à la corbeille ?",
@@ -380,7 +391,7 @@ struct MailInboxView: View {
             }
             .padding(.horizontal, 14)
 
-            if !messages.isEmpty || resultSizeEstimate != nil {
+            if !messages.isEmpty || (resultSizeEstimate ?? 0) > 0 || error != nil {
                 mailPaginationBar
             }
         }
@@ -548,10 +559,12 @@ struct MailInboxView: View {
                     pageToken: pageToken
                 )
                 guard gen == loadGeneration, !Task.isCancelled else { return }
-                // Appliquer le tri local même pour « plus récents » (ordre déterministe).
-                messages = sortedMessages(page.messages, by: activeSort)
+                let filtered = applyUnreadFilter(page.messages)
+                messages = sortedMessages(filtered, by: activeSort)
                 nextPageToken = page.nextPageToken
-                resultSizeEstimate = page.resultSizeEstimate
+                // Gmail often returns estimate 0 for UNREAD — treat as unknown.
+                let est = page.resultSizeEstimate ?? 0
+                resultSizeEstimate = est > 0 ? est : nil
                 sortedWindow = []
                 error = nil
             } else {
@@ -568,9 +581,9 @@ struct MailInboxView: View {
                         pageToken: token
                     )
                     guard gen == loadGeneration, !Task.isCancelled else { return }
-                    if let est = page.resultSizeEstimate { estimate = est }
+                    if let est = page.resultSizeEstimate, est > 0 { estimate = est }
                     if page.messages.isEmpty { break }
-                    collected.append(contentsOf: page.messages)
+                    collected.append(contentsOf: applyUnreadFilter(page.messages))
                     if let next = page.nextPageToken, !next.isEmpty {
                         token = next
                         if collected.count < sortWindowMax {
@@ -600,11 +613,19 @@ struct MailInboxView: View {
             return
         } catch {
             guard gen == loadGeneration, !Task.isCancelled else { return }
-            self.error = error.localizedDescription
+            messages = []
+            self.error = friendlyMailError(error)
             if case APIClientError.unauthorized = error {
                 await session.logout()
             }
         }
+    }
+
+    private func friendlyMailError(_ error: Error) -> String {
+        if case APIClientError.http(let code, _) = error, code >= 500 {
+            return "Le serveur mail est temporairement indisponible (HTTP \(code)). Réessaie."
+        }
+        return error.localizedDescription
     }
 
     private func trashMessage(_ msg: MailMessageSummary) async {
@@ -801,6 +822,9 @@ struct MailThreadView: View {
         }
         .onChange(of: showAssistant) { _, presented in
             if presented { assistantDetent = .large }
+        }
+        .onChange(of: nav.assistantDismissToken) { _, _ in
+            showAssistant = false
         }
         .alert(
             "Envoyer cette réponse à \(summary.from?.email ?? "destinataire") ?",

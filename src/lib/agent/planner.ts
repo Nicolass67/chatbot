@@ -69,12 +69,11 @@ function fallbackPlan(goal: string, temporal?: TemporalContext): AgentPlan {
     };
   }
 
-  const shortGoal = goal.slice(0, 60);
   const steps: PlanStep[] = [
     { id: "step-1", title: "Comprendre la demande", status: "active", actions: [] },
     { id: "step-2", title: "Rechercher des informations", status: "pending", actions: [] },
     { id: "step-3", title: "Analyser les résultats", status: "pending", actions: [] },
-    { id: "step-4", title: `Répondre : ${shortGoal}`, status: "pending", actions: [] },
+    { id: "step-4", title: "Rédiger la réponse", status: "pending", actions: [] },
   ];
   return { steps };
 }

@@ -39,6 +39,37 @@ struct ThinkingStatusView: View {
     }
 }
 
+/// Indicateur « ChatGPT-like » dans le fil de messages (emplacement de la future réponse).
+struct InStreamWorkingIndicator: View {
+    let label: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .font(.system(.body, design: .serif).italic())
+                .foregroundStyle(AppTheme.mutedForeground)
+                .opacity(reduceMotion ? 0.85 : (pulse ? 1.0 : 0.42))
+                .animation(
+                    reduceMotion
+                        ? nil
+                        : .easeInOut(duration: 1.05).repeatForever(autoreverses: true),
+                    value: pulse
+                )
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(A11yID.Chat.thinking)
+        .accessibilityAddTraits(.updatesFrequently)
+        .onAppear {
+            if !reduceMotion { pulse = true }
+        }
+    }
+}
+
 /// État de progression user-safe (pas de chaîne de pensée privée).
 enum ThinkingKind: Equatable {
     case reflecting

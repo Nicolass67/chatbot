@@ -74,16 +74,11 @@ enum FilesAssistantContext: Equatable {
         }
     }
 
-    /// Clé stable ConversationSessionStore (fermer ≠ nouveau chat).
+    /// Une seule conversation Files pour tout le navigateur (racine + dossiers).
+    /// Le dossier courant reste dans `ref` pour le contexte IA — fermer/rouvrir
+    /// ou changer de dossier ne recrée plus un chat vide.
     var persistenceKey: String {
-        switch self {
-        case .global:
-            return ConversationSessionStore.globalContextKey
-        case .folder(let rootId, let path, _):
-            return "folder:\(rootId):\(path)"
-        case .file(let fileId, _, _, _):
-            return fileId
-        }
+        ConversationSessionStore.globalContextKey
     }
 }
 

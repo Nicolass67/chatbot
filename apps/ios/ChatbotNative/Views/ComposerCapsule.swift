@@ -35,26 +35,7 @@ struct ComposerCapsule: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space8) {
-            // Fermer collé au composer (au-dessus), pas flottant dans le canvas.
-            if fieldFocused {
-                HStack {
-                    Spacer(minLength: 0)
-                    Button {
-                        fieldFocused = false
-                        Keyboard.dismiss()
-                    } label: {
-                        Text("Fermer")
-                            .font(CNFont.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.muted)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                    }
-                    .accessibilityLabel("Fermer le clavier")
-                    .accessibilityIdentifier(A11yID.Chat.keyboardDismiss)
-                }
-                .padding(.horizontal, AppTheme.space4)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+            // Pas de bouton « Fermer » dans/près du composer — dismiss clavier via tap/scroll.
 
             if editing {
                 HStack(spacing: AppTheme.space8) {
@@ -128,10 +109,10 @@ struct ComposerCapsule: View {
 
                 sendOrStop
             }
+            .padding(.horizontal, AppTheme.space8)
+            .padding(.vertical, AppTheme.space4)
+            .modifier(ComposerGlassChrome(editing: editing, reduceTransparency: reduceTransparency))
         }
-        .padding(.horizontal, AppTheme.space8)
-        .padding(.vertical, AppTheme.space4)
-        .modifier(ComposerGlassChrome(editing: editing, reduceTransparency: reduceTransparency))
         .accessibilityIdentifier(A11yID.Chat.composer)
         .animation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.82), value: isSending)
         .sheet(isPresented: $showTools) {

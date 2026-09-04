@@ -74,6 +74,8 @@ final class AppNavigation {
     /// Files Assistant sheet (in-place).
     var presentFilesAssistant = false
     var filesAssistantContext: FilesAssistantContext = .global
+    /// Incrémente pour forcer la fermeture des sheets Assistant locales (Mail/Files).
+    var assistantDismissToken: Int = 0
 
     /// Intents QA / deep links — uniquement si session authentifiée (pas de bypass auth).
     var qaIntent: QaNavIntent?
@@ -88,6 +90,13 @@ final class AppNavigation {
         selectedTab = .files
     }
 
+    /// Ferme toute sheet Assistant Mail/Files présentée localement.
+    func dismissAssistantSheets() {
+        presentMailAssistant = false
+        presentFilesAssistant = false
+        assistantDismissToken &+= 1
+    }
+
     /// Ouvre le preview du fichier (ferme l’assistant si besoin côté appelant).
     func openFilePreview(
         fileId: String,
@@ -95,8 +104,7 @@ final class AppNavigation {
         rootId: String?,
         folderPath: String?
     ) {
-        presentMailAssistant = false
-        presentFilesAssistant = false
+        dismissAssistantSheets()
         filesDeepLink = FilesDeepLink(
             rootId: rootId,
             fileId: fileId,
@@ -109,8 +117,7 @@ final class AppNavigation {
 
     /// Navigue vers le dossier parent exact du fichier.
     func openFileFolder(rootId: String?, folderPath: String, title: String? = nil) {
-        presentMailAssistant = false
-        presentFilesAssistant = false
+        dismissAssistantSheets()
         filesDeepLink = FilesDeepLink(
             rootId: rootId,
             fileName: title,
@@ -127,8 +134,7 @@ final class AppNavigation {
         rootId: String?,
         folderPath: String?
     ) {
-        presentMailAssistant = false
-        presentFilesAssistant = false
+        dismissAssistantSheets()
         filesDeepLink = FilesDeepLink(
             rootId: rootId,
             fileId: fileId,

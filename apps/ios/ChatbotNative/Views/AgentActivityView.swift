@@ -40,6 +40,27 @@ enum AgentToolLabels {
         return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
     }
 
+    /// Titres d’étapes lisibles (pas la requête user entière).
+    static func friendlyStepTitle(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.lowercased().hasPrefix("répondre :") || t.lowercased().hasPrefix("repondre :") {
+            return "Rédiger la réponse"
+        }
+        if t.count > 48 {
+            t = String(t.prefix(45)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return humanize(t)
+    }
+
+    static func normalizeStepStatus(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "active", "running", "in_progress", "in-progress": return "running"
+        case "done", "completed", "success", "ok": return "done"
+        case "error", "failed", "failure": return "error"
+        default: return "pending"
+        }
+    }
+
     static func friendlyError(_ raw: String?) -> String {
         guard let raw, !raw.isEmpty else {
             return "Une étape n’a pas pu aboutir."
@@ -64,10 +85,10 @@ enum AgentToolLabels {
     }
 }
 
-/// Timeline Agent compacte — expand pour le détail ; collapse après completion.
+/// Timeline Agent compacte — expand auto pendant le travail ; collapse après completion.
 struct AgentActivityView: View {
     let state: AgentActivityState
-    @State private var expanded = false
+    @State private var expanded = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var summaryLine: String {
@@ -84,16 +105,16 @@ struct AgentActivityView: View {
             return "Analyse des sources…"
         }
         if let title = state.currentStepTitle, !title.isEmpty {
-            return AgentToolLabels.humanize(title)
+            return AgentToolLabels.friendlyStepTitle(title)
         }
         switch state.phase {
-        case "planning": return "Je m’occupe de ça…"
+        case "planning": return "Préparation du plan…"
         case "executing":
             if state.totalSteps > 0 {
                 return "Étape \(min(state.stepIndex + 1, state.totalSteps))/\(state.totalSteps)"
             }
-            return "En cours…"
-        case "synthesis", "synthesizing": return "Préparation de la réponse…"
+            return "Travail en cours…"
+        case "synthesis", "synthesizing": return "Rédaction de la réponse…"
         default: return "Agent actif"
         }
     }
@@ -122,7 +143,7 @@ struct AgentActivityView: View {
                             .font(CNFont.callout.weight(.medium))
                             .foregroundStyle(AppTheme.foreground)
                             .lineLimit(2)
-                        Text(state.completed ? "Terminé" : "Activité")
+                        Text(state.completed ? "Terminé" : progressCaption)
                             .font(CNFont.caption2)
                             .foregroundStyle(AppTheme.muted)
                     }
@@ -157,11 +178,20 @@ struct AgentActivityView: View {
                                 Image(systemName: stepIcon(step.status))
                                     .font(.caption)
                                     .foregroundStyle(stepColor(step.status))
+                                    .symbolEffect(
+                                        .pulse,
+                                        options: .repeating.speed(0.55),
+                                        isActive: !reduceMotion && step.status == "running"
+                                    )
                                     .frame(width: 16)
-                                Text(AgentToolLabels.humanize(step.title))
-                                    .font(CNFont.caption)
-                                    .foregroundStyle(AppTheme.foreground)
-                                    .lineLimit(3)
+                                Text(AgentToolLabels.friendlyStepTitle(step.title))
+                                    .font(CNFont.caption.weight(step.status == "running" ? .semibold : .regular))
+                                    .foregroundStyle(
+                                        step.status == "pending"
+                                            ? AppTheme.mutedForeground
+                                            : AppTheme.foreground
+                                    )
+                                    .lineLimit(2)
                             }
                         }
                     } else if state.totalSteps > 0 && !state.completed {
@@ -188,11 +218,28 @@ struct AgentActivityView: View {
         .accessibilityLabel("Activité agent")
         .accessibilityIdentifier(A11yID.Agent.root)
         .opacity(state.completed ? 0.72 : 1)
+        .onAppear {
+            expanded = !state.completed
+        }
         .onChange(of: state.completed) { _, done in
             if done {
-                expanded = false
+                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
             }
         }
+        .onChange(of: state.stepIndex) { _, _ in
+            if !state.completed { expanded = true }
+        }
+        .onChange(of: state.currentStepTitle) { _, _ in
+            if !state.completed { expanded = true }
+        }
+    }
+
+    private var progressCaption: String {
+        let done = state.planSteps.filter { $0.status == "done" }.count
+        if state.totalSteps > 0 {
+            return "\(done)/\(state.totalSteps) étapes"
+        }
+        return "Activité"
     }
 
     private var iconName: String {

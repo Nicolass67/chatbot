@@ -19,18 +19,14 @@ export async function listMailMessagesPage(
 ): Promise<MailMessagesPage> {
   const provider = await getEmailProvider(params.userId);
   const maxResults = params.maxResults ?? 50;
+  const userQ = params.query?.trim() || "";
+  const categoryQ = params.categoryQuery?.trim() || "";
 
-  if (params.query?.trim()) {
+  // Combine free-text search WITH category (never let `q` wipe unread/inbox filter).
+  const combined = [categoryQ, userQ].filter(Boolean).join(" ").trim();
+  if (combined) {
     return provider.searchPage({
-      query: params.query.trim(),
-      maxResults,
-      pageToken: params.pageToken,
-    });
-  }
-
-  if (params.categoryQuery?.trim()) {
-    return provider.searchPage({
-      query: params.categoryQuery.trim(),
+      query: combined,
       maxResults,
       pageToken: params.pageToken,
     });

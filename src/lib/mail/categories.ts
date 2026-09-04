@@ -22,7 +22,9 @@ export const MAIL_CATEGORIES: MailCategoryDef[] = [
   { id: "updates", label: "Notifications", query: "category:updates" },
   { id: "sent", label: "Envoyés", query: "in:sent" },
   { id: "drafts", label: "Brouillons", query: "in:drafts" },
-  { id: "unread", label: "Non lus", labelId: "UNREAD" },
+  // Prefer Gmail search `is:unread` — labelIds=UNREAD alone often returns
+  // misleading resultSizeEstimate (0) and mixes poorly with other filters.
+  { id: "unread", label: "Non lus", query: "is:unread in:inbox" },
   { id: "inbox", label: "Boîte de réception", labelId: "INBOX" },
 ];
 

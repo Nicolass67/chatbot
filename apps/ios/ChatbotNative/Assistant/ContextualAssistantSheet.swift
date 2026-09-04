@@ -50,7 +50,9 @@ struct ContextualAssistantSheet: View {
                         AssistantChatHost(
                             conversation: conversation,
                             scope: scope,
-                            activeContext: contextRef
+                            activeContext: contextRef,
+                            persistenceKey: contextKey,
+                            onRequestClose: { dismiss() }
                         )
                         .id(conversation.id)
                     }
@@ -195,12 +197,16 @@ struct AssistantChatHost: View {
     let conversation: ConversationDTO
     let scope: ConversationScope
     let activeContext: ActiveContextHint
+    var persistenceKey: String? = nil
+    var onRequestClose: (() -> Void)? = nil
 
     var body: some View {
         ChatScreen(
             conversation: conversation,
             forcedScope: scope,
-            forcedActiveContext: activeContext
+            forcedActiveContext: activeContext,
+            persistenceKeyOverride: persistenceKey,
+            onRequestClose: onRequestClose
         )
         .environmentObject(session)
     }

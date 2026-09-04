@@ -178,6 +178,9 @@ struct FilesBrowserView: View {
             .onChange(of: showAssistant) { _, presented in
                 if presented { assistantDetent = .large }
             }
+            .onChange(of: nav.assistantDismissToken) { _, _ in
+                showAssistant = false
+            }
         }
     }
 
@@ -553,6 +556,7 @@ struct FileFolderView: View {
     @State private var typeFilter: FilesTypeFilter = .all
     @State private var showMkdir = false
     @State private var mkdirName = ""
+    @State private var mkdirConfirm: FilesProposeResult?
     @State private var renameTarget: FileEntryDTO?
     @State private var renameText = ""
     @State private var showImporter = false
@@ -690,6 +694,42 @@ struct FileFolderView: View {
         } message: {
             Text("Le dossier sera créé sous « \(title) » après confirmation.")
         }
+        .sheet(item: $mkdirConfirm) { proposal in
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Confirmer la création")
+                        .font(CNFont.title3)
+                    Text(proposal.detail)
+                        .font(CNFont.body)
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer()
+                    Button {
+                        Task { await resolveMkdir(proposal, confirm: true) }
+                    } label: {
+                        Text(confirming ? "Création…" : "Confirmer")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(confirming)
+                    Button("Annuler", role: .cancel) {
+                        Task { await resolveMkdir(proposal, confirm: false) }
+                    }
+                    .disabled(confirming)
+                }
+                .padding(20)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Fermer") {
+                            Task { await resolveMkdir(proposal, confirm: false) }
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .alert("Renommer", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
@@ -699,7 +739,7 @@ struct FileFolderView: View {
             Button("Proposer") { Task { await renameEntry() } }
         }
         .alert("Confirmer l’action ?", isPresented: Binding(
-            get: { pendingPropose != nil },
+            get: { pendingPropose != nil && mkdirConfirm == nil },
             set: { if !$0 && !confirming { pendingPropose = nil } }
         )) {
             Button("Annuler", role: .cancel) { Task { await resolvePropose(confirm: false) } }
@@ -723,6 +763,9 @@ struct FileFolderView: View {
             allowsMultipleSelection: false
         ) { result in
             Task { await handleImport(result) }
+        }
+        .onChange(of: nav.assistantDismissToken) { _, _ in
+            showAssistant = false
         }
         .task { await load(reset: true) }
     }
@@ -889,8 +932,35 @@ struct FileFolderView: View {
         mkdirName = ""
         let dest = path.isEmpty ? name : "\(path)/\(name)"
         do {
-            pendingPropose = try await client.proposeCreateDirectory(rootId: root.id, destRelativePath: dest)
+            let proposal = try await client.proposeCreateDirectory(rootId: root.id, destRelativePath: dest)
             AppHaptics.light()
+            // Attendre la fermeture de l’alert « Nouveau dossier » puis sheet de confirmation
+            // (évite le bug SwiftUI « second alert ignoré »).
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            await MainActor.run {
+                mkdirConfirm = proposal
+            }
+        } catch {
+            openError = error.localizedDescription
+        }
+    }
+
+    private func resolveMkdir(_ pending: FilesProposeResult, confirm: Bool) async {
+        confirming = true
+        defer {
+            confirming = false
+            mkdirConfirm = nil
+        }
+        do {
+            try await client.confirmFilesAction(
+                actionId: pending.actionId,
+                confirmationToken: pending.confirmationToken,
+                confirm: confirm
+            )
+            if confirm {
+                AppHaptics.success()
+                await load(reset: true)
+            }
         } catch {
             openError = error.localizedDescription
         }
