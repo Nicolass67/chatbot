@@ -27,16 +27,17 @@ enum AppTheme {
     static let danger = Color.cn(light: 0xB85C58, dark: 0xC97D79)
     /// Succès sémantique uniquement (pas identité).
     static let success = Color.cn(light: 0x4F7A72, dark: 0x7FA89E)
-    static let warning = Color.cn(light: 0x9A7A5C, dark: 0xB8A090)
+    /// Alerte froide (ardoise) — jamais jaune / ambre d’identité.
+    static let warning = Color.cn(light: 0x6B738A, dark: 0x9AA3B8)
 
     static let border = Color.cn(light: 0xD0D4E0, dark: 0x2E3344)
-    static let borderSubtle = Color.cn(light: 0x00000018, dark: 0xFFFFFF0B)
-    static let glassBorder = Color.cn(light: 0x00000020, dark: 0xFFFFFF28)
+    static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF0A)
+    static let glassBorder = Color.cn(light: 0x00000018, dark: 0xFFFFFF18)
     static let codeBg = Color.cn(light: 0xEBEDF4, dark: 0x12141C)
     static let assistantBar = accent
     static let ambientCool = Color.cn(light: 0x8A94B8, dark: 0x3A4260)
-    /// Corail mat très désaturé — chaleur secondaire, pas CTA principal.
-    static let ambientWarm = Color.cn(light: 0xC4A49A, dark: 0x3A2E2C)
+    /// Chaleur secondaire très désaturée (corail gris) — pas jaune.
+    static let ambientWarm = Color.cn(light: 0xA89894, dark: 0x2E2A2C)
 
     /// Scopes
     static let mailAccent = Color.cn(light: 0x4A6280, dark: 0x8AADC8)
@@ -128,7 +129,7 @@ struct AmbientBackground: View {
             )
             RadialGradient(
                 colors: [
-                    AppTheme.ambientWarm.opacity(scheme == .dark ? 0.05 : 0.07),
+                    AppTheme.ambientCool.opacity(scheme == .dark ? 0.06 : 0.05),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.08, y: 0.95),
@@ -194,7 +195,7 @@ struct RuntimeStatusPill: View {
     private var color: Color {
         switch status.uppercased() {
         case "READY": return AppTheme.accent
-        case "BUSY", "LOADING", "LOADING_MODEL", "SWITCHING": return AppTheme.warning
+        case "BUSY", "LOADING", "LOADING_MODEL", "SWITCHING": return AppTheme.accent.opacity(0.85)
         case "ERROR", "OFFLINE": return AppTheme.danger
         default: return AppTheme.mutedForeground
         }

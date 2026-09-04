@@ -86,6 +86,14 @@ struct ChatRootView: View {
             guard let req else { return }
             Task { await openContextChat(req) }
         }
+        .onAppear {
+            if let conversation {
+                ConversationSessionStore.save(
+                    conversationId: conversation.id,
+                    scope: .general
+                )
+            }
+        }
     }
 
     /// Restaure la conversation générale active, ou en crée une si absente / `forceNew`.
@@ -153,9 +161,8 @@ struct ChatRootView: View {
         case .mail:
             nav.openMailAssistant(.thread(threadId: req.key, subject: req.title, from: nil))
         case .file:
-            nav.openFilesAssistant(
-                .file(fileId: req.key, name: req.title, rootId: "", path: "")
-            )
+            // Pas d’assistant Files : rester sur le Chat général persisté + préremplir.
+            nav.askAboutFile(fileId: req.key, name: req.title)
         }
     }
 }

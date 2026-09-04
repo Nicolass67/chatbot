@@ -26,7 +26,7 @@ export const appSettingsSchema = z.object({
     ),
   memoryEnabled: z.boolean().default(true),
   webSearchEnabled: z.boolean().default(true),
-  webSearchMaxResults: z.number().int().min(1).max(20).default(5),
+  webSearchMaxResults: z.number().int().min(1).max(20).default(8),
   webSearchTimeoutMs: z.number().int().min(1000).default(25000),
   idleTimeoutMinutes: z.number().int().min(1).max(120).default(10),
   recentMessagesCount: z.number().int().min(2).max(50).default(10),

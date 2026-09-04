@@ -206,15 +206,15 @@ private struct ComposerGlassChrome: ViewModifier {
             } else {
                 content
                     .glassEffect(
-                        .regular.tint(AppTheme.accent.opacity(0.12)),
+                        .regular.tint(AppTheme.surface.opacity(0.35)),
                         in: shape
                     )
             }
         }
         .overlay(
             shape.stroke(
-                editing ? AppTheme.accent.opacity(0.55) : AppTheme.glassBorder.opacity(0.55),
-                lineWidth: editing ? 1.5 : 1
+                editing ? AppTheme.accent.opacity(0.4) : AppTheme.borderSubtle,
+                lineWidth: editing ? 1.25 : 0.5
             )
         )
     }

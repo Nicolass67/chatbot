@@ -3,6 +3,7 @@ import SwiftUI
 /// Hub Réglages / Mémoire / À propos (ex-tab « Plus » — désormais sheet).
 struct SettingsHubView: View {
     @Environment(AppNavigation.self) private var nav
+    @EnvironmentObject private var appearance: AppearanceStore
     @State private var path = NavigationPath()
 
     var body: some View {
@@ -65,6 +66,9 @@ struct SettingsHubView: View {
                 MemoryListView()
             }
         }
+        .preferredColorScheme(appearance.mode.preferredColorScheme)
+        .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
+        .id(appearance.mode)
     }
 }
 

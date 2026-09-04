@@ -198,7 +198,7 @@ struct MemorySavedNotice: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.accent.opacity(0.3), lineWidth: 1)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
         )
     }
 }
@@ -215,7 +215,7 @@ struct FileActionPendingCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Action fichiers en attente", systemImage: "exclamationmark.shield")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.warning)
+                .foregroundStyle(AppTheme.foreground)
             Text(opLabel)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.foreground)
@@ -258,7 +258,7 @@ struct FileActionPendingCard: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.warning.opacity(0.45), lineWidth: 1)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
         )
     }
 

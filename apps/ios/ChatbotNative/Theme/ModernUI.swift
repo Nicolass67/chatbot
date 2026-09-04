@@ -239,11 +239,11 @@ struct SoftErrorBanner: View {
             Spacer(minLength: 0)
         }
         .padding(AppTheme.space16)
-        .background(AppTheme.danger.opacity(0.12))
+        .background(AppTheme.danger.opacity(0.10))
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                .stroke(AppTheme.danger.opacity(0.35), lineWidth: 1)
+                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
         )
         .accessibilityElement(children: .combine)
     }
@@ -256,11 +256,11 @@ struct SoftOfflineBanner: View {
             Text("Hors ligne — certaines actions sont indisponibles.")
                 .font(CNFont.caption.weight(.medium))
         }
-        .foregroundStyle(AppTheme.warning)
+        .foregroundStyle(AppTheme.muted)
         .frame(maxWidth: .infinity)
         .padding(.vertical, AppTheme.space12)
         .padding(.horizontal, AppTheme.space16)
-        .background(AppTheme.warning.opacity(0.12))
+        .background(AppTheme.surfaceElevated.opacity(0.9))
     }
 }
 

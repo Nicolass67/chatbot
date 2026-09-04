@@ -34,7 +34,7 @@ struct SettingsView: View {
         case .light:
             return "Thème clair forcé (indépendant du mode système)."
         case .dark:
-            return "Thème sombre Soft Graphite forcé (indépendant du mode système)."
+            return "Thème sombre Ink Indigo forcé (indépendant du mode système)."
         }
     }
 
@@ -62,6 +62,9 @@ struct SettingsView: View {
                 NavigationStack { settingsContent }
             }
         }
+        .preferredColorScheme(appearance.mode.preferredColorScheme)
+        .animation(.easeInOut(duration: AppTheme.motionQuick), value: appearance.mode)
+        .id(appearance.mode)
     }
 
     private var settingsContent: some View {

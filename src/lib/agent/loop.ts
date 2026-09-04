@@ -60,7 +60,7 @@ import {
   sanitizePlanActiveSteps,
 } from "./plan-state";
 import { SearchQueryCache } from "./search-dedup";
-import { WebSearchTracker, type WebSearchStopDecision } from "./web-search-tracker";
+import { WebSearchTracker, resolveSourceBudget, type WebSearchStopDecision } from "./web-search-tracker";
 import {
   buildDeciderSystemPrompt,
   buildDeciderUserPrompt,
@@ -195,7 +195,7 @@ async function runMandatoryRouteWebSearch(
   searchCache: SearchQueryCache,
   collectedSources: SearchResult[],
   onEvent: (event: OrchestratorEvent) => void,
-  options?: { stepTitle?: string }
+  options?: { stepTitle?: string; perQueryMaxResults?: number }
 ): Promise<{
   observation: AgentObservation | null;
   toolResult: import("./executor").ToolExecutionResult | null;
@@ -219,7 +219,11 @@ async function runMandatoryRouteWebSearch(
     stepId: plan.steps[0]?.id,
     plan,
     conversationId: input.conversationId,
-    settings: input.settings,
+    settings: {
+      ...input.settings,
+      webSearchMaxResults:
+        options?.perQueryMaxResults ?? input.settings.webSearchMaxResults,
+    },
     signal: input.signal,
     userGoal: input.userContent,
     temporalContext: route.temporal,
@@ -260,7 +264,7 @@ async function runMandatoryRouteWebSearch(
       },
       onSources: (sources) => {
         mergeUniqueSources(collectedSources, sources, {
-          maxTotal: MAX_COLLECTED_SOURCES,
+          maxTotal: MAX_COLLECTED_SOURCES_CEILING,
         });
         onEvent({ type: "sources", sources: [...collectedSources] });
       },
@@ -370,8 +374,8 @@ function trackWebSearchResult(
   });
 }
 
-/** Plafond structurel des sources conservées pour UI / DB / contexte. */
-const MAX_COLLECTED_SOURCES = 15;
+/** Plafond structurel — borné par le budget adaptatif (jusqu’à 25). */
+const MAX_COLLECTED_SOURCES_CEILING = 25;
 
 function shouldSkipDeciderLoop(
   researchState: ResearchFlowState,
@@ -493,7 +497,16 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     input.onEvent({ type: "agent_plan", plan });
 
     const searchCache = new SearchQueryCache();
-    const webSearchTracker = new WebSearchTracker();
+    const sourceBudget = resolveSourceBudget({
+      searchType: route.webSearch?.searchType,
+      researchRequired: route.webSearch?.required === true,
+      webSearchMaxResults: input.settings.webSearchMaxResults,
+    });
+    const maxCollectedSources = Math.min(
+      MAX_COLLECTED_SOURCES_CEILING,
+      sourceBudget.hardMax
+    );
+    const webSearchTracker = new WebSearchTracker(sourceBudget);
     let webStopReason: string | null = null;
     let webSearchStopped = false;
     let runOutcome: AgentRunOutcome = "success";
@@ -558,6 +571,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             stepTitle: researchState.required
               ? "Recherche approfondie initiale"
               : "Recherche Web (données actuelles)",
+            perQueryMaxResults: sourceBudget.perQueryMaxResults,
           }
         );
         researchState = markInitialResearchSearchDone(researchState);
@@ -837,7 +851,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           stepId: decision.stepId,
           plan,
           conversationId: input.conversationId,
-          settings: input.settings,
+          settings: {
+            ...input.settings,
+            webSearchMaxResults: sourceBudget.perQueryMaxResults,
+          },
           signal: input.signal,
           userGoal: input.userContent,
           temporalContext,
@@ -878,7 +895,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             },
             onSources: (sources) => {
               mergeUniqueSources(collectedSources, sources, {
-                maxTotal: MAX_COLLECTED_SOURCES,
+                maxTotal: maxCollectedSources,
               });
               input.onEvent({ type: "sources", sources: [...collectedSources] });
             },
@@ -1030,12 +1047,12 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     );
     const synthesisSources = capSourcesForSynthesis(
       collectedSources,
-      Math.min(input.settings.webSearchMaxResults * 2, 10)
+      maxCollectedSources
     );
-    // Conservé pour UI/DB : même ensemble compact que la synthèse (pas 100+ bruts)
+    // Conservé pour UI/DB : même ensemble que la synthèse (budget adaptatif).
     const sourcesForPersist = synthesisSources.length > 0
       ? synthesisSources
-      : capSourcesForSynthesis(collectedSources, MAX_COLLECTED_SOURCES);
+      : capSourcesForSynthesis(collectedSources, maxCollectedSources);
     const sourcesBlock =
       synthesisSources.length > 0
         ? formatSearchResultsBlock(

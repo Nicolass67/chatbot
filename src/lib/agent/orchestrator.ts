@@ -323,7 +323,7 @@ async function finalizeStreamedAssistant(params: {
   if (collectedSources.length > 0) {
     input.onEvent({
       type: "sources",
-      sources: dedupeAndCapSources(collectedSources, 12),
+      sources: dedupeAndCapSources(collectedSources, 20),
     });
   }
 
@@ -334,7 +334,7 @@ async function finalizeStreamedAssistant(params: {
     settings,
     assistantId,
     fullContent,
-    collectedSources: dedupeAndCapSources(collectedSources, 12),
+    collectedSources: dedupeAndCapSources(collectedSources, 20),
     pendingAttachments,
     memoryIntent,
   }).catch((error) => {
@@ -1180,7 +1180,7 @@ async function runChatMode(params: {
 
       for (const result of toolResults) {
         contextMessages.push(result.message);
-        mergeUniqueSources(collectedSources, result.sources, { maxTotal: 15 });
+        mergeUniqueSources(collectedSources, result.sources, { maxTotal: 25 });
       }
 
       emitContextSnapshot();
@@ -1264,7 +1264,7 @@ async function streamFinalResponse(params: {
   }
 
   if (collectedSources.length > 0) {
-    const capped = dedupeAndCapSources(collectedSources, 12);
+    const capped = dedupeAndCapSources(collectedSources, 20);
     input.onEvent({ type: "sources", sources: capped });
   }
 
@@ -1275,7 +1275,7 @@ async function streamFinalResponse(params: {
     settings,
     assistantId,
     fullContent,
-    collectedSources: dedupeAndCapSources(collectedSources, 12),
+    collectedSources: dedupeAndCapSources(collectedSources, 20),
     pendingAttachments,
     memoryIntent,
   }).catch((error) => {

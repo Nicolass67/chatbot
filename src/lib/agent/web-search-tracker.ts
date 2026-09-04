@@ -7,6 +7,8 @@ export interface WebSearchRecord {
   usableResultCount: number;
   /** Nouvelles URLs uniques ajoutées (si fourni). */
   uniqueAdded?: number;
+  /** Domaines distincts ajoutés cette recherche (si fourni). */
+  uniqueDomainsAdded?: number;
   error?: string;
   deduplicated?: boolean;
 }
@@ -16,6 +18,62 @@ export interface WebSearchStopDecision {
   reason?: string;
   /** sufficient = assez de sources, failure = infra / données inexploitables */
   kind?: "sufficient" | "failure";
+}
+
+/** Budget adaptatif — ni 5 figés, ni 100+. */
+export type ResearchIntensity = "simple" | "standard" | "complex";
+
+export interface SourceBudget {
+  intensity: ResearchIntensity;
+  /** Seuil d’arrêt « assez de preuves ». */
+  targetMin: number;
+  /** Plafond dur collecte / synthèse. */
+  hardMax: number;
+  /** Nombre max de recherches Web distinctes. */
+  maxSearches: number;
+  /** maxResults par appel SearXNG. */
+  perQueryMaxResults: number;
+}
+
+export function resolveSourceBudget(input: {
+  searchType?: string | null;
+  researchRequired?: boolean;
+  webSearchMaxResults?: number;
+}): SourceBudget {
+  const hint = Math.max(3, Math.min(20, input.webSearchMaxResults ?? 8));
+  const type = (input.searchType ?? "").toLowerCase();
+  const research =
+    input.researchRequired === true ||
+    type === "research" ||
+    type === "deep";
+
+  if (research) {
+    return {
+      intensity: "complex",
+      targetMin: 12,
+      hardMax: Math.min(25, Math.max(18, hint * 3)),
+      maxSearches: 4,
+      perQueryMaxResults: Math.min(12, Math.max(8, hint)),
+    };
+  }
+
+  if (type === "single" || type === "quick") {
+    return {
+      intensity: "simple",
+      targetMin: 8,
+      hardMax: Math.min(12, Math.max(8, hint * 2)),
+      maxSearches: 2,
+      perQueryMaxResults: Math.min(10, Math.max(6, hint)),
+    };
+  }
+
+  return {
+    intensity: "standard",
+    targetMin: 10,
+    hardMax: Math.min(20, Math.max(12, hint * 2)),
+    maxSearches: 3,
+    perQueryMaxResults: Math.min(10, Math.max(7, hint)),
+  };
 }
 
 function isInfrastructureFailure(status: WebSearchStatus): boolean {
@@ -28,8 +86,7 @@ function isInfrastructureFailure(status: WebSearchStatus): boolean {
 
 /**
  * Suit les recherches Web et décide quand arrêter la boucle Agent.
- * Objectif : minimum de recherches pour un contexte utile — pas d'accumulation
- * de dizaines/centaines de sources.
+ * Budget adaptatif + early-stop qualité (pas un plafond fixe à 5).
  */
 export class WebSearchTracker {
   private records: WebSearchRecord[] = [];
@@ -37,7 +94,24 @@ export class WebSearchTracker {
   private consecutiveEmpty = 0;
   private totalUsable = 0;
   private uniqueSourceCount = 0;
+  private uniqueDomainCount = 0;
   private uniqueQueryCount = 0;
+  private budget: SourceBudget;
+
+  constructor(budget?: Partial<SourceBudget> | SourceBudget) {
+    this.budget = {
+      ...resolveSourceBudget({}),
+      ...budget,
+    };
+  }
+
+  setBudget(budget: SourceBudget): void {
+    this.budget = budget;
+  }
+
+  get currentBudget(): SourceBudget {
+    return this.budget;
+  }
 
   record(entry: WebSearchRecord): void {
     if (entry.deduplicated) return;
@@ -65,6 +139,9 @@ export class WebSearchTracker {
         ? entry.uniqueAdded
         : entry.usableResultCount;
     this.uniqueSourceCount += Math.max(0, added);
+    if (typeof entry.uniqueDomainsAdded === "number") {
+      this.uniqueDomainCount += Math.max(0, entry.uniqueDomainsAdded);
+    }
   }
 
   private countUniqueQueries(): number {
@@ -82,12 +159,16 @@ export class WebSearchTracker {
       uniqueQueries: this.uniqueQueryCount,
       totalUsable: this.totalUsable,
       uniqueSources: this.uniqueSourceCount,
+      uniqueDomains: this.uniqueDomainCount,
       consecutiveFailures: this.consecutiveFailures,
       consecutiveEmpty: this.consecutiveEmpty,
+      budget: this.budget,
     };
   }
 
   shouldStopForResearch(): WebSearchStopDecision {
+    const { targetMin, hardMax, maxSearches } = this.budget;
+
     if (this.consecutiveFailures >= 2) {
       const last = this.records[this.records.length - 1];
       const timedOut = last?.status === "timeout";
@@ -100,13 +181,35 @@ export class WebSearchTracker {
       };
     }
 
-    // Hard caps — une recherche ordinaire ne doit pas enchaîner indéfiniment
-    if (this.records.length >= 3) {
+    // Preuves suffisantes + diversité minimale
+    if (
+      this.uniqueSourceCount >= targetMin &&
+      (this.uniqueDomainCount >= 3 || this.uniqueSourceCount >= targetMin + 2)
+    ) {
       return {
         stop: true,
-        kind: this.uniqueSourceCount > 0 || this.totalUsable > 0
-          ? "sufficient"
-          : "failure",
+        kind: "sufficient",
+        reason: "Sources Web suffisantes et diversifiées.",
+      };
+    }
+
+    // Assez de sources même sans comptage domaines
+    if (this.uniqueSourceCount >= Math.min(hardMax, targetMin + 4)) {
+      return {
+        stop: true,
+        kind: "sufficient",
+        reason: "Sources Web suffisantes collectées.",
+      };
+    }
+
+    // Hard cap recherches
+    if (this.records.length >= maxSearches) {
+      return {
+        stop: true,
+        kind:
+          this.uniqueSourceCount > 0 || this.totalUsable > 0
+            ? "sufficient"
+            : "failure",
         reason:
           this.uniqueSourceCount > 0 || this.totalUsable > 0
             ? "Limite de recherches Web atteinte — synthèse avec les sources disponibles."
@@ -114,34 +217,16 @@ export class WebSearchTracker {
       };
     }
 
-    // Assez de sources distinctes après 1 seule recherche réussie
-    if (this.uniqueQueryCount >= 1 && this.uniqueSourceCount >= 5) {
+    // Cap dur sources
+    if (this.uniqueSourceCount >= hardMax) {
       return {
         stop: true,
         kind: "sufficient",
-        reason: "Sources Web suffisantes collectées.",
+        reason: "Plafond de sources atteint — synthèse.",
       };
     }
 
-    // Deux angles distincts avec un minimum de hits
-    if (this.uniqueQueryCount >= 2 && this.uniqueSourceCount >= 4) {
-      return {
-        stop: true,
-        kind: "sufficient",
-        reason: "Sources Web suffisantes après plusieurs recherches.",
-      };
-    }
-
-    // Fallback sur total brut (si uniqueAdded non fourni)
-    if (this.totalUsable >= 8 && this.uniqueQueryCount >= 1) {
-      return {
-        stop: true,
-        kind: "sufficient",
-        reason: "Sources Web suffisantes collectées.",
-      };
-    }
-
-    if (this.uniqueQueryCount >= 3 && this.totalUsable === 0) {
+    if (this.uniqueQueryCount >= maxSearches && this.totalUsable === 0) {
       return {
         stop: true,
         kind: "failure",

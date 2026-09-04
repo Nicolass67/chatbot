@@ -188,7 +188,7 @@ struct MailInboxView: View {
             if oauthEmails.isEmpty {
                 HStack(alignment: .top, spacing: AppTheme.space12) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(AppTheme.warning)
+                        .foregroundStyle(AppTheme.muted)
                     VStack(alignment: .leading, spacing: AppTheme.space4) {
                         Text(oauthConfigured
                              ? "Aucun compte Gmail connecté"
@@ -212,8 +212,12 @@ struct MailInboxView: View {
                     Spacer(minLength: 0)
                 }
                 .padding(AppTheme.space12)
-                .background(AppTheme.warning.opacity(0.12))
+                .background(AppTheme.surfaceElevated)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                )
                 .padding(.horizontal, AppTheme.space16)
             }
 

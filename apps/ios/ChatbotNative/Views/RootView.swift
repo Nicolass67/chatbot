@@ -181,6 +181,8 @@ struct MainTabView: View {
                 .environmentObject(session)
                 .environmentObject(appearance)
                 .environment(nav)
+                .preferredColorScheme(appearance.mode.preferredColorScheme)
+                .id(appearance.mode)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }

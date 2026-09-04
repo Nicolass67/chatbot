@@ -201,6 +201,7 @@ struct ChatScreen: View {
             chatMode = conversation.chatMode ?? "chat"
             reasoningEffort = conversation.reasoningEffort ?? ""
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
+            persistActiveConversation()
             await loadMessages()
             await loadSettings()
             await refreshRuntimeStatus()
@@ -223,13 +224,14 @@ struct ChatScreen: View {
                 draft = text
                 nav.chatComposerPrefill = nil
             }
-        }
-        .onDisappear {
-            if isSending {
-                sendTask?.cancel()
-                Task { await streamingService.cancel() }
+            // Retour depuis Files / preview : recharger si l’état local a été vidé.
+            if messages.isEmpty, !isSending {
+                chromeById = ConversationSessionStore.chrome(for: conversation.id)
+                Task { await loadMessages() }
             }
         }
+        // Ne pas annuler le stream sur changement d’onglet / preview fichier —
+        // seul le background (scenePhase) ou Stop explicite interrompt.
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, isSending {
                 sendTask?.cancel()
@@ -674,8 +676,26 @@ struct ChatScreen: View {
         }
     }
 
+    private func persistActiveConversation() {
+        let scope = forcedScope ?? .general
+        let key: String? = {
+            if scope == .general { return nil }
+            return forcedActiveContext?.mailThreadId
+                ?? forcedActiveContext?.fileId
+                ?? ConversationSessionStore.globalContextKey
+        }()
+        ConversationSessionStore.save(
+            conversationId: conversation.id,
+            scope: scope,
+            contextKey: key
+        )
+    }
+
     private func openFoundFilePreview(_ file: FilesFoundFileDTO) {
-        if forcedScope != nil { dismiss() }
+        persistActiveConversation()
+        // Mail sheet uniquement : fermer pour révéler l’onglet Files.
+        // Chat général : conserver l’écran (TabView) pour retrouver la conversation.
+        if forcedScope == .mail { dismiss() }
         let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
         nav.openFilePreview(
             fileId: file.id,
@@ -686,7 +706,8 @@ struct ChatScreen: View {
     }
 
     private func revealFoundFileFolder(_ file: FilesFoundFileDTO) {
-        if forcedScope != nil { dismiss() }
+        persistActiveConversation()
+        if forcedScope == .mail { dismiss() }
         let parent = FilesPathHelpers.parentFolder(of: file.relativePath)
         nav.openFileFolder(
             rootId: file.rootId,
