@@ -1011,12 +1011,14 @@ struct FileFolderView: View {
         .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
+                VStack(spacing: 1) {
                     Text(title).font(.headline)
-                    Text(breadcrumb)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                        .lineLimit(1)
+                    if !path.isEmpty {
+                        Text(breadcrumb)
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .lineLimit(1)
+                    }
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -1382,67 +1384,25 @@ struct FileFolderView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], spacing: 10) {
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(minimum: 148), spacing: 14),
+                    GridItem(.flexible(minimum: 148), spacing: 14),
+                ],
+                spacing: 18
+            ) {
                 ForEach(displayedEntries) { entry in
                     Button {
                         handleEntryTap(entry)
                     } label: {
-                        ZStack(alignment: .topTrailing) {
-                            VStack(spacing: 6) {
-                                FilesEntryThumbnail(
-                                    entry: entry,
-                                    baseURL: session.baseURL,
-                                    token: session.token
-                                )
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(1, contentMode: .fit)
-                                .background(AppTheme.surfaceElevated.opacity(0.55))
-                                .compositingGroup()
-                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-
-                                Text(entry.name ?? entry.relativePath)
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(AppTheme.foreground)
-                                    .lineLimit(2)
-                                    .truncationMode(.middle)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .top)
-
-                                Text(gridMetaLabel(for: entry))
-                                    .font(.caption2)
-                                    .foregroundStyle(AppTheme.mutedForeground)
-                                    .lineLimit(1)
-                                    .frame(maxWidth: .infinity)
-                                    .opacity(gridMetaLabel(for: entry).isEmpty ? 0 : 1)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .top)
-                            .background(
-                                selection.contains(entry.fileId ?? "")
-                                    ? AppTheme.accent.opacity(0.14)
-                                    : AppTheme.surface.opacity(0.85)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                                    .stroke(
-                                        selection.contains(entry.fileId ?? "")
-                                            ? AppTheme.accent.opacity(0.45)
-                                            : AppTheme.borderSubtle.opacity(0.6),
-                                        lineWidth: 0.5
-                                    )
-                            )
-
-                            if selection.isSelecting, !isFolder(entry) {
-                                Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(
-                                        selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
-                                    )
-                                    .padding(6)
-                            }
-                        }
-                        .contentShape(Rectangle())
+                        FilesGridCell(
+                            entry: entry,
+                            baseURL: session.baseURL,
+                            token: session.token,
+                            meta: gridMetaLabel(for: entry),
+                            selected: selection.contains(entry.fileId ?? ""),
+                            selecting: selection.isSelecting && !isFolder(entry)
+                        )
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
@@ -1454,13 +1414,15 @@ struct FileFolderView: View {
                     }
                 }
             }
-            .padding(14)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
             .padding(.bottom, AppTheme.space24)
         }
     }
 
     private func gridMetaLabel(for entry: FileEntryDTO) -> String {
-        guard !isFolder(entry), let size = entry.sizeBytes, size > 0 else { return " " }
+        if isFolder(entry) { return "Dossier" }
+        guard let size = entry.sizeBytes, size > 0 else { return "" }
         return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
     }
 
@@ -1951,40 +1913,198 @@ struct FileFolderView: View {
     }
 }
 
+/// MARK: - Grille Files (tuiles typées)
+
+private enum FilesGridKind {
+    case folder, image, pdf, text, code, archive, audio, video, sheet, other
+
+    static func classify(name: String, isFolder: Bool) -> FilesGridKind {
+        if isFolder { return .folder }
+        let n = name.lowercased()
+        if [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".bmp", ".tif", ".tiff"].contains(where: { n.hasSuffix($0) }) {
+            return .image
+        }
+        if n.hasSuffix(".pdf") { return .pdf }
+        if [".md", ".txt", ".rtf", ".log"].contains(where: { n.hasSuffix($0) }) { return .text }
+        if [".json", ".csv", ".xml", ".yaml", ".yml", ".swift", ".ts", ".tsx", ".js", ".py", ".html", ".css", ".sql"].contains(where: { n.hasSuffix($0) }) {
+            return .code
+        }
+        if [".zip", ".rar", ".7z", ".tar", ".gz", ".dmg", ".iso"].contains(where: { n.hasSuffix($0) }) { return .archive }
+        if [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"].contains(where: { n.hasSuffix($0) }) { return .audio }
+        if [".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"].contains(where: { n.hasSuffix($0) }) { return .video }
+        if [".xls", ".xlsx", ".numbers"].contains(where: { n.hasSuffix($0) }) { return .sheet }
+        if [".doc", ".docx", ".pages"].contains(where: { n.hasSuffix($0) }) { return .text }
+        return .other
+    }
+
+    var symbol: String {
+        switch self {
+        case .folder: return "folder.fill"
+        case .image: return "photo.fill"
+        case .pdf: return "doc.richtext.fill"
+        case .text: return "doc.plaintext.fill"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .archive: return "archivebox.fill"
+        case .audio: return "waveform"
+        case .video: return "film.fill"
+        case .sheet: return "tablecells.fill"
+        case .other: return "doc.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .folder: return AppTheme.filesAccent
+        case .image: return Color(red: 0.45, green: 0.72, blue: 0.92)
+        case .pdf: return Color(red: 0.92, green: 0.42, blue: 0.40)
+        case .text: return Color(red: 0.62, green: 0.72, blue: 0.86)
+        case .code: return Color(red: 0.55, green: 0.82, blue: 0.70)
+        case .archive: return Color(red: 0.78, green: 0.62, blue: 0.92)
+        case .audio: return Color(red: 0.95, green: 0.62, blue: 0.45)
+        case .video: return Color(red: 0.70, green: 0.55, blue: 0.95)
+        case .sheet: return Color(red: 0.45, green: 0.78, blue: 0.58)
+        case .other: return AppTheme.mutedForeground
+        }
+    }
+}
+
+/// Cellule grille — preview typé + libellé (style Fichiers iOS, sans double carte).
+private struct FilesGridCell: View {
+    let entry: FileEntryDTO
+    let baseURL: URL
+    let token: String?
+    let meta: String
+    let selected: Bool
+    let selecting: Bool
+
+    private var isFolder: Bool { entry.isDirectory == true }
+    private var displayName: String { entry.name ?? entry.relativePath }
+    private var kind: FilesGridKind {
+        FilesGridKind.classify(name: displayName, isFolder: isFolder)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topTrailing) {
+                FilesEntryThumbnail(
+                    entry: entry,
+                    baseURL: baseURL,
+                    token: token,
+                    iconSize: isFolder ? 44 : 34,
+                    gridStyle: true
+                )
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .background {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(previewBackground)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(
+                                    selected ? AppTheme.accent.opacity(0.55) : Color.white.opacity(0.07),
+                                    lineWidth: selected ? 1.5 : 0.8
+                                )
+                        }
+                        .shadow(color: Color.black.opacity(0.22), radius: 10, y: 4)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                if selecting {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(
+                            selected ? Color.white : AppTheme.mutedForeground,
+                            selected ? AppTheme.accent : Color.white.opacity(0.28)
+                        )
+                        .padding(8)
+                } else if let badge = extensionBadge {
+                    Text(badge)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .tracking(0.3)
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(kind.tint.opacity(0.88), in: Capsule(style: .continuous))
+                        .padding(8)
+                }
+            }
+            .scaleEffect(selected ? 0.97 : 1)
+            .animation(.snappy(duration: 0.18), value: selected)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+
+                Text(meta.isEmpty ? " " : meta)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .lineLimit(1)
+                    .opacity(meta.isEmpty ? 0 : 1)
+            }
+            .padding(.horizontal, 2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(displayName), \(isFolder ? "dossier" : meta)")
+    }
+
+    private var previewBackground: LinearGradient {
+        LinearGradient(
+            colors: [
+                kind.tint.opacity(isFolder ? 0.30 : 0.20),
+                kind.tint.opacity(0.07),
+                AppTheme.surfaceElevated.opacity(0.95),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var extensionBadge: String? {
+        if isFolder || kind == .image { return nil }
+        let ext = (displayName as NSString).pathExtension.uppercased()
+        if !ext.isEmpty, ext.count <= 5 { return ext }
+        switch kind {
+        case .pdf: return "PDF"
+        case .text: return "TXT"
+        case .code: return "CODE"
+        case .archive: return "ZIP"
+        case .audio: return "AUDIO"
+        case .video: return "VIDEO"
+        case .sheet: return "XLS"
+        default: return nil
+        }
+    }
+}
+
 /// Miniature lazy pour la grille / détails Files (cache ImagePipeline, pas de gros fichiers).
 private struct FilesEntryThumbnail: View {
     let entry: FileEntryDTO
     let baseURL: URL
     let token: String?
     var iconSize: CGFloat = 30
+    var gridStyle: Bool = false
 
     @State private var image: UIImage?
     @State private var loading = false
 
     private var isFolder: Bool { entry.isDirectory == true }
-
-    private var isVisual: Bool {
-        guard !isFolder else { return false }
-        let n = (entry.name ?? entry.relativePath).lowercased()
-        return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"].contains { n.hasSuffix($0) }
+    private var displayName: String { entry.name ?? entry.relativePath }
+    private var kind: FilesGridKind {
+        FilesGridKind.classify(name: displayName, isFolder: isFolder)
     }
+    private var isVisual: Bool { kind == .image }
 
     private var cacheKey: String {
         "files-thumb-\(entry.fileId ?? entry.relativePath)"
     }
 
-    private var systemIcon: String {
-        if isFolder { return "folder.fill" }
-        let n = (entry.name ?? "").lowercased()
-        if n.hasSuffix(".pdf") { return "doc.richtext" }
-        if isVisual { return "photo" }
-        if n.hasSuffix(".md") || n.hasSuffix(".txt") { return "doc.plaintext" }
-        if n.hasSuffix(".json") || n.hasSuffix(".csv") { return "tablecells" }
-        return "doc.fill"
-    }
-
     var body: some View {
-        // Overlay + clip : scaledToFill ne sort jamais de la tile (grille).
         Color.clear
             .overlay {
                 Group {
@@ -1993,11 +2113,29 @@ private struct FilesEntryThumbnail: View {
                             .resizable()
                             .scaledToFill()
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                            .overlay(alignment: .bottom) {
+                                if gridStyle {
+                                    LinearGradient(
+                                        colors: [.clear, .black.opacity(0.28)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                    .frame(height: 36)
+                                    .allowsHitTesting(false)
+                                }
+                            }
                     } else {
                         ZStack {
-                            Image(systemName: systemIcon)
-                                .font(.system(size: iconSize, weight: .medium))
-                                .foregroundStyle(isFolder ? AppTheme.filesAccent : AppTheme.muted)
+                            if gridStyle {
+                                Circle()
+                                    .fill(kind.tint.opacity(0.18))
+                                    .frame(width: iconSize * 1.9, height: iconSize * 1.9)
+                                    .blur(radius: 0.5)
+                            }
+                            Image(systemName: kind.symbol)
+                                .font(.system(size: iconSize, weight: gridStyle ? .semibold : .medium))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(kind.tint)
                             if loading {
                                 ProgressView()
                                     .controlSize(.mini)
@@ -2011,7 +2149,7 @@ private struct FilesEntryThumbnail: View {
             }
             .clipped()
             .compositingGroup()
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: gridStyle ? 18 : AppTheme.radiusMd, style: .continuous))
             .contentShape(Rectangle())
             .task(id: entry.fileId ?? entry.relativePath) {
                 await loadIfNeeded()
@@ -2031,7 +2169,7 @@ private struct FilesEntryThumbnail: View {
             let client = APIClient(baseURL: baseURL, token: token)
             let dto = try await client.fetchFileContent(fileId: fileId)
             guard dto.kind == "image", let data = dto.binary,
-                  let thumb = ImagePipeline.thumbnail(data: data, maxPixelSize: 220)
+                  let thumb = ImagePipeline.thumbnail(data: data, maxPixelSize: gridStyle ? 360 : 220)
             else { return }
             await ImagePipeline.store(thumb, key: cacheKey)
             image = thumb
