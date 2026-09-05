@@ -336,14 +336,20 @@ export function lmStudioAbort(requestId: string): void {
 }
 
 let lastActivityAt: Date | null = null;
-let busy = false;
+/** Refcount — un booléen global ment sous requêtes concurrentes. */
+let busyCount = 0;
 
 export function recordRuntimeActivity(): void {
   lastActivityAt = new Date();
 }
 
 export function setRuntimeBusy(value: boolean): void {
-  busy = value;
+  if (value) busyCount += 1;
+  else busyCount = Math.max(0, busyCount - 1);
+}
+
+function isRuntimeBusy(): boolean {
+  return busyCount > 0;
 }
 
 function mapModelPhaseToRuntimeStatus(
@@ -376,7 +382,7 @@ export async function getRuntimeStatus(): Promise<RuntimeStatusInfo> {
 
   const healthy = await lmStudioHealthCheck();
   const modelState = getModelManager().getState();
-  const status = mapModelPhaseToRuntimeStatus(modelState, healthy, busy);
+  const status = mapModelPhaseToRuntimeStatus(modelState, healthy, isRuntimeBusy());
 
   return {
     status,
