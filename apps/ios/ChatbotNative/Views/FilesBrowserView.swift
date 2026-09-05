@@ -1979,7 +1979,7 @@ private struct FilesEntryThumbnail: View {
                         ZStack {
                             Image(systemName: systemIcon)
                                 .font(.system(size: iconSize, weight: .medium))
-                                .foregroundStyle(isFolder ? AppTheme.filesAccent : AppTheme.filesAccent.opacity(0.72))
+                                .foregroundStyle(isFolder ? AppTheme.filesAccent : AppTheme.muted)
                             if loading {
                                 ProgressView()
                                     .controlSize(.mini)
