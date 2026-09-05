@@ -1433,7 +1433,7 @@ struct FileFolderView: View {
                     detailRow(entry, selected: selected)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(selected ? AppTheme.accent.opacity(0.10) : Color.clear)
+                        .background(selected ? AppTheme.filesAccent.opacity(0.12) : Color.clear)
                         .contentShape(Rectangle())
                         .onTapGesture { handleEntryTap(entry) }
                         .contextMenu { entryContextMenu(entry) }
@@ -1468,7 +1468,11 @@ struct FileFolderView: View {
                 iconSize: 18
             )
             .frame(width: 40, height: 40)
-            .background(AppTheme.surfaceElevated.opacity(0.45))
+            .background(
+                isFolder(entry)
+                    ? AppTheme.filesAccent.opacity(0.14)
+                    : AppTheme.surfaceElevated.opacity(0.45)
+            )
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1478,15 +1482,24 @@ struct FileFolderView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                HStack(spacing: 6) {
-                    Text(compactDetailMeta(for: entry))
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.mutedForeground)
+                HStack(spacing: 5) {
+                    Text(detailTypeLabel(for: entry))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.filesAccent)
                         .lineLimit(1)
+                    ForEach(compactDetailMetaParts(for: entry), id: \.self) { part in
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.mutedForeground.opacity(0.7))
+                        Text(part)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .lineLimit(1)
+                    }
                     if entry.indexed == true, !isFolder(entry) {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.caption2)
-                            .foregroundStyle(AppTheme.accent.opacity(0.85))
+                            .foregroundStyle(AppTheme.filesAccent)
                             .accessibilityLabel("Indexé")
                     }
                 }
@@ -1500,7 +1513,7 @@ struct FileFolderView: View {
             } else if isFolder(entry) {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.mutedForeground)
+                    .foregroundStyle(AppTheme.filesAccent.opacity(0.55))
             } else {
                 detailFileIconActions(entry)
             }
@@ -1520,6 +1533,7 @@ struct FileFolderView: View {
                         if downloadingFileId == entry.fileId {
                             ProgressView()
                                 .controlSize(.mini)
+                                .tint(AppTheme.accent)
                         } else {
                             Image(systemName: "arrow.down.circle")
                                 .font(.body.weight(.medium))
@@ -1541,7 +1555,7 @@ struct FileFolderView: View {
                 Image(systemName: "folder")
                     .font(.body.weight(.medium))
                     .frame(width: 36, height: 36)
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(AppTheme.filesAccent)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1561,21 +1575,16 @@ struct FileFolderView: View {
         return "Fichier"
     }
 
-    private func compactDetailMeta(for entry: FileEntryDTO) -> String {
-        if isFolder(entry) {
-            if let when = formatMtime(entry.mtimeMs, short: true) {
-                return "Dossier · \(when)"
-            }
-            return "Dossier"
-        }
-        var parts: [String] = [detailTypeLabel(for: entry)]
-        if let size = entry.sizeBytes, size > 0 {
+    /// Parties méta après le type (taille, date) — le type est coloré en secondaire à part.
+    private func compactDetailMetaParts(for entry: FileEntryDTO) -> [String] {
+        var parts: [String] = []
+        if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
             parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
         }
         if let when = formatMtime(entry.mtimeMs, short: true) {
             parts.append(when)
         }
-        return parts.joined(separator: " · ")
+        return parts
     }
 
     private func formatMtime(_ ms: Int?, short: Bool = false) -> String? {
@@ -1637,7 +1646,7 @@ struct FileFolderView: View {
     private func fileRow(_ entry: FileEntryDTO) -> some View {
         HStack(spacing: 12) {
             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
+                .foregroundStyle(isFolder(entry) ? AppTheme.filesAccent : AppTheme.muted)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name ?? entry.relativePath)
@@ -1970,7 +1979,7 @@ private struct FilesEntryThumbnail: View {
                         ZStack {
                             Image(systemName: systemIcon)
                                 .font(.system(size: iconSize, weight: .medium))
-                                .foregroundStyle(isFolder ? AppTheme.accent : AppTheme.muted)
+                                .foregroundStyle(isFolder ? AppTheme.filesAccent : AppTheme.filesAccent.opacity(0.72))
                             if loading {
                                 ProgressView()
                                     .controlSize(.mini)
