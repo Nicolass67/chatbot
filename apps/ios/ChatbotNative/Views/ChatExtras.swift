@@ -308,7 +308,7 @@ struct MemoryUpdatedChip: View {
                         Image(systemName: "brain.head.profile")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
-                        Text("Mémoire mise à jour")
+                        Text("Souvenirs actualisés")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.foreground)
                         Image(systemName: "chevron.right")
@@ -325,7 +325,7 @@ struct MemoryUpdatedChip: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Mémoire mise à jour")
+                .accessibilityLabel("Souvenirs actualisés")
                 .accessibilityHint(memory.content)
                 .contextMenu {
                     Button("Voir le souvenir", systemImage: "brain.head.profile") {
@@ -339,7 +339,7 @@ struct MemoryUpdatedChip: View {
                 }
             }
         }
-        .accessibilityLabel("Mémoire mise à jour: \(memory.content)")
+        .accessibilityLabel("Souvenirs actualisés: \(memory.content)")
     }
 }
 

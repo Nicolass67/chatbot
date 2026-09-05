@@ -5,8 +5,7 @@ import { maybeSummarizeConversation } from "@/lib/context/summarizer";
 import { maybeGenerateConversationTitle } from "@/lib/conversation/title-generator";
 import { getDb } from "@/lib/db";
 import { conversations, messageSources, messages } from "@/lib/db/schema";
-import { applyMemoryAfterResponse } from "@/lib/memory/apply-intent";
-import { emitMemorySaved } from "@/lib/memory/emit-saved";
+import { scheduleMemoryPostProcess } from "@/lib/memory/post-processor";
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
 import type { LocalAIRuntime } from "@/lib/runtime/types";
 import type { AppSettings } from "@/lib/settings/service";
@@ -101,11 +100,7 @@ export interface AgentLoopInput {
   signal?: AbortSignal;
   onEvent: (event: OrchestratorEvent) => void;
   pendingAttachmentNames?: string[];
-  routeDecision?: RouteDecision;
-  memoryIntent?: MemoryIntentDecision;
-  alreadySavedCount?: number;
-  flushInitialMemorySaves?: (messageId: string) => void;
-  userId?: string;
+  routeDecision?: RouteDecision;  alreadySavedCount?: number;  userId?: string;
   toolCtxBase?: Omit<ToolContext, "signal">;
   emailEnabled?: boolean;
   emailToolCandidates?: string[];
@@ -1119,10 +1114,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     const assistantId = nanoid();
     let fullContent = "";
 
-    input.onEvent({ type: "assistant_start", messageId: assistantId });
-    input.flushInitialMemorySaves?.(assistantId);
-
-    if (!freshnessGate.allowLlmSynthesis) {
+    input.onEvent({ type: "assistant_start", messageId: assistantId });    if (!freshnessGate.allowLlmSynthesis) {
       fullContent = buildHonestFailureResponse(temporalContext, {
         detail: webStopReason ?? freshnessGate.blockReason,
       });
@@ -1356,16 +1348,15 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     input.onEvent({ type: "done", messageId: assistantId });
 
-    if (input.settings.memoryEnabled && input.memoryIntent) {
-      const saved = await applyMemoryAfterResponse({
-        intent: input.memoryIntent,
-        userMessage: input.userContent,
-        assistantMessage: fullContent,
-        memoryEnabled: input.settings.memoryEnabled,
-        alreadySavedCount: input.alreadySavedCount ?? 0,
-      });
-      emitMemorySaved(input.onEvent, assistantId, saved);
-    }
+    scheduleMemoryPostProcess({
+      settings: input.settings,
+      conversationId: input.conversationId,
+      messageId: assistantId,
+      userMessage: input.userContent,
+      assistantMessage: fullContent,
+      onEvent: input.onEvent,
+      signal: input.signal,
+    });
     void maybeSummarizeConversation(input.conversationId);
   } catch (error) {
     const errorPlan = tracker?.plan;

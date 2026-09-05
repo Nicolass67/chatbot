@@ -1,55 +1,50 @@
-import { extractMemoriesAsync, insertMemoryIfValid } from "./extract";
-import type { MemoryIntentDecision } from "./intent-classifier";
-import { extractPersonalFactCandidates } from "./personal-facts";
+/**
+ * Point d'entrée mémoire post-réponse.
+ * Remplace les chemins pré-stream (classifier + applyImmediate).
+ */
+
+import {
+  runMemoryPostProcessor,
+  appliedChangesToSavedItems,
+} from "./post-processor";
 import type { SavedMemoryItem } from "./saved-memory";
 
-export async function applyImmediateMemories(
-  intent: MemoryIntentDecision
-): Promise<SavedMemoryItem[]> {
-  const saved: SavedMemoryItem[] = [];
-  for (const mem of intent.memories) {
-    const inserted = await insertMemoryIfValid(mem);
-    if (inserted) saved.push(inserted);
-  }
-  return saved;
-}
-
-export async function applyMemoryAfterResponse(params: {
-  intent: MemoryIntentDecision;
+export type MemoryAfterResponseParams = {
   userMessage: string;
   assistantMessage: string;
   memoryEnabled: boolean;
-  /** Souvenirs déjà persistés au premier passage (classifier). */
-  alreadySavedCount?: number;
-}): Promise<SavedMemoryItem[]> {
+  messageId?: string;
+  modelId?: string;
+  recentTurns?: Array<{ role: "user" | "assistant"; content: string }>;
+  signal?: AbortSignal;
+};
+
+/**
+ * Lance le Memory Post-Processor (LLM décision → validator → store).
+ * Ne throw jamais : échec → [].
+ */
+export async function applyMemoryAfterResponse(
+  params: MemoryAfterResponseParams
+): Promise<SavedMemoryItem[]> {
   if (!params.memoryEnabled) return [];
+  if (!params.userMessage.trim() || !params.assistantMessage.trim()) return [];
 
-  const already = params.alreadySavedCount ?? 0;
-  const saved: SavedMemoryItem[] = [];
+  const result = await runMemoryPostProcessor({
+    messageId: params.messageId,
+    userMessage: params.userMessage,
+    assistantMessage: params.assistantMessage,
+    modelId: params.modelId,
+    recentTurns: params.recentTurns,
+    signal: params.signal,
+  });
 
-  // Filet déterministe: faits perso évidents même si le 1er passage a déjà sauvé autre chose.
-  const personalFacts = extractPersonalFactCandidates(params.userMessage);
-  for (const mem of personalFacts) {
-    const inserted = await insertMemoryIfValid(mem);
-    if (inserted) saved.push(inserted);
-  }
+  if (!result.ok || !result.changed) return [];
+  return appliedChangesToSavedItems(result.applied);
+}
 
-  // Premier passage a déjà persisté → pas de second appel LLM.
-  if (already > 0) return saved;
-
-  // Second temps: extract LLM sur le tour complet.
-  if (
-    params.intent.shouldRemember ||
-    params.intent.source === "none" ||
-    params.intent.source === "llm_classifier" ||
-    params.intent.source === "fast_path"
-  ) {
-    const extracted = await extractMemoriesAsync(
-      params.userMessage,
-      params.assistantMessage
-    );
-    saved.push(...extracted);
-  }
-
-  return saved;
+/**
+ * @deprecated Plus utilisé en pré-stream — conservé pour compat imports.
+ */
+export async function applyImmediateMemories(): Promise<SavedMemoryItem[]> {
+  return [];
 }

@@ -2762,9 +2762,7 @@ struct ChatScreen: View {
                     messageId: targetId
                 )
             }
-            if let first = parsed.first {
-                memoryNotice = "\(first.categoryLabel) · \(first.content)"
-            }
+            // Pas de toast : l'indicateur « Souvenirs actualisés » est sur le message.
         case "mail_handoff":
             streamMailHandoff = MailHandoffDTO(
                 intent: obj["intent"] as? String,

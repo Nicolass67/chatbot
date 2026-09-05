@@ -23,10 +23,8 @@ import {
   messages,
   toolCalls,
 } from "@/lib/db/schema";
-import { applyImmediateMemories, applyMemoryAfterResponse } from "@/lib/memory/apply-intent";
-import { emitMemorySaved } from "@/lib/memory/emit-saved";
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
-import type { SavedMemoryItem } from "@/lib/memory/saved-memory";
+import { scheduleMemoryPostProcess } from "@/lib/memory/post-processor";
 import { analyzeRequest, type RouteDecision } from "@/lib/request-router";
 import {
   buildMailHandoffUrl,
@@ -169,8 +167,6 @@ async function persistAssistantMessage(params: {
   fullContent: string;
   collectedSources: SearchResult[];
   pendingAttachments: Awaited<ReturnType<typeof getConversationAttachments>>;
-  memoryIntent?: MemoryIntentDecision;
-  alreadySavedCount?: number;
 }): Promise<void> {
   const {
     input,
@@ -212,17 +208,7 @@ async function persistAssistantMessage(params: {
     },
   });
 
-  if (params.settings.memoryEnabled && params.memoryIntent) {
-    const saved = await applyMemoryAfterResponse({
-      intent: params.memoryIntent,
-      userMessage: input.userContent,
-      assistantMessage: fullContent,
-      memoryEnabled: params.settings.memoryEnabled,
-      alreadySavedCount: params.alreadySavedCount ?? 0,
-    });
-    emitMemorySaved(input.onEvent, assistantId, saved);
-  }
-
+  // Mémoire : jamais ici — scheduleMemoryPostProcess après `done`.
   void maybeSummarizeConversation(input.conversationId);
 }
 
@@ -233,7 +219,6 @@ async function streamChatTurn(params: {
   contextMessages: Awaited<ReturnType<typeof buildChatContext>>["contextMessages"];
   tools: ReturnType<typeof getToolDefinitions>;
   reasoningEffort: string | null;
-  flushInitialMemorySaves?: (messageId: string) => void;
 }): Promise<{
   content: string;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
@@ -241,7 +226,7 @@ async function streamChatTurn(params: {
   assistantId: string;
   streamedToUi: boolean;
 }> {
-  const { input, settings, runtime, contextMessages, tools, reasoningEffort, flushInitialMemorySaves } =
+  const { input, settings, runtime, contextMessages, tools, reasoningEffort } =
     params;
   const assistantId = nanoid();
   let fullContent = "";
@@ -269,7 +254,6 @@ async function streamChatTurn(params: {
             if (!streamedToUi) {
               streamedToUi = true;
               input.onEvent({ type: "assistant_start", messageId: assistantId });
-              flushInitialMemorySaves?.(assistantId);
             }
             input.onEvent({ type: "token", content: token });
           },
@@ -308,9 +292,6 @@ async function finalizeStreamedAssistant(params: {
   streamedToUi: boolean;
   collectedSources: SearchResult[];
   pendingAttachments: Awaited<ReturnType<typeof getConversationAttachments>>;
-  memoryIntent?: MemoryIntentDecision;
-  alreadySavedCount?: number;
-  flushInitialMemorySaves?: (messageId: string) => void;
 }): Promise<void> {
   const {
     input,
@@ -319,9 +300,6 @@ async function finalizeStreamedAssistant(params: {
     streamedToUi,
     collectedSources,
     pendingAttachments,
-    memoryIntent,
-    alreadySavedCount,
-    flushInitialMemorySaves,
   } = params;
   let { fullContent } = params;
 
@@ -340,7 +318,6 @@ async function finalizeStreamedAssistant(params: {
 
   if (!streamedToUi) {
     input.onEvent({ type: "assistant_start", messageId: assistantId });
-    flushInitialMemorySaves?.(assistantId);
     input.onEvent({ type: "token", content: fullContent });
   } else if (!params.fullContent.trim()) {
     input.onEvent({ type: "token", content: fullContent });
@@ -361,8 +338,6 @@ async function finalizeStreamedAssistant(params: {
       fullContent,
       collectedSources: dedupeAndCapSources(collectedSources, 20),
       pendingAttachments,
-      memoryIntent,
-      alreadySavedCount,
     });
   } catch (error) {
     input.onEvent({
@@ -376,6 +351,16 @@ async function finalizeStreamedAssistant(params: {
   }
 
   input.onEvent({ type: "done", messageId: assistantId });
+
+  scheduleMemoryPostProcess({
+    settings,
+    conversationId: input.conversationId,
+    messageId: assistantId,
+    userMessage: input.userContent,
+    assistantMessage: fullContent,
+    onEvent: input.onEvent,
+    signal: input.signal,
+  });
 }
 
 export async function runChatOrchestrator(
@@ -673,20 +658,12 @@ export async function runChatOrchestrator(
         content: handoffText,
       });
       input.onEvent({ type: "done", messageId: assistantId });
+
+  
       return;
     }
 
-    let initialMemorySaves: SavedMemoryItem[] = [];
-    if (analysis.memory.shouldRemember && settings.memoryEnabled) {
-      initialMemorySaves = await applyImmediateMemories(analysis.memory);
-    }
-
-    let pendingInitialMemorySaves = initialMemorySaves;
-    const flushInitialMemorySaves = (messageId: string) => {
-      if (pendingInitialMemorySaves.length === 0) return;
-      emitMemorySaved(input.onEvent, messageId, pendingInitialMemorySaves);
-      pendingInitialMemorySaves = [];
-    };
+    // Mémoire : post-processeur asynchrone après `done` (pas de pré-stream).
 
     const shouldAutoSearch =
       chatMode === "chat" &&
@@ -838,9 +815,6 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         onEvent: input.onEvent,
         pendingAttachmentNames: pendingAttachments.map((a) => a.filename),
         routeDecision: route,
-        memoryIntent: analysis.memory,
-        alreadySavedCount: initialMemorySaves.length,
-        flushInitialMemorySaves,
         userId,
         toolCtxBase,
         emailEnabled:
@@ -869,9 +843,6 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       requestId,
       collectedSources,
       routeDecision: route,
-      memoryIntent: analysis.memory,
-      alreadySavedCount: initialMemorySaves.length,
-      flushInitialMemorySaves,
       toolCtxBase,
       emailEnabled: Boolean(
         emailEnabled &&
@@ -917,9 +888,6 @@ async function runChatMode(params: {
   requestId: string;
   collectedSources: SearchResult[];
   routeDecision: RouteDecision;
-  memoryIntent?: MemoryIntentDecision;
-  alreadySavedCount?: number;
-  flushInitialMemorySaves?: (messageId: string) => void;
   toolCtxBase: Omit<ToolContext, "signal">;
   emailEnabled: boolean;
   emailToolCandidates: string[];
@@ -939,9 +907,6 @@ async function runChatMode(params: {
     requestId,
     collectedSources,
     routeDecision,
-    memoryIntent,
-    alreadySavedCount = 0,
-    flushInitialMemorySaves,
     toolCtxBase,
     emailEnabled,
     emailToolCandidates,
@@ -1019,7 +984,6 @@ async function runChatMode(params: {
         contextMessages,
         tools,
         reasoningEffort,
-        flushInitialMemorySaves,
       });
 
       if (!turn.toolCalls?.length) {
@@ -1031,9 +995,6 @@ async function runChatMode(params: {
           streamedToUi: turn.streamedToUi,
           collectedSources,
           pendingAttachments,
-          memoryIntent,
-          alreadySavedCount,
-          flushInitialMemorySaves,
         });
         return;
       }
@@ -1313,9 +1274,6 @@ async function runChatMode(params: {
     pendingAttachments,
     reasoningEffort,
     requestId,
-    alreadySavedCount,
-    memoryIntent,
-    flushInitialMemorySaves,
   });
 }
 
@@ -1328,9 +1286,6 @@ async function streamFinalResponse(params: {
   pendingAttachments: Awaited<ReturnType<typeof getConversationAttachments>>;
   reasoningEffort: string | null;
   requestId?: string;
-  memoryIntent?: MemoryIntentDecision;
-  alreadySavedCount?: number;
-  flushInitialMemorySaves?: (messageId: string) => void;
 }) {
   const {
     input,
@@ -1341,17 +1296,12 @@ async function streamFinalResponse(params: {
     pendingAttachments,
     reasoningEffort,
     requestId,
-    memoryIntent,
-    alreadySavedCount = 0,
-    flushInitialMemorySaves,
   } = params;
 
   const assistantId = nanoid();
   let fullContent = "";
 
   input.onEvent({ type: "assistant_start", messageId: assistantId });
-  flushInitialMemorySaves?.(assistantId);
-
   await runtime.stream(
     {
       requestId: requestId ?? nanoid(),
@@ -1404,8 +1354,6 @@ async function streamFinalResponse(params: {
       fullContent,
       collectedSources: dedupeAndCapSources(collectedSources, 20),
       pendingAttachments,
-      memoryIntent,
-      alreadySavedCount,
     });
   } catch (error) {
     input.onEvent({
@@ -1419,6 +1367,16 @@ async function streamFinalResponse(params: {
   }
 
   input.onEvent({ type: "done", messageId: assistantId });
+
+  scheduleMemoryPostProcess({
+    settings,
+    conversationId: input.conversationId,
+    messageId: assistantId,
+    userMessage: input.userContent,
+    assistantMessage: fullContent,
+    onEvent: input.onEvent,
+    signal: input.signal,
+  });
 }
 
 /**

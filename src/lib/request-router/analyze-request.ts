@@ -1,6 +1,4 @@
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
-import { classifyMemoryIntent } from "@/lib/memory/intent-classifier-runtime";
-import { logMemoryIntentDecision } from "@/lib/memory/logging";
 import { buildObjectiveContext } from "./objective-context";
 import { resolveRouteDecision } from "./route-request";
 import type { RequestContext, RouteDecision } from "./types";
@@ -11,25 +9,33 @@ export interface RequestAnalysis {
   latencyMs: number;
 }
 
+/**
+ * Stub mémoire pré-stream : la décision réelle est reportée au
+ * Memory Post-Processor (après `done`), pour ne pas retarder le TTFT.
+ */
+function deferredMemoryDecision(): MemoryIntentDecision {
+  return {
+    shouldRemember: false,
+    memories: [],
+    confidence: 0,
+    source: "none",
+    reason: "deferred_to_post_processor",
+    latencyMs: 0,
+  };
+}
+
 export async function analyzeRequest(
   ctx: RequestContext,
-  options?: { memoryEnabled?: boolean }
+  _options?: { memoryEnabled?: boolean }
 ): Promise<RequestAnalysis> {
   const started = Date.now();
-  const objective = buildObjectiveContext(ctx);
+  void buildObjectiveContext(ctx);
 
-  const [route, memory] = await Promise.all([
-    resolveRouteDecision(ctx, { allowClassifier: true }),
-    classifyMemoryIntent(ctx, objective, {
-      memoryEnabled: options?.memoryEnabled,
-    }),
-  ]);
-
-  logMemoryIntentDecision(memory, ctx);
+  const route = await resolveRouteDecision(ctx, { allowClassifier: true });
 
   return {
     route,
-    memory,
+    memory: deferredMemoryDecision(),
     latencyMs: Date.now() - started,
   };
 }

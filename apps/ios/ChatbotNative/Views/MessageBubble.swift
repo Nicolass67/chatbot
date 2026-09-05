@@ -74,16 +74,13 @@ struct MessageBubble: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                if !savedMemories.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(savedMemories) { memory in
-                            MemoryUpdatedChip(
-                                memory: memory,
-                                onOpen: { onOpenMemory?(memory) },
-                                onForget: onForgetMemory.map { cb in { cb(memory) } }
-                            )
-                        }
-                    }
+                // Un seul indicateur discret, même si plusieurs souvenirs ont changé.
+                if let memory = savedMemories.first {
+                    MemoryUpdatedChip(
+                        memory: memory,
+                        onOpen: { onOpenMemory?(memory) },
+                        onForget: onForgetMemory.map { cb in { cb(memory) } }
+                    )
                 }
 
                 assistantCanvas
