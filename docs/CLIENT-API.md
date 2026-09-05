@@ -58,6 +58,7 @@ Erreurs publiques : `{ "error": string, "code": ApiErrorCode }` — voir `contra
 | POST | `/api/mail/ai/summarize` |
 | POST | `/api/mail/ai/suggest-reply` |
 | POST | `/api/mail/ai/chat` |
+| GET | `/api/mail/recipients/suggest` |
 | POST | `/api/mail/actions/trash` |
 | POST | `/api/mail/actions/[id]/confirm` |
 | POST | `/api/email/actions/send` |

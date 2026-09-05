@@ -1044,6 +1044,11 @@ struct MailThreadView: View {
     @State private var summaryText: String?
     @State private var replyDraft: String?
     @State private var replyDraftId: String?
+    @State private var replyDraftTo = ""
+    @State private var replyDraftSubject = ""
+    @State private var replyAttachments: [EmailDraftAttachmentChip] = []
+    @State private var replyRecipientSuggestions: [MailRecipientSuggestion] = []
+    @State private var replyRecipientSuggestTask: Task<Void, Never>?
     @State private var editingDraft = false
     @State private var aiBusy = false
     @State private var aiStatus: String?
@@ -1154,22 +1159,34 @@ struct MailThreadView: View {
                 if replyDraft != nil || draftStreaming {
                     MailDraftProposal(
                         draftText: replyDraftBinding,
+                        toText: $replyDraftTo,
+                        subjectText: $replyDraftSubject,
                         draftId: replyDraftId,
-                        toLabel: {
-                            if let email = summary.from?.email { return "À : \(email)" }
-                            return ""
-                        }(),
-                        subjectLabel: {
-                            if let subject = summary.subject { return "Objet : Re: \(subject)" }
-                            return ""
-                        }(),
                         statusLabel: draftStreaming ? "Rédaction…" : "Brouillon",
                         isEditing: editingDraft,
                         busy: aiBusy,
                         isStreaming: draftStreaming,
-                        onEditToggle: { editingDraft.toggle() },
+                        attachments: replyAttachments,
+                        recipientSuggestions: replyRecipientSuggestions,
+                        onSelectSuggestion: { _ in
+                            replyRecipientSuggestions = []
+                        },
+                        onRecipientQueryChanged: { query in
+                            scheduleReplyRecipientSuggestions(query: query)
+                        },
+                        onEditToggle: {
+                            editingDraft.toggle()
+                            if editingDraft {
+                                scheduleReplyRecipientSuggestions(query: replyDraftTo)
+                            } else {
+                                replyRecipientSuggestions = []
+                            }
+                        },
                         onRetry: { Task { await runSuggest() } },
-                        onSend: { confirmSend = true }
+                        onSend: { confirmSend = true },
+                        onCommitHeaders: {
+                            Task { await commitReplyDraftHeaders() }
+                        }
                     )
                 }
                 if let sendStatus {
@@ -1296,6 +1313,19 @@ struct MailThreadView: View {
             }
             replyDraft = result.bodyText
             replyDraftId = result.draftId
+            if !result.to.isEmpty {
+                replyDraftTo = result.to.joined(separator: ", ")
+            } else if replyDraftTo.isEmpty, let email = summary.from?.email {
+                replyDraftTo = email
+            }
+            if let subject = result.subject, !subject.isEmpty {
+                replyDraftSubject = subject
+            } else if replyDraftSubject.isEmpty, let subject = summary.subject {
+                replyDraftSubject = subject.hasPrefix("Re:") ? subject : "Re: \(subject)"
+            }
+            if let id = result.draftId {
+                await refreshReplyDraftAttachments(id: id)
+            }
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -1308,7 +1338,16 @@ struct MailThreadView: View {
         defer { aiBusy = false }
         do {
             body = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            try await client.updateEmailDraft(id: draftId, bodyText: body)
+            let to = replyDraftTo
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            try await client.updateEmailDraft(
+                id: draftId,
+                bodyText: body,
+                to: to.isEmpty ? nil : to,
+                subject: replyDraftSubject
+            )
             try await client.validateEmailDraft(id: draftId)
             let proposal = try await client.proposeEmailSend(draftId: draftId)
             // Workspace conversation for confirm API
@@ -1328,6 +1367,63 @@ struct MailThreadView: View {
         } catch {
             self.error = error.localizedDescription
             AppHaptics.warning()
+        }
+    }
+
+    private func commitReplyDraftHeaders() async {
+        guard let draftId = replyDraftId else { return }
+        let to = replyDraftTo
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        do {
+            try await client.updateEmailDraft(
+                id: draftId,
+                bodyText: replyDraft,
+                to: to.isEmpty ? nil : to,
+                subject: replyDraftSubject
+            )
+            replyRecipientSuggestions = []
+            AppHaptics.light()
+        } catch {
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
+    }
+
+    private func scheduleReplyRecipientSuggestions(query: String) {
+        replyRecipientSuggestTask?.cancel()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard editingDraft, q.count >= 1 else {
+            replyRecipientSuggestions = []
+            return
+        }
+        replyRecipientSuggestTask = Task {
+            try? await Task.sleep(nanoseconds: 280_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let rows = try await client.suggestMailRecipients(query: q)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { replyRecipientSuggestions = rows }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { replyRecipientSuggestions = [] }
+            }
+        }
+    }
+
+    private func refreshReplyDraftAttachments(id: String) async {
+        do {
+            let detail = try await client.fetchEmailDraft(id: id)
+            replyAttachments = detail.attachments
+            if replyDraftTo.isEmpty {
+                replyDraftTo = detail.to.joined(separator: ", ")
+            }
+            if replyDraftSubject.isEmpty {
+                replyDraftSubject = detail.subject
+            }
+        } catch {
+            // best-effort
         }
     }
 

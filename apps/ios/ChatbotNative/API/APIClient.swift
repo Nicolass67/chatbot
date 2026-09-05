@@ -1040,15 +1040,98 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    func updateEmailDraft(id: String, bodyText: String, to: [String]? = nil) async throws {
+    struct EmailDraftDetail: Sendable {
+        let draftId: String
+        let to: [String]
+        let subject: String
+        let bodyText: String
+        let attachments: [EmailDraftAttachmentChip]
+    }
+
+    func updateEmailDraft(
+        id: String,
+        bodyText: String? = nil,
+        to: [String]? = nil,
+        subject: String? = nil
+    ) async throws {
         if UITestMode.isActive { return }
         var req = authorizedRequest(path: "api/email/drafts/\(id)", method: "PATCH")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var payload: [String: Any] = ["bodyText": bodyText]
+        var payload: [String: Any] = [:]
+        if let bodyText { payload["bodyText"] = bodyText }
         if let to { payload["to"] = to }
+        if let subject {
+            let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { payload["subject"] = trimmed }
+        }
+        guard !payload.isEmpty else { return }
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
+    }
+
+    func fetchEmailDraft(id: String) async throws -> EmailDraftDetail {
+        if UITestMode.isActive {
+            return EmailDraftDetail(draftId: id, to: [], subject: "", bodyText: "", attachments: [])
+        }
+        let req = authorizedRequest(path: "api/email/drafts/\(id)")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIClientError.decode
+        }
+        let draftId = (obj["draftId"] as? String) ?? id
+        let to = (obj["to"] as? [String]) ?? []
+        let subject = (obj["subject"] as? String) ?? ""
+        let bodyText = (obj["bodyText"] as? String) ?? ""
+        let attachments = Self.parseDraftAttachments(obj["attachments"])
+        return EmailDraftDetail(
+            draftId: draftId,
+            to: to,
+            subject: subject,
+            bodyText: bodyText,
+            attachments: attachments
+        )
+    }
+
+    func suggestMailRecipients(query: String, limit: Int = 8) async throws -> [MailRecipientSuggestion] {
+        if UITestMode.isActive { return [] }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else { return [] }
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/mail/recipients/suggest"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        let req = authorizedURLRequest(components.url!)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["recipients"] as? [[String: Any]]
+        else { return [] }
+        return rows.compactMap { row in
+            guard let email = row["email"] as? String, !email.isEmpty else { return nil }
+            return MailRecipientSuggestion(
+                email: email,
+                displayName: row["displayName"] as? String
+            )
+        }
+    }
+
+    static func parseDraftAttachments(_ raw: Any?) -> [EmailDraftAttachmentChip] {
+        guard let rows = raw as? [[String: Any]] else { return [] }
+        return rows.compactMap { row in
+            guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+            return EmailDraftAttachmentChip(
+                id: id,
+                filename: (row["filename"] as? String) ?? "fichier",
+                mimeType: (row["mimeType"] as? String) ?? "application/octet-stream",
+                sizeBytes: (row["sizeBytes"] as? Int) ?? 0
+            )
+        }
     }
 
     func attachFilesToEmailDraft(id: String, attachmentIds: [String]) async throws {

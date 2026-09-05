@@ -59,6 +59,9 @@ struct ChatScreen: View {
     @State private var draftCardSubject = ""
     @State private var draftCardStatus = "Brouillon"
     @State private var draftCardCandidates: [String] = []
+    @State private var draftCardAttachments: [EmailDraftAttachmentChip] = []
+    @State private var draftRecipientSuggestions: [MailRecipientSuggestion] = []
+    @State private var draftRecipientSuggestTask: Task<Void, Never>?
     @State private var draftCardEditing = false
     @State private var draftCardBusy = false
     @State private var draftCardStreaming = false
@@ -455,21 +458,37 @@ struct ChatScreen: View {
                         if draftInConversation || draftCardId != nil || draftCardStreaming || draftCardSent {
                             MailDraftProposal(
                                 draftText: $draftCardText,
+                                toText: $draftCardTo,
+                                subjectText: $draftCardSubject,
                                 draftId: draftCardId,
-                                toLabel: draftCardTo.isEmpty ? "" : "À : \(draftCardTo)",
-                                subjectLabel: draftCardSubject.isEmpty ? "" : "Objet : \(draftCardSubject)",
                                 statusLabel: draftCardStatus,
                                 isEditing: draftCardEditing,
                                 busy: draftCardBusy,
                                 isStreaming: draftCardStreaming,
                                 isSent: draftCardSent,
+                                attachments: draftCardAttachments,
+                                recipientSuggestions: draftRecipientSuggestions,
                                 candidates: draftCardCandidates,
                                 onSelectCandidate: { email in
-                                    draftCardTo = email
                                     draftCardCandidates = []
-                                    Task { await applyDraftRecipient(email) }
+                                    draftRecipientSuggestions = []
+                                    Task { await commitDraftHeaders(preferTo: [email]) }
                                 },
-                                onEditToggle: { draftCardEditing.toggle() },
+                                onSelectSuggestion: { _ in
+                                    draftCardCandidates = []
+                                    draftRecipientSuggestions = []
+                                },
+                                onRecipientQueryChanged: { query in
+                                    scheduleRecipientSuggestions(query: query)
+                                },
+                                onEditToggle: {
+                                    draftCardEditing.toggle()
+                                    if draftCardEditing {
+                                        scheduleRecipientSuggestions(query: draftCardTo)
+                                    } else {
+                                        draftRecipientSuggestions = []
+                                    }
+                                },
                                 onRetry: {
                                     Task { await rewriteOpenDraft() }
                                 },
@@ -481,6 +500,9 @@ struct ChatScreen: View {
                                 },
                                 onDiscard: {
                                     discardDraftCard()
+                                },
+                                onCommitHeaders: {
+                                    Task { await commitDraftHeaders() }
                                 }
                             )
                             .id("conversation-draft")
@@ -859,9 +881,85 @@ struct ChatScreen: View {
     private func applyDraftRecipient(_ email: String) async {
         guard let draftId = draftCardId else { return }
         do {
-            try await client.updateEmailDraft(id: draftId, bodyText: draftCardText, to: [email])
+            try await client.updateEmailDraft(
+                id: draftId,
+                bodyText: draftCardText,
+                to: [email],
+                subject: draftCardSubject
+            )
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func parseDraftRecipients(_ raw: String) -> [String] {
+        raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func commitDraftHeaders(preferTo: [String]? = nil) async {
+        guard let draftId = draftCardId, !draftCardSent else { return }
+        let to = preferTo ?? parseDraftRecipients(draftCardTo)
+        do {
+            try await client.updateEmailDraft(
+                id: draftId,
+                bodyText: draftCardText,
+                to: to.isEmpty ? nil : to,
+                subject: draftCardSubject
+            )
+            draftRecipientSuggestions = []
+            persistDraftCardSnapshot()
+            AppHaptics.light()
+        } catch {
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
+    }
+
+    private func scheduleRecipientSuggestions(query: String) {
+        draftRecipientSuggestTask?.cancel()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard draftCardEditing, !draftCardSent, q.count >= 1 else {
+            draftRecipientSuggestions = []
+            return
+        }
+        draftRecipientSuggestTask = Task {
+            try? await Task.sleep(nanoseconds: 280_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let rows = try await client.suggestMailRecipients(query: q)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    draftRecipientSuggestions = rows
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    draftRecipientSuggestions = []
+                }
+            }
+        }
+    }
+
+    private func refreshDraftCardAttachments(draftId: String? = nil) async {
+        let id = draftId ?? draftCardId
+        guard let id, !id.isEmpty else { return }
+        do {
+            let detail = try await client.fetchEmailDraft(id: id)
+            draftCardAttachments = detail.attachments
+            if draftCardTo.isEmpty {
+                draftCardTo = detail.to.joined(separator: ", ")
+            }
+            if draftCardSubject.isEmpty {
+                draftCardSubject = detail.subject
+            }
+            if draftCardText.isEmpty {
+                draftCardText = detail.bodyText
+            }
+        } catch {
+            // Affichage best-effort — le brouillon reste utilisable sans liste PJ.
         }
     }
 
@@ -1046,7 +1144,13 @@ struct ChatScreen: View {
         defer { draftCardBusy = false }
         do {
             let body = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
-            try await client.updateEmailDraft(id: draftId, bodyText: body)
+            let to = parseDraftRecipients(draftCardTo)
+            try await client.updateEmailDraft(
+                id: draftId,
+                bodyText: body,
+                to: to.isEmpty ? nil : to,
+                subject: draftCardSubject
+            )
             try await client.validateEmailDraft(id: draftId)
             let proposal = try await client.proposeEmailSend(draftId: draftId)
             try await client.confirmEmailSend(
@@ -1064,6 +1168,8 @@ struct ChatScreen: View {
             draftCardEditing = false
             draftCardStreaming = false
             draftCardCandidates = []
+            draftCardAttachments = []
+            draftRecipientSuggestions = []
             draftInConversation = true
             awaitingDraftRewrite = false
             draftPreviewReceivedThisTurn = false
@@ -1076,11 +1182,14 @@ struct ChatScreen: View {
     }
 
     private func discardDraftCard() {
+        draftRecipientSuggestTask?.cancel()
         draftCardId = nil
         draftCardText = ""
         draftCardTo = ""
         draftCardSubject = ""
         draftCardCandidates = []
+        draftCardAttachments = []
+        draftRecipientSuggestions = []
         draftCardEditing = false
         draftCardStreaming = false
         draftCardSent = false
@@ -1123,6 +1232,9 @@ struct ChatScreen: View {
         draftCardSent = snap.sent
         draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
         draftCardEditing = false
+        if let id = snap.draftId, !id.isEmpty {
+            Task { await refreshDraftCardAttachments(draftId: id) }
+        }
     }
 
     /// Après « Réécrire » : si l’outil a mis à jour la carte, OK ; sinon appliquer le texte streamé via PATCH.
@@ -1841,6 +1953,7 @@ struct ChatScreen: View {
                             id: draftId,
                             attachmentIds: [uploaded.id]
                         )
+                        await refreshDraftCardAttachments(draftId: draftId)
                         AppHaptics.success()
                     } catch {
                         self.error = error.localizedDescription
@@ -2715,6 +2828,7 @@ struct ChatScreen: View {
                     draftCardText = body
                     draftCardTo = ((draft["to"] as? [String]) ?? []).joined(separator: ", ")
                     draftCardSubject = (draft["subject"] as? String) ?? ""
+                    draftCardAttachments = APIClient.parseDraftAttachments(draft["attachments"])
                     draftCardStatus = "Brouillon"
                     draftCardSent = false
                     draftInConversation = true
@@ -2725,6 +2839,10 @@ struct ChatScreen: View {
                     draftCardEditing = false
                     thinkingKind = nil
                     persistDraftCardSnapshot()
+                    // Si le preview SSE n’embarque pas encore les PJ, resync GET.
+                    if draftCardAttachments.isEmpty {
+                        Task { await refreshDraftCardAttachments(draftId: id) }
+                    }
                 }
             }
         case "conversation_title":

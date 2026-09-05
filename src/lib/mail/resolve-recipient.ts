@@ -224,3 +224,89 @@ export async function resolveEmailRecipient(input: {
     return { status: "unresolved", query: nameQuery };
   }
 }
+
+/**
+ * Suggestions de destinataires pour le sélecteur iOS (filtre au fil de la frappe).
+ * Ne invente jamais d'adresse — uniquement contacts vus dans la boîte / envoyés.
+ */
+export async function suggestMailRecipients(input: {
+  userId: string;
+  query: string;
+  limit?: number;
+}): Promise<RecipientCandidate[]> {
+  const q = input.query.trim();
+  const limit = Math.min(Math.max(input.limit ?? 8, 1), 20);
+  if (q.length < 1) return [];
+
+  try {
+    const provider = await getEmailProvider(input.userId);
+    const account = await getOAuthAccount(input.userId, "gmail");
+    const accountEmail = account?.accountEmail?.trim().toLowerCase() ?? null;
+
+    const safe = q.replace(/"/g, "").slice(0, 80);
+    const isEmailish = safe.includes("@");
+    const searchQ = isEmailish
+      ? `{from:${safe} to:${safe} cc:${safe}}`
+      : `{from:"${safe}" to:"${safe}"}`;
+
+    const [sent, inbox] = await Promise.all([
+      provider.search({
+        query: `in:sent ${isEmailish ? safe : `"${safe}"`}`,
+        maxResults: 30,
+      }),
+      provider.search({
+        query: searchQ,
+        maxResults: 30,
+      }),
+    ]);
+
+    const merged = new Map<string, RecipientCandidate>();
+    const mergeMaps = (...maps: Map<string, RecipientCandidate>[]) => {
+      for (const map of maps) {
+        for (const [k, v] of map) {
+          const prev = merged.get(k);
+          if (!prev || v.score > prev.score) merged.set(k, v);
+        }
+      }
+    };
+
+    if (isEmailish) {
+      const emailNeedle = safe.toLowerCase();
+      const consider = (
+        email: string,
+        displayName: string | undefined,
+        source: RecipientCandidate["source"]
+      ) => {
+        const e = email.trim().toLowerCase();
+        if (!e.includes("@")) return;
+        if (accountEmail && e === accountEmail) return;
+        if (!e.includes(emailNeedle) && !(displayName ?? "").toLowerCase().includes(emailNeedle)) {
+          return;
+        }
+        const score =
+          (e.startsWith(emailNeedle) ? 20 : 10) + (displayName ? 2 : 0);
+        const prev = merged.get(e);
+        if (!prev || score > prev.score) {
+          merged.set(e, { email: e, displayName, score, source });
+        }
+      };
+      for (const m of [...sent, ...inbox]) {
+        consider(m.from.email, m.from.name, "inbox");
+        for (const a of m.to) consider(a.email, a.name, "sent");
+        for (const a of m.cc) consider(a.email, a.name, "inbox");
+      }
+    } else {
+      mergeMaps(
+        collectFromMessages(sent, safe, "sent"),
+        collectFromMessages(inbox, safe, "inbox")
+      );
+      if (accountEmail) merged.delete(accountEmail);
+    }
+
+    return [...merged.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
