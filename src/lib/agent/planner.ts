@@ -16,6 +16,7 @@ import {
 export interface PlannerInput {
   goal: string;
   contextHint?: string;
+  conversationHistory?: string;
   temporalContext: TemporalContext;
   runtime: LocalAIRuntime;
   model: string;
@@ -227,7 +228,8 @@ export async function createAgentPlan(input: PlannerInput): Promise<AgentPlan> {
           content: buildPlannerUserPrompt(
             input.goal,
             input.temporalContext,
-            input.contextHint
+            input.contextHint,
+            input.conversationHistory
           ),
         },
       ],

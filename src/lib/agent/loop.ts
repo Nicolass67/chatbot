@@ -1,3 +1,4 @@
+import { groundSearchQueryWithContext } from "@/lib/context/conversation-continuity";
 import { nanoid } from "nanoid";
 import { eq } from "drizzle-orm";
 import { maybeSummarizeConversation } from "@/lib/context/summarizer";
@@ -111,6 +112,10 @@ export interface AgentLoopInput {
   accountEmail?: string | null;
   filesEnabled?: boolean;
   fileToolCandidates?: string[];
+  /** Historique court user/assistant pour planning + synthèse. */
+  conversationHistory?: string;
+  /** Tours utilisateur antérieurs (hors message courant). */
+  priorUserMessages?: string[];
 }
 
 class RequestIdTracker {
@@ -438,7 +443,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
   try {
     abortIfNeeded();
 
-    const route =
+    let route =
       input.routeDecision ??
       (await routeRequest({
         message: input.userContent,
@@ -454,6 +459,24 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     const temporalContext = route.temporal;
 
     let documentContext = input.documentContext;
+    if ((input.priorUserMessages?.length ?? 0) > 0) {
+      if (input.conversationHistory?.trim()) {
+        documentContext = `${documentContext}\n\n<conversation_history>\n${input.conversationHistory.trim()}\n</conversation_history>`.trim();
+      }
+      if (route.web?.searchQuery) {
+        route = {
+          ...route,
+          web: {
+            ...route.web,
+            searchQuery: groundSearchQueryWithContext({
+              query: route.web.searchQuery,
+              recentUserMessages: input.priorUserMessages ?? [],
+            }),
+          },
+        };
+      }
+    }
+
     // Les instructions brouillon sont injectées par l'orchestrateur quand l'assistant
     // mail est actif. Fallback si intent=draft sans injection préalable.
     if (
@@ -489,6 +512,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     const plan = await createAgentPlan({
       goal: input.userContent,
+      conversationHistory: input.conversationHistory,
       contextHint: buildContextHint(documentContext),
       temporalContext,
       runtime: input.runtime,
@@ -1130,7 +1154,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         },
         {
           role: "user" as const,
-          content: input.userContent,
+          content: input.conversationHistory?.trim()
+            ? `Historique récent :\n${input.conversationHistory.trim()}\n\nMessage actuel :\n${input.userContent}`
+            : input.userContent,
         },
       ];
 

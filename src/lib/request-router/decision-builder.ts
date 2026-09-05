@@ -118,10 +118,20 @@ function resolveSearchQuery(
   ctx: RequestContext,
   classification: SemanticClassification
 ): string {
-  if (classification.web.searchQuery?.trim()) {
-    return classification.web.searchQuery.trim();
-  }
-  return buildWebSearchQuery({ userMessage: ctx.message.trim() });
+  const priors = (ctx.recentUserMessages ?? [])
+    .map((m) => m.trim())
+    .filter(Boolean);
+  // Exclude current message if already present in recentUserMessages.
+  const priorOnly =
+    priors.length > 0 && priors[priors.length - 1] === ctx.message.trim()
+      ? priors.slice(0, -1)
+      : priors;
+  const classified = classification.web.searchQuery?.trim();
+  return buildWebSearchQuery({
+    userMessage: ctx.message.trim(),
+    route: classified ? { searchQuery: classified } : undefined,
+    recentUserMessages: priorOnly,
+  });
 }
 
 export function buildRouteDecision(params: {

@@ -49,11 +49,31 @@ Règles :
 export function buildPlannerUserPrompt(
   goal: string,
   temporal: TemporalContext,
-  contextHint?: string
+  contextHint?: string,
+  conversationHistory?: string
 ): string {
-  let prompt = `Objectif utilisateur :\n${goal}\n\n${formatTemporalContextBlock(temporal)}`;
+  let prompt = "";
+  const history = conversationHistory?.trim();
+  if (history) {
+    prompt += `Historique récent de la conversation (à respecter pour résoudre les références) :
+${history}
+
+`;
+  }
+  prompt += `Objectif utilisateur (message actuel) :
+${goal}
+
+${formatTemporalContextBlock(temporal)}`;
   if (contextHint) {
-    prompt += `\n\nContexte documentaire :\n${contextHint}`;
+    prompt += `
+
+Contexte documentaire :
+${contextHint}`;
+  }
+  if (history) {
+    prompt += `
+
+Rappel : le message actuel peut être un suivi. Interprète-le dans le contexte de l'historique (ex. « modèles » = modèles du sujet précédent, pas un autre domaine).`;
   }
   return prompt;
 }

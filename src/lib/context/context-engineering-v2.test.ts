@@ -102,6 +102,20 @@ describe("ContextPlan", () => {
     });
     expect(plan.expandFollowUpQuery).toBe(true);
   });
+
+  it("follow-up '5 modèles maintenant' reste expandFollowUpQuery avec historique", () => {
+    const plan = buildContextPlan({
+      route: baseRoute(),
+      message: "Donne clairement 5 modèles maintenant",
+      hasAttachments: false,
+      hasActiveFile: false,
+      hasActiveMail: false,
+      recentUserMessages: [
+        "Fait un comparatif des meilleurs aspirateurs sur le marché",
+      ],
+    });
+    expect(plan.expandFollowUpQuery).toBe(true);
+  });
 });
 
 describe("Follow-up expansion", () => {

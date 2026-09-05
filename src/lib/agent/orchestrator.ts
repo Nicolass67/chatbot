@@ -1,3 +1,7 @@
+import {
+  formatAgentConversationHistory,
+  priorUserMessages,
+} from "@/lib/context/conversation-continuity";
 import { nanoid } from "nanoid";
 import { eq } from "drizzle-orm";
 import { serializeContentForStorage } from "@/lib/attachments/multimodal";
@@ -543,6 +547,22 @@ export async function runChatOrchestrator(
       }
     }
 
+
+    const allUserPlain = allDbMessages
+      .filter((m) => m.role === "user")
+      .map((m) => contentToPlainText(m.content));
+    const priorUserMsgs = priorUserMessages(allUserPlain, input.userContent);
+    const agentConversationHistory = formatAgentConversationHistory(
+      allDbMessages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          text: contentToPlainText(m.content),
+        }))
+        .filter((t) => t.text.trim().length > 0)
+        .slice(0, -1)
+    );
+
     const analysis = await analyzeRequest(
       {
         message: input.userContent,
@@ -557,10 +577,7 @@ export async function runChatOrchestrator(
         modelId: settings.selectedModel,
         runtime,
         signal: input.signal,
-        recentUserMessages: allDbMessages
-          .filter((m) => m.role === "user")
-          .slice(-3)
-          .map((m) => contentToPlainText(m.content)),
+        recentUserMessages: priorUserMsgs.slice(-3),
       },
       { memoryEnabled: settings.memoryEnabled }
     );
@@ -580,10 +597,7 @@ export async function runChatOrchestrator(
       hasAttachments: pendingAttachments.length > 0,
       hasActiveFile: Boolean(resolvedActive.file),
       hasActiveMail: Boolean(resolvedActive.mail),
-      recentUserMessages: allDbMessages
-        .filter((m) => m.role === "user")
-        .slice(-3)
-        .map((m) => contentToPlainText(m.content)),
+      recentUserMessages: priorUserMsgs.slice(-3),
     });
 
     const emailIntent = route.email.intent;
@@ -789,6 +803,8 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       await runAgentLoop({
         conversationId: input.conversationId,
         userContent: input.userContent,
+        conversationHistory: agentConversationHistory,
+        priorUserMessages: priorUserMsgs.slice(-3),
         settings,
         runtime,
         reasoningEffort,

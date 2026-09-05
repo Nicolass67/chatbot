@@ -1,4 +1,5 @@
 import type { RouteDecision } from "@/lib/request-router/types";
+import { isFollowUpTurn } from "@/lib/context/conversation-continuity";
 
 export type HistoryMode = "minimal" | "standard" | "extended";
 export type PersonalRelevance = "none" | "light" | "needed";
@@ -27,21 +28,8 @@ export interface BuildContextPlanInput {
   recentUserMessages?: string[];
 }
 
-const FOLLOW_UP_RE =
-  /^(et (lui|elle|eux|ça|cela|le|la|les|mon|ma|mes|celui|celle|ceux)\b|fais pareil|pareil|idem|envoie[- ]?le|vérifie(\s|$)|le deuxième|la deuxième|et pour moi)\b/i;
-
 const PERSONAL_RE =
   /\b(mes? préférences?|pour moi|me convient|me conviendrait|selon moi|personnalis|à mon goût|comme d['']habitude)\b/i;
-
-function isShortFollowUp(message: string): boolean {
-  const t = message.trim();
-  if (t.length === 0) return false;
-  const words = t.split(/\s+/).filter(Boolean);
-  // Very short turns are typically anaphoric follow-ups
-  if (words.length <= 4) return true;
-  // Longer only if clear anaphora (not "Pourquoi le ciel est bleu ?")
-  return words.length <= 8 && FOLLOW_UP_RE.test(t);
-}
 
 function clampMemoryBudget(n: number): MemoryBudget {
   if (n <= 0) return 0;
@@ -57,7 +45,8 @@ function clampMemoryBudget(n: number): MemoryBudget {
  */
 export function buildContextPlan(input: BuildContextPlanInput): ContextPlan {
   const msg = input.message.trim();
-  const followUp = isShortFollowUp(msg);
+  const hasPrior = (input.recentUserMessages?.length ?? 0) > 0;
+  const followUp = isFollowUpTurn(msg, hasPrior);
   const personalHit = PERSONAL_RE.test(msg);
 
   let personalRelevance: PersonalRelevance = "none";

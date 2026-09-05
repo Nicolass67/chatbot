@@ -61,3 +61,16 @@ describe("extractWebSearchQuery", () => {
     ).toBe("recherche sur internet les derniers avancés sur le dlss 5");
   });
 });
+
+
+describe("buildWebSearchQuery grounding", () => {
+  it("ancre un follow-up court avec le contexte aspirateurs", () => {
+    const query = buildWebSearchQuery({
+      userMessage: "Donne clairement 5 modèles maintenant",
+      recentUserMessages: [
+        "Fait un comparatif des meilleurs aspirateurs sur le marché",
+      ],
+    });
+    expect(query.toLowerCase()).toContain("aspirateur");
+  });
+});

@@ -80,7 +80,7 @@ Définitions:
 - web.searchType "research": plusieurs sources, comparaisons, synthèse ou vérifications croisées sont nécessaires.
 - web.searchType "none": pas de recherche.
 
-- web.searchQuery: reformulation courte et fidèle pour un moteur de recherche (dans la langue la plus pertinente). N'ajoute PAS de contraintes non demandées (pays, année, disponibilité, stock, etc.) sauf si l'utilisateur les mentionne.
+- web.searchQuery: reformulation courte et fidèle pour un moteur de recherche (dans la langue la plus pertinente). Si un contexte conversationnel récent est fourni, RÉSOUS les références (ça, ceux, modèles, maintenant, etc.) en y intégrant le sujet du tour précédent (ex. aspirateurs → « meilleurs modèles aspirateurs 2026 »). N'ajoute PAS de contraintes non demandées (pays, année, disponibilité, stock, etc.) sauf si l'utilisateur les mentionne.
 
 - research.objective: objectif informationnel pour une recherche approfondie (si searchType=research). Décris le besoin, pas une catégorie de domaine.
 

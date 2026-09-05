@@ -1,3 +1,4 @@
+import { groundSearchQueryWithContext } from "@/lib/context/conversation-continuity";
 import { routeRequestSync, routeToWebSearchIntent } from "@/lib/request-router";
 import type { RouteDecision } from "@/lib/request-router/types";
 import type { SearchResult } from "../types";
@@ -35,10 +36,18 @@ export function buildWebSearchQuery(params: {
   userMessage: string;
   route?: Pick<RouteDecision["web"], "searchQuery">;
   recentContext?: string;
+  recentUserMessages?: string[];
 }): string {
   const routeQuery = params.route?.searchQuery?.trim();
-  if (routeQuery) return routeQuery;
-  return params.userMessage.trim();
+  const base = routeQuery || params.userMessage.trim();
+  const priors =
+    params.recentUserMessages?.map((m) => m.trim()).filter(Boolean) ??
+    (params.recentContext?.trim() ? [params.recentContext.trim()] : []);
+  if (priors.length === 0) return base;
+  return groundSearchQueryWithContext({
+    query: base,
+    recentUserMessages: priors,
+  });
 }
 
 export function isWebSearchUsefulForQuery(
