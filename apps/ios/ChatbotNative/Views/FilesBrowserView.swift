@@ -1427,122 +1427,125 @@ struct FileFolderView: View {
 
     private var details: some View {
         ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(displayedEntries) { entry in
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button {
-                            handleEntryTap(entry)
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                FilesEntryThumbnail(
-                                    entry: entry,
-                                    baseURL: session.baseURL,
-                                    token: session.token,
-                                    iconSize: 28
-                                )
-                                .frame(width: 52, height: 52)
-                                .background(AppTheme.surfaceElevated.opacity(0.55))
-                                .compositingGroup()
-                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(entry.name ?? entry.relativePath)
-                                        .font(.body.weight(.semibold))
-                                        .foregroundStyle(AppTheme.foreground)
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
-                                    Text(detailTypeLabel(for: entry))
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(AppTheme.accent)
-                                    ForEach(detailMetaLines(for: entry), id: \.self) { line in
-                                        Text(line)
-                                            .font(.caption)
-                                            .foregroundStyle(AppTheme.mutedForeground)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                                if selection.isSelecting, !isFolder(entry) {
-                                    Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(
-                                            selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
-                                        )
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        if !selection.isSelecting {
-                            HStack(spacing: 8) {
-                                Button {
-                                    handleEntryTap(entry)
-                                    AppHaptics.light()
-                                } label: {
-                                    Text("Ouvrir")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(AppTheme.accent)
-                                .controlSize(.small)
-
-                                if !isFolder(entry), entry.fileId != nil {
-                                    Button {
-                                        Task { await downloadEntry(entry) }
-                                    } label: {
-                                        if downloadingFileId == entry.fileId {
-                                            ProgressView().controlSize(.mini)
-                                        } else {
-                                            Text("Télécharger")
-                                                .font(.caption.weight(.semibold))
-                                        }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .disabled(downloadingFileId != nil)
-                                }
-
-                                Button {
-                                    onRevealDestination(entry)
-                                    AppHaptics.light()
-                                } label: {
-                                    Text("Aller à la destination")
-                                        .font(.caption.weight(.semibold))
-                                        .lineLimit(1)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+            LazyVStack(spacing: 0) {
+                ForEach(Array(displayedEntries.enumerated()), id: \.element.id) { index, entry in
+                    let selected = selection.contains(entry.fileId ?? "")
+                    detailRow(entry, selected: selected)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(selected ? AppTheme.accent.opacity(0.10) : Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture { handleEntryTap(entry) }
+                        .contextMenu { entryContextMenu(entry) }
+                        .onAppear {
+                            if entry.id == displayedEntries.last?.id {
+                                Task { await loadMoreIfNeeded() }
                             }
                         }
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        selection.contains(entry.fileId ?? "")
-                            ? AppTheme.accent.opacity(0.12)
-                            : AppTheme.surface.opacity(0.9)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                            .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
-                    )
-                    .contentShape(Rectangle())
-                    .contextMenu { entryContextMenu(entry) }
-                    .onAppear {
-                        if entry.id == displayedEntries.last?.id {
-                            Task { await loadMoreIfNeeded() }
-                        }
+
+                    if index < displayedEntries.count - 1 {
+                        Divider()
+                            .overlay(AppTheme.borderSubtle)
+                            .padding(.leading, 66)
                     }
                 }
                 if loadingMore {
                     ProgressView().controlSize(.small).padding()
                 }
             }
-            .padding(.horizontal, 14)
             .padding(.bottom, AppTheme.space24)
+        }
+        .background(AppTheme.background)
+    }
+
+    @ViewBuilder
+    private func detailRow(_ entry: FileEntryDTO, selected: Bool) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            FilesEntryThumbnail(
+                entry: entry,
+                baseURL: session.baseURL,
+                token: session.token,
+                iconSize: 18
+            )
+            .frame(width: 40, height: 40)
+            .background(AppTheme.surfaceElevated.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.name ?? entry.relativePath)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 6) {
+                    Text(compactDetailMeta(for: entry))
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .lineLimit(1)
+                    if entry.indexed == true, !isFolder(entry) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.accent.opacity(0.85))
+                            .accessibilityLabel("Indexé")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if selection.isSelecting, !isFolder(entry) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? AppTheme.accent : AppTheme.muted)
+            } else if isFolder(entry) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mutedForeground)
+            } else {
+                detailFileIconActions(entry)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isFolder(entry) ? .isButton : [])
+    }
+
+    @ViewBuilder
+    private func detailFileIconActions(_ entry: FileEntryDTO) -> some View {
+        HStack(spacing: 2) {
+            if entry.fileId != nil {
+                Button {
+                    Task { await downloadEntry(entry) }
+                } label: {
+                    Group {
+                        if downloadingFileId == entry.fileId {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.body.weight(.medium))
+                        }
+                    }
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(AppTheme.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(downloadingFileId != nil)
+                .accessibilityLabel("Télécharger")
+            }
+
+            Button {
+                onRevealDestination(entry)
+                AppHaptics.light()
+            } label: {
+                Image(systemName: "folder")
+                    .font(.body.weight(.medium))
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(AppTheme.accent)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Aller à la destination")
         }
     }
 
@@ -1558,44 +1561,39 @@ struct FileFolderView: View {
         return "Fichier"
     }
 
-    private func detailMetaLines(for entry: FileEntryDTO) -> [String] {
-        var lines: [String] = []
-        if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
-            lines.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+    private func compactDetailMeta(for entry: FileEntryDTO) -> String {
+        if isFolder(entry) {
+            if let when = formatMtime(entry.mtimeMs, short: true) {
+                return "Dossier · \(when)"
+            }
+            return "Dossier"
         }
-        let folder = path.isEmpty ? (root.label ?? "Documents") : path
-        if !folder.isEmpty { lines.append(folder) }
-        if let when = formatMtime(entry.mtimeMs, style: .details) {
-            lines.append(when)
+        var parts: [String] = [detailTypeLabel(for: entry)]
+        if let size = entry.sizeBytes, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
         }
-        if entry.indexed == true { lines.append("Indexé") }
-        return lines
+        if let when = formatMtime(entry.mtimeMs, short: true) {
+            parts.append(when)
+        }
+        return parts.joined(separator: " · ")
     }
 
-    private enum MtimeStyle { case list, details }
-
-    private func formatMtime(_ ms: Int?, style: MtimeStyle = .list) -> String? {
+    private func formatMtime(_ ms: Int?, short: Bool = false) -> String? {
         guard let ms, ms > 0 else { return nil }
         let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
         let cal = Calendar.current
-        switch style {
-        case .list:
-            if cal.isDateInToday(date) { return "Modifié aujourd’hui" }
-            if cal.isDateInYesterday(date) { return "Modifié hier" }
-            let fmt = DateFormatter()
-            fmt.locale = Locale(identifier: "fr_FR")
-            fmt.dateStyle = .medium
-            fmt.timeStyle = .none
-            return "Modifié le " + fmt.string(from: date)
-        case .details:
-            if cal.isDateInToday(date) { return "Modifié aujourd’hui" }
-            if cal.isDateInYesterday(date) { return "Modifié hier" }
-            let fmt = DateFormatter()
-            fmt.locale = Locale(identifier: "fr_FR")
-            fmt.dateStyle = .long
-            fmt.timeStyle = .none
-            return "Modifié le " + fmt.string(from: date)
+        if cal.isDateInToday(date) {
+            return short ? "Aujourd’hui" : "Modifié aujourd’hui"
         }
+        if cal.isDateInYesterday(date) {
+            return short ? "Hier" : "Modifié hier"
+        }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "fr_FR")
+        fmt.dateStyle = .medium
+        fmt.timeStyle = .none
+        let formatted = fmt.string(from: date)
+        return short ? formatted : "Modifié le " + formatted
     }
 
     private func secondaryListLine(for entry: FileEntryDTO) -> String {
