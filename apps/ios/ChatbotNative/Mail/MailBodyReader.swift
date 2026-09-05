@@ -58,7 +58,9 @@ struct MailBodyReader: View {
                 MailHtmlView(html: trimmedHtml, measuredHeight: $measuredHeight)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(height: measuredHeight)
-                    .clipped()
+                    // Pas de .clipped() agressif : le scale JS évite le débordement ;
+                    // clipped coupait encore les newsletters avant remeasure.
+                    .contentShape(Rectangle())
                 .accessibilityIdentifier(A11yID.Mail.bodyHtml)
                 .accessibilityLabel("Version HTML")
                 .accessibilityValue(htmlA11yPlain)

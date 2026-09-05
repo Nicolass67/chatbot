@@ -51,7 +51,11 @@ struct MailHtmlView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             remasure(webView)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            // Newsletters: images / layout asynchrone — remeasure pour le scale-to-fit.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.remasure(webView)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.remasure(webView)
             }
         }
@@ -59,24 +63,77 @@ struct MailHtmlView: UIViewRepresentable {
         private func remasure(_ webView: WKWebView) {
             let js = """
             (function(){
+              var root=document.getElementById('cn-mail-root')||document.body;
               var b=document.body;
-              if(!b) return 160;
+              if(!root||!b) return 160;
+              var vw=Math.max(document.documentElement.clientWidth||0, window.innerWidth||0, 320);
               b.style.margin='0';
               b.style.padding='0';
-              b.style.width='100%';
-              b.style.maxWidth='100%';
-              b.style.boxSizing='border-box';
-              var tables=b.querySelectorAll('table');
-              for(var i=0;i<tables.length;i++){
-                var t=tables[i];
-                t.style.maxWidth='100%';
-                t.style.marginLeft='0';
-                t.style.marginRight='0';
-                if(t.parentElement===b || (t.parentElement && t.parentElement.id==='cn-mail-root')){
-                  t.style.width='100%';
+              b.style.overflowX='hidden';
+              root.style.transform='none';
+              root.style.transformOrigin='top left';
+              root.style.width='100%';
+              root.style.maxWidth='100%';
+              root.style.margin='0';
+              root.style.padding='0';
+              root.style.boxSizing='border-box';
+
+              // Newsletters: tables/images à largeur fixe (ex. 600px) → forcer le reflow.
+              var nodes=root.querySelectorAll('table,td,th,div,center,section,article,img,video');
+              for(var i=0;i<nodes.length;i++){
+                var el=nodes[i];
+                var tag=el.tagName;
+                el.style.maxWidth='100%';
+                el.style.boxSizing='border-box';
+                el.style.minWidth='0';
+                if(tag==='IMG'||tag==='VIDEO'){
+                  el.style.height='auto';
+                  el.removeAttribute('width');
+                  el.removeAttribute('height');
+                }
+                if(tag==='TABLE'){
+                  el.style.marginLeft='0';
+                  el.style.marginRight='0';
+                  el.removeAttribute('width');
+                  el.style.width='100%';
+                }
+                var attrW=el.getAttribute('width');
+                if(attrW){
+                  var aw=parseInt(attrW,10);
+                  if(!isNaN(aw) && aw>vw){ el.removeAttribute('width'); }
+                }
+                if(el.style && el.style.width && /px$/i.test(el.style.width)){
+                  var sw=parseFloat(el.style.width);
+                  if(!isNaN(sw) && sw>vw){ el.style.width='100%'; }
+                }
+                if(el.style && el.style.minWidth && /px$/i.test(el.style.minWidth)){
+                  var mw=parseFloat(el.style.minWidth);
+                  if(!isNaN(mw) && mw>vw){ el.style.minWidth='0'; }
                 }
               }
-              return Math.max(b.scrollHeight, document.documentElement.scrollHeight, 160);
+
+              // Mesure après reflow ; si ça déborde encore, scale-to-fit (évite la troncature).
+              var contentW=Math.max(
+                root.scrollWidth||0,
+                b.scrollWidth||0,
+                document.documentElement.scrollWidth||0,
+                vw
+              );
+              var scale=1;
+              if(contentW>vw+1){
+                scale=vw/contentW;
+                root.style.width=contentW+'px';
+                root.style.maxWidth=contentW+'px';
+                root.style.transformOrigin='top left';
+                root.style.transform='scale('+scale+')';
+              } else {
+                root.style.width='100%';
+                root.style.maxWidth='100%';
+                root.style.transform='none';
+              }
+
+              var rawH=Math.max(root.scrollHeight||0, b.scrollHeight||0, document.documentElement.scrollHeight||0, 160);
+              return Math.ceil(rawH*scale);
             })();
             """
             webView.evaluateJavaScript(js) { [weak self] result, _ in
@@ -160,12 +217,11 @@ struct MailHtmlView: UIViewRepresentable {
         background:\(bg)!important;color:\(fg)!important;
         font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:17px;line-height:1.55;
         overflow-x:hidden;overflow-wrap:anywhere;word-break:break-word;text-align:left;}
-        #cn-mail-root{display:block;width:100%;max-width:100%;margin:0;padding:0;text-align:left;}
-        #cn-mail-root > table{width:100%!important;max-width:100%!important;margin:0!important;}
-        #cn-mail-root > center,#cn-mail-root > div{max-width:100%!important;margin:0!important;}
-        img{max-width:100%!important;height:auto!important}
-        table{max-width:100%!important;border-collapse:collapse}
-        td,th{word-break:break-word}
+        #cn-mail-root{display:block;width:100%;max-width:100%;margin:0;padding:0;text-align:left;transform-origin:top left;}
+        #cn-mail-root table{width:100%!important;max-width:100%!important;min-width:0!important;margin-left:0!important;margin-right:0!important;border-collapse:collapse;}
+        #cn-mail-root td,#cn-mail-root th{max-width:100%!important;min-width:0!important;word-break:break-word;overflow-wrap:anywhere;}
+        #cn-mail-root center,#cn-mail-root div,#cn-mail-root section,#cn-mail-root article{max-width:100%!important;min-width:0!important;box-sizing:border-box;}
+        #cn-mail-root img,#cn-mail-root video{max-width:100%!important;width:auto!important;height:auto!important}
         a,a *{color:\(link)!important}
         pre,code{white-space:pre-wrap;word-break:break-word}
         blockquote{margin:0;padding-left:12px;border-left:3px solid \(quote);color:\(muted)!important}
