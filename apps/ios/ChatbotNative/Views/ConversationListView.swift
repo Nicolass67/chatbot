@@ -44,7 +44,7 @@ struct ConversationListView: View {
             }
             .refreshable { await load() }
             .task { await load() }
-            .alert("Renommer", isPresented: Binding(
+            .alert("Renommer la conversation", isPresented: Binding(
                 get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } }
             )) {

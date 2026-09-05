@@ -10,8 +10,9 @@ import { getSettings } from "@/lib/settings/service";
 export const TITLE_MAX_LENGTH = 80;
 /** @deprecated Conservé pour compat tests — le titre auto ne se rafraîchit plus périodiquement. */
 export const TITLE_REFRESH_EVERY_MESSAGES = 6;
-const TITLE_LLM_MAX_TOKENS = 80;
+const TITLE_LLM_MAX_TOKENS = 48;
 const TITLE_TIMEOUT_MS = 8_000;
+const FALLBACK_MAX_WORDS = 6;
 
 const titleSchema = z.object({
   title: z.string().min(1).max(TITLE_MAX_LENGTH),
@@ -20,7 +21,16 @@ const titleSchema = z.object({
 const GENERIC_USER_OPENERS =
   /^(bonjour|salut|coucou|hello|hi|hey|bonsoir|merci|ok|okay|oui|non|svp|s'il te plait|please|question|j['']ai une question)[\s!.?]*$/i;
 
-/** Titres placeholder — encore éligibles à la génération auto (une seule fois). */
+const POLITE_PREFIX =
+  /^(?:peux[- ]tu|pourrais[- ]tu|peux[- ]vous|pourriez[- ]vous|est[- ]ce que (?:tu|vous) (?:peux|pouvez)|j['']aimerais|je (?:voudrais|veux)|aide[- ]moi (?:à|a)|can you|could you|please|help me(?: to| with)?)\s+/i;
+
+const LEADING_FILLER =
+  /^(?:me|moi|à|a|de|d'|du|des|le|la|les|un|une|mon|ma|mes|trouver|trouve|chercher|cherche|analyser|analyse|résumer|résume|expliquer|explique|préparer|prépare|organiser|organise|m['']aider(?: à| a)?)\s+/i;
+
+/**
+ * Titres placeholder — encore éligibles à la génération auto (une seule fois).
+ * Alignés Chat / Mail / Files (API + seeds iOS).
+ */
 export const PLACEHOLDER_TITLES = new Set([
   "Nouvelle conversation",
   "Nouveau chat",
@@ -62,6 +72,7 @@ export function parseTitleResponse(content: string): string {
   return normalizeConversationTitle(titleSchema.parse(raw).title);
 }
 
+/** Fallback déterministe : titre court utilisable sans LLM. */
 export function fallbackTitleFromExchange(params: {
   userText: string;
   assistantText: string;
@@ -69,8 +80,22 @@ export function fallbackTitleFromExchange(params: {
   const user = params.userText.trim();
   const assistant = params.assistantText.trim();
 
-  if (user && !GENERIC_USER_OPENERS.test(user) && user.length <= 70) {
-    return normalizeConversationTitle(user);
+  if (user && !GENERIC_USER_OPENERS.test(user)) {
+    let candidate = user.replace(/[?!]+$/g, "").replace(POLITE_PREFIX, "").trim();
+    for (let i = 0; i < 3; i++) {
+      const next = candidate.replace(LEADING_FILLER, "").trim();
+      if (next === candidate || next.length < 3) break;
+      candidate = next;
+    }
+    if (candidate) {
+      candidate = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+      const short = candidate
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, FALLBACK_MAX_WORDS)
+        .join(" ");
+      if (short) return normalizeConversationTitle(short);
+    }
   }
 
   const assistantLine =
@@ -79,7 +104,7 @@ export function fallbackTitleFromExchange(params: {
       .map((line) => line.trim())
       .find((line) => line.length >= 12) ?? assistant;
 
-  const words = assistantLine.split(/\s+/).slice(0, 10).join(" ");
+  const words = assistantLine.split(/\s+/).slice(0, FALLBACK_MAX_WORDS).join(" ");
   return normalizeConversationTitle(words || user || "Conversation");
 }
 
@@ -96,12 +121,19 @@ export function shouldAutoUpdateTitle(params: {
 
 function buildTitlePromptContext(
   transcript: string,
-  summary?: string | null
+  summary: string | null | undefined,
+  scope: string
 ): string {
+  const scopeHint =
+    scope === "mail"
+      ? "Contexte: assistant mail. Privilégie sujet / destinataire / action."
+      : scope === "files"
+        ? "Contexte: assistant fichiers. Privilégie document / type / action."
+        : "Contexte: chat général.";
   if (summary?.trim()) {
-    return `Résumé existant:\n${summary.trim()}\n\nÉchange récent:\n${transcript}`;
+    return `${scopeHint}\n\nRésumé existant:\n${summary.trim()}\n\nÉchange récent:\n${transcript}`;
   }
-  return transcript;
+  return `${scopeHint}\n\n${transcript}`;
 }
 
 async function buildTranscript(conversationId: string): Promise<{
@@ -155,12 +187,13 @@ async function generateTitleWithLlm(promptContext: string): Promise<string | nul
       messages: [
         {
           role: "system",
-          content: `Tu génères un titre de conversation pour une sidebar.
-Règles:
-- 4 à 10 mots maximum
-- résume le SUJET de la conversation, pas la formulation du premier message
-- pas de guillemets
-- en français
+          content: `Tu génères un titre court de conversation pour une app mobile.
+Règles strictes:
+- 2 à 6 mots
+- naturel, descriptif, spécifique
+- même langue que le message utilisateur
+- pas de guillemets, pas de markdown, pas de « Voici »
+- résume le SUJET (ex: « Voyage à Tokyo », « Carte d'identité », « Réponse à Maxime »)
 - réponds UNIQUEMENT avec un JSON: {"title":"..."}`,
         },
         {
@@ -181,6 +214,10 @@ Règles:
   }
 }
 
+/**
+ * Génère un titre une seule fois (placeholder → titre auto), sans bloquer le stream.
+ * Les titres manuels (`titleSource === "user"`) et déjà stabilisés sont ignorés.
+ */
 export async function maybeGenerateConversationTitle(params: {
   conversationId: string;
   onTitle?: (title: string) => void;
@@ -191,10 +228,12 @@ export async function maybeGenerateConversationTitle(params: {
   });
   if (!conv) return null;
 
-  const messageCount = await db.query.messages.findMany({
-    where: eq(messages.conversationId, params.conversationId),
-    columns: { id: true },
-  }).then((rows) => rows.length);
+  const messageCount = await db.query.messages
+    .findMany({
+      where: eq(messages.conversationId, params.conversationId),
+      columns: { id: true },
+    })
+    .then((rows) => rows.length);
 
   if (
     !shouldAutoUpdateTitle({
@@ -211,7 +250,11 @@ export async function maybeGenerateConversationTitle(params: {
 
   if (!transcript.trim()) return null;
 
-  const promptContext = buildTitlePromptContext(transcript, summary);
+  const promptContext = buildTitlePromptContext(
+    transcript,
+    summary,
+    conv.scope ?? "general"
+  );
   const generated =
     (await generateTitleWithLlm(promptContext)) ??
     fallbackTitleFromExchange({ userText, assistantText });

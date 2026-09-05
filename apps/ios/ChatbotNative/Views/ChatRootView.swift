@@ -272,7 +272,7 @@ struct ConversationSwitcherSheet: View {
             }
             .task { await load() }
             .refreshable { await load() }
-            .alert("Renommer", isPresented: Binding(
+            .alert("Renommer la conversation", isPresented: Binding(
                 get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } }
             )) {
@@ -317,7 +317,7 @@ struct ConversationSwitcherSheet: View {
                     Text(conv.title?.isEmpty == false ? conv.title! : "Nouvelle conversation")
                         .font(.body.weight(isActive ? .semibold : .medium))
                         .foregroundStyle(AppTheme.foreground)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .multilineTextAlignment(.leading)
                     HStack(spacing: 6) {
                         if let mode = conv.chatMode, mode == "agent" {

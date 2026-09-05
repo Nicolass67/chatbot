@@ -35,13 +35,22 @@ describe("fallbackTitleFromExchange", () => {
     ).toContain("DLSS");
   });
 
-  it("utilise le message user s'il est descriptif", () => {
+  it("raccourcit un message user descriptif", () => {
     expect(
       fallbackTitleFromExchange({
         userText: "Explique le fonctionnement du DLSS",
         assistantText: "Le DLSS utilise des modèles neuronaux...",
       })
-    ).toBe("Explique le fonctionnement du DLSS");
+    ).toBe("Fonctionnement du DLSS");
+  });
+
+  it("extrait un sujet Files depuis une requête polie", () => {
+    expect(
+      fallbackTitleFromExchange({
+        userText: "Peux-tu me trouver ma carte d'identité ?",
+        assistantText: "Voici les fichiers correspondants.",
+      })
+    ).toMatch(/carte d'identité/i);
   });
 });
 
