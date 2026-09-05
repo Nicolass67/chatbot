@@ -45,7 +45,43 @@ describe("fallbackTitleFromExchange", () => {
   });
 });
 
-describe("shouldAutoUpdateTitle via maybeGenerateConversationTitle", () => {
+describe("shouldAutoUpdateTitle", () => {
+  it("autorise un placeholder Mail/Files après le 1er échange", async () => {
+    const { shouldAutoUpdateTitle } = await import("./title-generator");
+    expect(
+      shouldAutoUpdateTitle({
+        title: "Mail Assistant",
+        titleSource: "auto",
+        messageCount: 2,
+      })
+    ).toBe(true);
+    expect(
+      shouldAutoUpdateTitle({
+        title: "Files Assistant",
+        titleSource: "auto",
+        messageCount: 2,
+      })
+    ).toBe(true);
+  });
+
+  it("bloque un titre manuel et un titre déjà stabilisé", async () => {
+    const { shouldAutoUpdateTitle } = await import("./title-generator");
+    expect(
+      shouldAutoUpdateTitle({
+        title: "Nouvelle conversation",
+        titleSource: "user",
+        messageCount: 4,
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoUpdateTitle({
+        title: "Voyage à Tokyo",
+        titleSource: "auto",
+        messageCount: 12,
+      })
+    ).toBe(false);
+  });
+
   it("exporte les constantes attendues", async () => {
     const mod = await import("./title-generator");
     expect(mod.TITLE_MAX_LENGTH).toBe(80);

@@ -146,7 +146,7 @@ struct ContextualAssistantSheet: View {
                     ? nil
                     : contextKey,
                 contextLabel: contextLabel,
-                title: title
+                title: Self.seedTitle(sheetTitle: title, contextLabel: contextLabel)
             )
             ConversationSessionStore.save(
                 conversationId: created.id,
@@ -177,7 +177,7 @@ struct ContextualAssistantSheet: View {
                     ? nil
                     : contextKey,
                 contextLabel: contextLabel,
-                title: title
+                title: Self.seedTitle(sheetTitle: title, contextLabel: contextLabel)
             )
             ConversationSessionStore.save(
                 conversationId: created.id,
@@ -188,6 +188,24 @@ struct ContextualAssistantSheet: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Titre initial : objet mail / nom fichier si pertinent ; sinon nil → placeholder auto côté API.
+    private static func seedTitle(sheetTitle: String, contextLabel: String?) -> String? {
+        let placeholders: Set<String> = [
+            "Mail Assistant", "Files Assistant",
+            "Assistant Mail", "Assistant Files",
+            "Nouvelle conversation", "Nouveau chat",
+        ]
+        let fromContext = contextLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !fromContext.isEmpty, !placeholders.contains(fromContext) {
+            return String(fromContext.prefix(80))
+        }
+        let fromSheet = sheetTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fromSheet.isEmpty, !placeholders.contains(fromSheet) {
+            return String(fromSheet.prefix(80))
+        }
+        return nil
     }
 }
 
@@ -223,6 +241,8 @@ struct ScopedConversationSwitcher: View {
     @State private var query = ""
     @State private var loading = true
     @State private var error: String?
+    @State private var renameTarget: ConversationDTO?
+    @State private var renameText = ""
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -261,13 +281,20 @@ struct ScopedConversationSwitcher: View {
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.title ?? "Conversation")
+                                        Text(item.title?.isEmpty == false ? item.title! : "Conversation")
+                                            .font(.body.weight(item.id == activeId ? .semibold : .regular))
                                             .foregroundStyle(AppTheme.foreground)
+                                            .lineLimit(1)
                                         if let label = item.contextLabel, !label.isEmpty {
                                             Text(label)
                                                 .font(.caption2)
                                                 .foregroundStyle(AppTheme.mutedForeground)
                                                 .lineLimit(1)
+                                        }
+                                        if let updated = item.updatedAt {
+                                            Text(Self.friendlyDate(updated))
+                                                .font(.caption2)
+                                                .foregroundStyle(AppTheme.mutedForeground)
                                         }
                                     }
                                     Spacer()
@@ -276,8 +303,26 @@ struct ScopedConversationSwitcher: View {
                                             .foregroundStyle(AppTheme.accent)
                                     }
                                 }
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                             .listRowBackground(AppTheme.surface.opacity(0.5))
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    renameTarget = item
+                                    renameText = item.title ?? ""
+                                } label: {
+                                    Label("Renommer", systemImage: "pencil")
+                                }
+                                .tint(AppTheme.accent)
+                            }
+                            .contextMenu {
+                                Button("Ouvrir", systemImage: "bubble.left") { onSelect(item) }
+                                Button("Renommer", systemImage: "pencil") {
+                                    renameTarget = item
+                                    renameText = item.title ?? ""
+                                }
+                            }
                         }
                     }
                     .scrollContentBackground(.hidden)
@@ -296,6 +341,14 @@ struct ScopedConversationSwitcher: View {
                 }
             }
             .task { await load() }
+            .alert("Renommer", isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            )) {
+                TextField("Titre", text: $renameText)
+                Button("Annuler", role: .cancel) { renameTarget = nil }
+                Button("Enregistrer") { Task { await commitRename() } }
+            }
         }
     }
 
@@ -308,5 +361,37 @@ struct ScopedConversationSwitcher: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func commitRename() async {
+        guard let target = renameTarget else { return }
+        let title = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        do {
+            let updated = try await client.renameConversation(id: target.id, title: title)
+            if let idx = items.firstIndex(where: { $0.id == target.id }) {
+                items[idx] = updated
+            }
+            renameTarget = nil
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
+    }
+
+    private static func parseDate(_ iso: String?) -> Date? {
+        guard let iso else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+    }
+
+    private static func friendlyDate(_ iso: String) -> String {
+        guard let date = parseDate(iso) else { return iso }
+        let rel = RelativeDateTimeFormatter()
+        rel.locale = Locale(identifier: "fr_FR")
+        rel.unitsStyle = .short
+        return rel.localizedString(for: date, relativeTo: Date())
     }
 }

@@ -8,6 +8,7 @@ import { getLocalAIRuntime } from "@/lib/runtime/factory";
 import { getSettings } from "@/lib/settings/service";
 
 export const TITLE_MAX_LENGTH = 80;
+/** @deprecated Conservé pour compat tests — le titre auto ne se rafraîchit plus périodiquement. */
 export const TITLE_REFRESH_EVERY_MESSAGES = 6;
 const TITLE_LLM_MAX_TOKENS = 80;
 const TITLE_TIMEOUT_MS = 8_000;
@@ -18,6 +19,20 @@ const titleSchema = z.object({
 
 const GENERIC_USER_OPENERS =
   /^(bonjour|salut|coucou|hello|hi|hey|bonsoir|merci|ok|okay|oui|non|svp|s'il te plait|please|question|j['']ai une question)[\s!.?]*$/i;
+
+/** Titres placeholder — encore éligibles à la génération auto (une seule fois). */
+export const PLACEHOLDER_TITLES = new Set([
+  "Nouvelle conversation",
+  "Nouveau chat",
+  "Mail Assistant",
+  "Files Assistant",
+  "Assistant Mail",
+  "Assistant Files",
+]);
+
+export function isPlaceholderTitle(title: string): boolean {
+  return PLACEHOLDER_TITLES.has(title.trim());
+}
 
 export function normalizeConversationTitle(raw: string): string {
   const cleaned = raw
@@ -68,15 +83,15 @@ export function fallbackTitleFromExchange(params: {
   return normalizeConversationTitle(words || user || "Conversation");
 }
 
-function shouldAutoUpdateTitle(params: {
+/** Une seule génération auto : placeholder + ≥2 messages + pas de titre manuel. */
+export function shouldAutoUpdateTitle(params: {
   title: string;
   titleSource: string | null | undefined;
   messageCount: number;
 }): boolean {
   if (params.titleSource === "user") return false;
   if (params.messageCount < 2) return false;
-  if (params.title === "Nouvelle conversation") return true;
-  return params.messageCount % TITLE_REFRESH_EVERY_MESSAGES === 0;
+  return isPlaceholderTitle(params.title);
 }
 
 function buildTitlePromptContext(

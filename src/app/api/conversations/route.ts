@@ -10,6 +10,7 @@ import {
   resolveReasoningMode,
 } from "@/lib/runtime/reasoning";
 import { getSettings } from "@/lib/settings/service";
+import { isPlaceholderTitle } from "@/lib/conversation/title-generator";
 
 const scopeSchema = z.enum(["general", "mail", "files"]);
 
@@ -58,10 +59,15 @@ export async function POST(request: Request) {
         ? "Files Assistant"
         : "Nouvelle conversation");
 
+  // Un titre fourni égal au placeholder de scope reste « auto » (éligible au renommage IA).
+  const explicitTitle = body.title?.trim();
+  const titleSource =
+    explicitTitle && !isPlaceholderTitle(explicitTitle) ? "user" : "auto";
+
   await db.insert(conversations).values({
     id,
     title,
-    titleSource: body.title ? "user" : "auto",
+    titleSource,
     reasoningEffort,
     scope: body.scope,
     contextKey: body.contextKey ?? null,
