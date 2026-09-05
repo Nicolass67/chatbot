@@ -24,7 +24,10 @@ export const MODELS = [
     role: "ultra_petit_candidat",
     modelKeyHint: "qwen/qwen3.5-2b",
     preferredVariant: "q8_0",
-    match: (k) => /qwen3\.5-2b/i.test(k) || /qwen\/qwen3\.5-2b/i.test(k),
+    match: (k) =>
+      /^qwen3\.5-2b(-0)?$/i.test(k) ||
+      /^qwen\/qwen3\.5-2b(@.*)?$/i.test(k) ||
+      /qwen3\.5-2b/i.test(k),
   },
   {
     alias: "ministral-3-3b-reasoning",
@@ -32,7 +35,8 @@ export const MODELS = [
     modelKeyHint: "mistralai/ministral-3-3b-reasoning",
     preferredVariant: "q8_0",
     match: (k) =>
-      /ministral-3-3b-reasoning/i.test(k) ||
+      /^ministral-3-3b-reasoning(-0)?$/i.test(k) ||
+      /^mistralai\/ministral-3-3b-reasoning(@.*)?$/i.test(k) ||
       (/ministral-3-3b/i.test(k) && /reasoning/i.test(k)),
   },
 ];

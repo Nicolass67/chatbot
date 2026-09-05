@@ -106,55 +106,74 @@ function runLmsJson(args) {
   });
   if (result.status !== 0) return null;
   try {
-    return JSON.parse(result.stdout || "null");
+    const raw = String(result.stdout || "").replace(/^\uFEFF/, "");
+    return JSON.parse(raw || "null");
   } catch {
     return null;
   }
 }
 
-/** Disk variants via `lms ls --json` (API ne liste que la variante sélectionnée). */
+/** Disk listing via `lms ls --json` (peut contenir BOM). */
 function listDiskModels() {
   const data = runLmsJson(["ls", "--json"]);
   return Array.isArray(data) ? data : [];
 }
 
-function baseKey(key) {
-  return String(key || "").split("@")[0];
+function quantName(q) {
+  return String(q || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
-function pickPreferredKey(spec, apiHit, diskModels) {
-  const preferred = (spec.preferredVariant || "").toLowerCase();
+/**
+ * Prefère une entrée API déjà en quant voulue (ex. import standalone Q8_0).
+ * Les clés hub `@q8_0` apparaissent dans `lms ls` mais ne sont souvent PAS
+ * chargeables via API/CLI tant que la variante sélectionnée reste Q4.
+ */
+function pickPreferredKey(spec, apiHits, diskModels) {
+  const preferred = quantName(spec.preferredVariant || "");
   const disk =
     diskModels.find(
       (d) =>
-        modelKeysMatch(d.modelKey, apiHit?.key || spec.modelKeyHint) ||
-        baseKey(d.modelKey) === baseKey(spec.modelKeyHint)
+        spec.match(d.modelKey) ||
+        (d.variants || []).some((v) => spec.match(v))
     ) || null;
-
   const variants = disk?.variants || [];
+
   if (preferred) {
-    const want = `@${preferred}`;
-    const hit =
-      variants.find((v) => String(v).toLowerCase().endsWith(want)) ||
-      variants.find((v) =>
-        String(v).toLowerCase().includes(preferred.toLowerCase())
-      );
-    if (hit) {
+    const preferredApi = apiHits.find(
+      (m) => quantName(m.quantization) === preferred
+    );
+    if (preferredApi) {
       return {
-        key: hit,
-        quantization: preferred.toUpperCase(),
-        variantSource: "preferred_disk",
+        key: preferredApi.key,
+        quantization: preferredApi.quantization,
+        displayName: preferredApi.displayName,
+        capabilities: preferredApi.capabilities,
+        variantSource: "api_preferred_quant",
         allVariants: variants,
       };
     }
   }
 
-  if (apiHit?.key) {
+  // Prefer canonical hub key if present among hits.
+  const hubHit =
+    apiHits.find((m) => modelKeysMatch(m.key, spec.modelKeyHint)) ||
+    apiHits[0] ||
+    null;
+  if (hubHit) {
     return {
-      key: apiHit.key,
-      quantization: apiHit.quantization,
-      variantSource: "api_selected",
+      key: hubHit.key,
+      quantization: hubHit.quantization,
+      displayName: hubHit.displayName,
+      capabilities: hubHit.capabilities,
+      variantSource: preferred
+        ? `api_fallback_selected (wanted ${preferred})`
+        : "api_selected",
       allVariants: variants,
+      note: preferred
+        ? `Variante ${preferred} non chargeable comme clé distincte — utilise la variante sélectionnée hub.`
+        : null,
     };
   }
 
@@ -162,6 +181,8 @@ function pickPreferredKey(spec, apiHit, diskModels) {
     return {
       key: disk.selectedVariant || disk.modelKey,
       quantization: disk.quantization?.name ?? null,
+      displayName: disk.displayName || null,
+      capabilities: null,
       variantSource: "disk_selected",
       allVariants: variants,
     };
@@ -182,13 +203,13 @@ function resolveModels(available) {
         skipReason: "filtered_out",
       };
     }
-    const apiHit = available.find((m) => spec.match(m.key));
+    const apiHits = available.filter((m) => spec.match(m.key));
     const diskHit = diskModels.find(
       (d) =>
         spec.match(d.modelKey) ||
         (d.variants || []).some((v) => spec.match(v))
     );
-    if (!apiHit && !diskHit) {
+    if (!apiHits.length && !diskHit) {
       return {
         alias: spec.alias,
         role: spec.role,
@@ -199,26 +220,20 @@ function resolveModels(available) {
         preferredVariant: spec.preferredVariant || null,
       };
     }
-    const picked = pickPreferredKey(
-      spec,
-      apiHit || {
-        key: diskHit.modelKey,
-        quantization: diskHit.quantization?.name,
-      },
-      diskModels
-    );
+    const picked = pickPreferredKey(spec, apiHits, diskModels);
     return {
       alias: spec.alias,
       role: spec.role,
       available: Boolean(picked?.key),
       key: picked?.key || null,
-      quantization: picked?.quantization ?? apiHit?.quantization ?? null,
-      displayName: apiHit?.displayName || diskHit?.displayName || null,
+      quantization: picked?.quantization ?? null,
+      displayName: picked?.displayName || null,
       preferredVariant: spec.preferredVariant || null,
       variantSource: picked?.variantSource || null,
       allVariants: picked?.allVariants || [],
-      capabilities: apiHit?.capabilities || null,
+      capabilities: picked?.capabilities || null,
       modelKeyHint: spec.modelKeyHint,
+      note: picked?.note || null,
     };
   });
 }
