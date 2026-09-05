@@ -93,7 +93,6 @@ export async function runMemoryPostProcess(
 /**
  * Après `done` : attend le post-processeur (budget borné) pour que
  * `memory_saved` parte encore sur le même SSE avant closeStream.
- * Ne retarde pas la génération — seulement la fermeture du stream.
  */
 export async function awaitMemoryPostProcessAfterDone(
   params: MemoryPostProcessParams

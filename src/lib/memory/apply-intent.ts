@@ -6,7 +6,7 @@
 import {
   runMemoryPostProcessor,
   appliedChangesToSavedItems,
-} from "./post-processor";
+} from "./post-processor/run";
 import type { SavedMemoryItem } from "./saved-memory";
 
 export type MemoryAfterResponseParams = {
