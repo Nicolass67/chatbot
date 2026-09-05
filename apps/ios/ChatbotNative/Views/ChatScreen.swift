@@ -353,58 +353,7 @@ struct ChatScreen: View {
                             emptyThread
                         }
                         ForEach(messages) { msg in
-                            let chrome = chromeById[msg.id] ?? MessageChromeMeta()
-                            if let run = chrome.agentRun {
-                                AgentActivityView(state: run.asActivityState)
-                                    .id("agent-\(msg.id)")
-                            }
-                            MessageBubble(
-                                message: msg,
-                                token: session.token,
-                                baseURL: session.baseURL,
-                                isEditing: editingMessageId == msg.id,
-                                sources: chrome.sources,
-                                mailHandoff: chrome.mailHandoff,
-                                filesHandoff: chrome.filesHandoff,
-                                filesFound: chrome.filesFound,
-                                isLiveStreaming: streamingAssistantId == msg.id && isSending,
-                                onCopy: {
-                                    UIPasteboard.general.string = msg.content
-                                    AppHaptics.light()
-                                },
-                                onEdit: { beginEdit(msg) },
-                                onRegenerate: { Task { await regenerate() } },
-                                onOpenImage: { lightbox = $0 },
-                                onMailHandoff: {
-                                    nav.openMail(
-                                        threadId: chrome.mailHandoff?.threadId,
-                                        query: chrome.mailHandoff?.query,
-                                        label: chrome.mailHandoff?.label
-                                    )
-                                },
-                                onFilesHandoff: {
-                                    nav.openFiles(
-                                        rootId: chrome.filesHandoff?.rootId,
-                                        query: chrome.filesHandoff?.query
-                                    )
-                                },
-                                onOpenDocument: { url, title in
-                                    quickLookURL = IdentifiedURL(url: url, title: title)
-                                },
-                                onOpenFoundFile: { file in
-                                    openFoundFilePreview(file)
-                                },
-                                onDownloadFoundFile: { file in
-                                    Task { await downloadFoundFile(file) }
-                                },
-                                onRevealFoundFile: { file in
-                                    revealFoundFileFolder(file)
-                                },
-                                onSendFoundFileByMail: { file in
-                                    sendFoundFileByMail(file)
-                                }
-                            )
-                            .id(msg.id)
+                            messageRow(msg)
                         }
                         // Live agent — dans le fil, au-dessus de la réponse (pas du composer).
                         if shouldShowLiveAgentStrip {
@@ -627,6 +576,63 @@ struct ChatScreen: View {
     }
 
     @ViewBuilder
+    @ViewBuilder
+    private func messageRow(_ msg: MessageDTO) -> some View {
+        let chrome = chromeById[msg.id] ?? MessageChromeMeta()
+        let liveStreaming = streamingAssistantId == msg.id && isSending
+        if let run = chrome.agentRun {
+            AgentActivityView(state: run.asActivityState)
+                .id("agent-\(msg.id)")
+        }
+        MessageBubble(
+            message: msg,
+            token: session.token,
+            baseURL: session.baseURL,
+            isEditing: editingMessageId == msg.id,
+            sources: chrome.sources,
+            mailHandoff: chrome.mailHandoff,
+            filesHandoff: chrome.filesHandoff,
+            filesFound: chrome.filesFound,
+            isLiveStreaming: liveStreaming,
+            onCopy: {
+                UIPasteboard.general.string = msg.content
+                AppHaptics.light()
+            },
+            onEdit: { beginEdit(msg) },
+            onRegenerate: { Task { await regenerate() } },
+            onOpenImage: { lightbox = $0 },
+            onMailHandoff: {
+                nav.openMail(
+                    threadId: chrome.mailHandoff?.threadId,
+                    query: chrome.mailHandoff?.query,
+                    label: chrome.mailHandoff?.label
+                )
+            },
+            onFilesHandoff: {
+                nav.openFiles(
+                    rootId: chrome.filesHandoff?.rootId,
+                    query: chrome.filesHandoff?.query
+                )
+            },
+            onOpenDocument: { url, title in
+                quickLookURL = IdentifiedURL(url: url, title: title)
+            },
+            onOpenFoundFile: { file in
+                openFoundFilePreview(file)
+            },
+            onDownloadFoundFile: { file in
+                Task { await downloadFoundFile(file) }
+            },
+            onRevealFoundFile: { file in
+                revealFoundFileFolder(file)
+            },
+            onSendFoundFileByMail: { file in
+                sendFoundFileByMail(file)
+            }
+        )
+        .id(msg.id)
+    }
+
     private var emptyThread: some View {
         if let scope = forcedScope {
             ContextualQuickActions(
