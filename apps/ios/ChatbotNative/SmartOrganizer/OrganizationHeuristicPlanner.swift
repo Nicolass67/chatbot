@@ -1,8 +1,7 @@
 import Foundation
 
 enum OrganizationHeuristicPlanner {
-    /// Plan métadonnées-first : factures, contrats, images, voyages, A classer.
-    /// Ne déplace que les fichiers à la racine du scope (depth 1), hors structures protégées.
+    /// Plan métadonnées-first. Produit toujours ≥1 proposition si un fichier est déplaçable.
     static func propose(
         inventory: OrganizationInventory,
         protected: [ProtectedStructure],
@@ -14,17 +13,15 @@ enum OrganizationHeuristicPlanner {
                 .filter { $0.level == .protected }
                 .map { OrganizationPathUtils.normalize($0.relativePath) }
         )
+        let hint = (instruction ?? "").lowercased()
 
-        let rootFiles = inventory.items.filter { item in
+        let candidates = inventory.items.filter { item in
             guard !item.isDirectory else { return false }
-            guard item.depth == 1 || (root.isEmpty && item.depth == 1) || item.parentRelativePath == root
-            else { return false }
-            // Uniquement les fichiers directement sous le scope (pas déjà imbriqués).
-            return OrganizationPathUtils.normalize(item.parentRelativePath) == root
-                && !isUnderProtected(item.relativePath, protected: protectedPaths)
+            guard item.depth <= 4 else { return false }
+            return !isUnderProtected(item.relativePath, protected: protectedPaths)
         }
 
-        if rootFiles.isEmpty {
+        if candidates.isEmpty {
             let anyFiles = inventory.items.contains { !$0.isDirectory }
             if !anyFiles {
                 throw OrganizationEngineError.emptyFolder
@@ -34,46 +31,57 @@ enum OrganizationHeuristicPlanner {
 
         var moves: [OrganizationMove] = []
         var dirs = Set<String>()
-        let hint = (instruction ?? "").lowercased()
+        var seen = Set<String>()
 
-        for file in rootFiles {
-            let cat = categorize(file: file, instructionHint: hint)
-            let destFolder = OrganizationPathUtils.join(root, cat.folderName)
-            let dest = OrganizationPathUtils.join(destFolder, file.name)
-            dirs.insert(destFolder)
+        let rootFiles = candidates.filter {
+            OrganizationPathUtils.normalize($0.parentRelativePath) == root
+        }
+        appendMoves(
+            files: rootFiles,
+            root: root,
+            hint: hint,
+            moves: &moves,
+            dirs: &dirs,
+            seen: &seen
+        )
 
-            let needsReview = cat.confidence < OrganizationConfidence.autoExecuteMinimum
-            moves.append(
-                OrganizationMove(
-                    sourceRelativePath: file.relativePath,
-                    destinationRelativePath: dest,
-                    operation: .move,
-                    confidence: cat.confidence,
-                    reason: cat.reason,
-                    sourceFileId: file.fileId,
-                    sourceIsDirectory: false,
-                    needsReview: needsReview,
-                    excluded: false
-                )
+        if moves.isEmpty {
+            let nested = candidates
+                .filter { OrganizationPathUtils.normalize($0.parentRelativePath) != root }
+                .sorted { $0.depth < $1.depth }
+            appendMoves(
+                files: Array(nested.prefix(40)),
+                root: root,
+                hint: hint,
+                moves: &moves,
+                dirs: &dirs,
+                seen: &seen
             )
+        }
+
+        if moves.isEmpty, let forced = forcedFallback(from: candidates, root: root, hint: hint) {
+            dirs.insert(OrganizationPathUtils.parent(of: forced.destinationRelativePath))
+            moves.append(forced)
+        }
+
+        guard !moves.isEmpty else {
+            throw OrganizationEngineError.alreadyOrganized
         }
 
         let autoCount = moves.filter { !$0.needsReview }.count
         let reviewCount = moves.filter(\.needsReview).count
-        let avgConf = moves.isEmpty
-            ? 0
-            : moves.map(\.confidence).reduce(0, +) / Double(moves.count)
-
+        let avg = moves.map(\.confidence).reduce(0, +) / Double(moves.count)
         var warnings: [String] = []
         if reviewCount > 0 {
-            warnings.append("\(reviewCount) fichier\(reviewCount > 1 ? "s" : "") à revoir avant exécution automatique.")
+            warnings.append("\(reviewCount) à confirmer ou exclure.")
         }
-        if !protected.isEmpty {
-            warnings.append("\(protected.filter { $0.level == .protected }.count) structure(s) protégée(s) laissée(s) intacte(s).")
+        let locked = protected.filter { $0.level == .protected }.count
+        if locked > 0 {
+            warnings.append("\(locked) structure(s) protégée(s).")
         }
-        warnings.append("Aucune suppression : seuls des déplacements et créations de dossiers.")
 
-        let summary = "Proposition heuristique : \(autoCount) déplacement\(autoCount > 1 ? "s" : "") automatique\(autoCount > 1 ? "s" : ""), \(reviewCount) à revoir. Dossiers : \(dirs.sorted().map { OrganizationPathUtils.basename(of: $0) }.joined(separator: ", "))."
+        let folders = dirs.sorted().map { OrganizationPathUtils.basename(of: $0) }.joined(separator: ", ")
+        let summary = "\(autoCount) auto · \(reviewCount) revue · \(dirs.count) dossier\(dirs.count > 1 ? "s" : "") · \(folders)"
 
         return OrganizationPlan(
             id: UUID().uuidString,
@@ -86,8 +94,89 @@ enum OrganizationHeuristicPlanner {
             moves: moves,
             warnings: warnings,
             conflicts: [],
-            confidence: avgConf,
+            confidence: avg,
             userInstruction: instruction
+        )
+    }
+
+    private static func appendMoves(
+        files: [OrganizationInventoryItem],
+        root: String,
+        hint: String,
+        moves: inout [OrganizationMove],
+        dirs: inout Set<String>,
+        seen: inout Set<String>
+    ) {
+        for file in files {
+            let source = OrganizationPathUtils.normalize(file.relativePath)
+            guard !seen.contains(source) else { continue }
+            let cat = categorize(file: file, hint: hint)
+            let destFolder = OrganizationPathUtils.join(root, cat.folderName)
+            let dest = OrganizationPathUtils.join(destFolder, file.name)
+            if OrganizationPathUtils.normalize(dest) == source { continue }
+            if OrganizationPathUtils.normalize(file.parentRelativePath) == OrganizationPathUtils.normalize(destFolder) {
+                continue
+            }
+            dirs.insert(destFolder)
+            seen.insert(source)
+            moves.append(
+                OrganizationMove(
+                    sourceRelativePath: file.relativePath,
+                    destinationRelativePath: dest,
+                    operation: .move,
+                    confidence: cat.confidence,
+                    reason: cat.reason,
+                    sourceFileId: file.fileId,
+                    sourceIsDirectory: false,
+                    needsReview: cat.confidence < OrganizationConfidence.autoExecuteMinimum,
+                    excluded: false
+                )
+            )
+        }
+    }
+
+    private static func forcedFallback(
+        from files: [OrganizationInventoryItem],
+        root: String,
+        hint: String
+    ) -> OrganizationMove? {
+        for file in files.sorted(by: { $0.depth < $1.depth }) {
+            let cat = categorize(file: file, hint: hint)
+            let destFolder = OrganizationPathUtils.join(root, cat.folderName)
+            let dest = OrganizationPathUtils.join(destFolder, file.name)
+            let source = OrganizationPathUtils.normalize(file.relativePath)
+            if OrganizationPathUtils.normalize(dest) == source { continue }
+            if OrganizationPathUtils.normalize(file.parentRelativePath) == OrganizationPathUtils.normalize(destFolder) {
+                continue
+            }
+            return OrganizationMove(
+                sourceRelativePath: file.relativePath,
+                destinationRelativePath: dest,
+                operation: .move,
+                confidence: min(cat.confidence, 0.68),
+                reason: "Proposition · \(cat.reason)",
+                sourceFileId: file.fileId,
+                sourceIsDirectory: false,
+                needsReview: true,
+                excluded: false
+            )
+        }
+        guard let file = files.first else { return nil }
+        let destFolder = OrganizationPathUtils.join(root, "A classer")
+        let dest = OrganizationPathUtils.join(destFolder, file.name)
+        if OrganizationPathUtils.normalize(dest) == OrganizationPathUtils.normalize(file.relativePath) {
+            return nil
+        }
+        return OrganizationMove(
+            sourceRelativePath: file.relativePath,
+            destinationRelativePath: dest,
+            operation: .move,
+            confidence: 0.5,
+            reason: "Proposition minimale · A classer",
+            sourceFileId: file.fileId,
+            sourceIsDirectory: false,
+            needsReview: true,
+            excluded: false
         )
     }
 
@@ -97,36 +186,37 @@ enum OrganizationHeuristicPlanner {
         let reason: String
     }
 
-    private static func categorize(file: OrganizationInventoryItem, instructionHint: String) -> Category {
+    private static func categorize(file: OrganizationInventoryItem, hint: String) -> Category {
         let name = file.name.lowercased()
         let ext = file.extensionLower
         let stem = name.replacingOccurrences(of: ".\(ext)", with: ext.isEmpty ? "" : "")
 
         if matchesAny(stem, ["facture", "invoice", "receipt", "reçu", "recu", "avoir", "devis"])
-            || instructionHint.contains("facture") {
-            return .init(folderName: "Factures", confidence: 0.88, reason: "Nom évoquant une facture / reçu")
+            || hint.contains("facture") {
+            return .init(folderName: "Factures", confidence: 0.88, reason: "Facture / reçu")
         }
         if matchesAny(stem, ["contrat", "contract", "accord", "nda", "bail", "avenant"])
-            || instructionHint.contains("contrat") {
-            return .init(folderName: "Contrats", confidence: 0.86, reason: "Nom évoquant un contrat")
+            || hint.contains("contrat") {
+            return .init(folderName: "Contrats", confidence: 0.86, reason: "Contrat")
         }
         if ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "tiff", "bmp", "raw", "dng"].contains(ext)
-            || instructionHint.contains("image") || instructionHint.contains("photo") {
-            return .init(folderName: "Images", confidence: 0.9, reason: "Extension image")
+            || hint.contains("image") || hint.contains("photo") {
+            return .init(folderName: "Images", confidence: 0.9, reason: "Image")
         }
         if matchesAny(stem, ["voyage", "travel", "hotel", "vol", "flight", "billet", "boarding", "itinéraire", "itineraire", "reservation", "réservation"])
-            || instructionHint.contains("voyage") {
-            return .init(folderName: "Voyages", confidence: 0.82, reason: "Nom évoquant un voyage")
+            || hint.contains("voyage") {
+            return .init(folderName: "Voyages", confidence: 0.82, reason: "Voyage")
         }
-        if ["pdf"].contains(ext) && matchesAny(stem, ["ticket", "pass", "booking"]) {
-            return .init(folderName: "Voyages", confidence: 0.75, reason: "PDF de voyage probable")
+        if ext == "pdf" && matchesAny(stem, ["ticket", "pass", "booking"]) {
+            return .init(folderName: "Voyages", confidence: 0.75, reason: "PDF voyage")
         }
-
-        return .init(
-            folderName: "A classer",
-            confidence: 0.55,
-            reason: "Catégorie incertaine — revue recommandée"
-        )
+        if ["pdf", "doc", "docx", "txt", "rtf", "odt"].contains(ext) {
+            return .init(folderName: "Documents", confidence: 0.7, reason: "Document")
+        }
+        if ["zip", "rar", "7z", "tar", "gz"].contains(ext) {
+            return .init(folderName: "Archives", confidence: 0.78, reason: "Archive")
+        }
+        return .init(folderName: "A classer", confidence: 0.55, reason: "À confirmer")
     }
 
     private static func matchesAny(_ text: String, _ needles: [String]) -> Bool {

@@ -46,9 +46,50 @@ final class SmartFileOrganizerEngine {
         if let idx = plan.moves.firstIndex(where: { $0.id == moveId }) {
             plan.moves[idx].excluded.toggle()
             self.plan = plan
-            if phase == .readyForApproval || phase == .editingProposal {
-                phase = .editingProposal
-            }
+            markEditing()
+        }
+    }
+
+    func acceptReview(moveId: String) {
+        guard var plan else { return }
+        if let idx = plan.moves.firstIndex(where: { $0.id == moveId }) {
+            plan.moves[idx].needsReview = false
+            plan.moves[idx].excluded = false
+            self.plan = plan
+            markEditing()
+        }
+    }
+
+    func acceptAllReviews() {
+        guard var plan else { return }
+        for idx in plan.moves.indices where plan.moves[idx].needsReview && !plan.moves[idx].excluded {
+            plan.moves[idx].needsReview = false
+        }
+        self.plan = plan
+        markEditing()
+    }
+
+    func excludeAll() {
+        guard var plan else { return }
+        for idx in plan.moves.indices {
+            plan.moves[idx].excluded = true
+        }
+        self.plan = plan
+        markEditing()
+    }
+
+    func includeAll() {
+        guard var plan else { return }
+        for idx in plan.moves.indices {
+            plan.moves[idx].excluded = false
+        }
+        self.plan = plan
+        markEditing()
+    }
+
+    private func markEditing() {
+        if phase == .readyForApproval || phase == .editingProposal {
+            phase = .editingProposal
         }
     }
 

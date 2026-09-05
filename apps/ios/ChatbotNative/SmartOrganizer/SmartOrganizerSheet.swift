@@ -34,11 +34,7 @@ struct SmartOrganizerSheet: View {
                     .accessibilityLabel("Fermer le réorganisateur")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if engine.phase == .inventorying
-                        || engine.phase == .analyzing
-                        || engine.phase == .proposing
-                        || engine.phase == .validating
-                        || engine.phase == .executing {
+                    if isBusy {
                         Button("Arrêter") {
                             engine.requestCancel()
                             AppHaptics.light()
@@ -53,6 +49,15 @@ struct SmartOrganizerSheet: View {
             }
         }
         .accessibilityIdentifier("smart_organizer_sheet")
+    }
+
+    private var isBusy: Bool {
+        switch engine.phase {
+        case .inventorying, .analyzing, .proposing, .validating, .executing:
+            return true
+        default:
+            return false
+        }
     }
 
     @ViewBuilder
@@ -81,9 +86,8 @@ struct SmartOrganizerSheet: View {
                 .foregroundStyle(AppTheme.mutedForeground)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, AppTheme.space24)
-                .accessibilityLabel(engine.progressText)
             if engine.phase == .executing {
-                Text("Aucune suppression — déplacements uniquement.")
+                Text("Déplacements uniquement — aucune suppression.")
                     .font(CNFont.caption)
                     .foregroundStyle(AppTheme.muted)
             }
@@ -112,17 +116,12 @@ struct SmartOrganizerSheet: View {
                     Image(systemName: completionIcon)
                         .foregroundStyle(AppTheme.filesAccent)
                 }
-                .accessibilityLabel(completionTitle)
 
                 if let result = engine.executionResult {
-                    Text("\(result.succeededCount) réussi\(result.succeededCount > 1 ? "s" : "") · \(result.failedCount) échec\(result.failedCount > 1 ? "s" : "")")
+                    Text("\(result.succeededCount) OK · \(result.failedCount) échec\(result.failedCount > 1 ? "s" : "")")
                         .font(CNFont.callout)
                         .foregroundStyle(AppTheme.mutedForeground)
                 }
-
-                Text("Aucun fichier n’a été supprimé.")
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.muted)
 
                 if OrganizationHistoryStore.shared.last != nil,
                    engine.phase == .completed || engine.phase == .partiallyCompleted {
@@ -140,7 +139,6 @@ struct SmartOrganizerSheet: View {
                     .buttonStyle(.bordered)
                     .tint(AppTheme.filesAccent)
                     .disabled(undoing)
-                    .accessibilityLabel("Annuler la dernière réorganisation")
                 }
 
                 Button {
@@ -154,7 +152,6 @@ struct SmartOrganizerSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.filesAccent)
-                .accessibilityLabel("Terminer et fermer")
             }
             .padding(AppTheme.space24)
         }
@@ -176,221 +173,304 @@ struct SmartOrganizerSheet: View {
         }
     }
 
+    // MARK: - Proposal
+
     private var proposalView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: AppTheme.space20) {
-                if let plan = engine.plan {
-                    summarySection(plan)
-                    protectedSection(plan)
-                    reviewSection(plan)
-                    movesSection(plan)
-                    refineSection
-                    reminderBanner
-                    approveButton
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppTheme.space16) {
+                    if let plan = engine.plan {
+                        compactHeader(plan)
+                        quickActions(plan)
+                        movesList(plan)
+                        refineBox
+                        Text("Aucune suppression — validation requise avant exécution.")
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.muted)
+                    }
                 }
+                .padding(AppTheme.space16)
+                .padding(.bottom, 88)
             }
-            .padding(AppTheme.space16)
+            approveBar
         }
     }
 
-    private func summarySection(_ plan: OrganizationPlan) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.space8) {
-            Text("Résumé")
-                .font(CNFont.headline)
-                .foregroundStyle(AppTheme.foreground)
+    private func compactHeader(_ plan: OrganizationPlan) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             Text(plan.summary)
-                .font(CNFont.callout)
-                .foregroundStyle(AppTheme.mutedForeground)
-            HStack(spacing: AppTheme.space12) {
-                countChip("\(plan.executableMoves.count)", label: "auto")
-                countChip("\(plan.reviewMoves.count)", label: "revue")
-                countChip("\(plan.proposedDirectories.count)", label: "dossiers")
-                countChip("\(plan.moves.filter(\.excluded).count)", label: "exclus")
+                .font(CNFont.callout.weight(.medium))
+                .foregroundStyle(AppTheme.foreground)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                metricPill("\(plan.executableMoves.count)", caption: "auto", tint: AppTheme.filesAccent)
+                metricPill("\(plan.reviewMoves.count)", caption: "revue", tint: AppTheme.warning)
+                metricPill("\(plan.proposedDirectories.count)", caption: "dossiers", tint: AppTheme.mutedForeground)
+                metricPill("\(plan.excludedCount)", caption: "exclus", tint: AppTheme.danger)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(
-                "\(plan.executableMoves.count) automatiques, \(plan.reviewMoves.count) à revoir, \(plan.proposedDirectories.count) dossiers"
-            )
         }
-        .padding(AppTheme.space14)
-        .background(AppTheme.surface.opacity(0.85), in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+        .padding(AppTheme.space12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.surface.opacity(0.9), in: RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(plan.executableMoves.count) automatiques, \(plan.reviewMoves.count) à revoir, \(plan.excludedCount) exclus"
+        )
     }
 
-    private func countChip(_ value: String, label: String) -> some View {
+    private func metricPill(_ value: String, caption: String, tint: Color) -> some View {
         VStack(spacing: 2) {
             Text(value)
                 .font(CNFont.headline)
-                .foregroundStyle(AppTheme.filesAccent)
-            Text(label)
-                .font(CNFont.caption)
+                .foregroundStyle(tint)
+            Text(caption)
+                .font(.caption2)
                 .foregroundStyle(AppTheme.muted)
         }
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    @ViewBuilder
-    private func protectedSection(_ plan: OrganizationPlan) -> some View {
-        let protected = plan.protectedStructures.filter { $0.level == .protected }
-        if !protected.isEmpty {
-            VStack(alignment: .leading, spacing: AppTheme.space8) {
-                Text("Structures protégées")
-                    .font(CNFont.headline)
-                ForEach(protected) { item in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "lock.fill")
-                            .foregroundStyle(AppTheme.filesAccent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name)
-                                .font(CNFont.callout)
-                            Text(item.reason)
-                                .font(CNFont.caption)
-                                .foregroundStyle(AppTheme.muted)
-                        }
+    private func quickActions(_ plan: OrganizationPlan) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if !plan.reviewMoves.isEmpty {
+                    actionChip("Tout accepter", systemImage: "checkmark.circle") {
+                        engine.acceptAllReviews()
+                        AppHaptics.selection()
                     }
-                    .accessibilityLabel("Protégé : \(item.name), \(item.reason)")
+                }
+                actionChip("Tout inclure", systemImage: "plus.circle") {
+                    engine.includeAll()
+                    AppHaptics.selection()
+                }
+                actionChip("Tout exclure", systemImage: "minus.circle") {
+                    engine.excludeAll()
+                    AppHaptics.selection()
+                }
+                if plan.protectedStructures.contains(where: { $0.level == .protected }) {
+                    Label("Protégé", systemImage: "lock.fill")
+                        .font(CNFont.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.filesAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(AppTheme.filesAccent.opacity(0.12), in: Capsule())
                 }
             }
         }
+        .accessibilityLabel("Actions rapides")
     }
 
-    @ViewBuilder
-    private func reviewSection(_ plan: OrganizationPlan) -> some View {
-        let reviews = plan.reviewMoves
-        if !reviews.isEmpty {
-            VStack(alignment: .leading, spacing: AppTheme.space8) {
-                Text("À revoir")
-                    .font(CNFont.headline)
-                Text("Ces fichiers ne seront pas déplacés automatiquement. Tu peux les exclure ou les affiner.")
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.muted)
-                ForEach(reviews) { move in
-                    moveRow(move, badge: "Revue")
+    private func actionChip(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(CNFont.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.bordered)
+        .tint(AppTheme.filesAccent)
+        .accessibilityLabel(title)
+    }
+
+    private func movesList(_ plan: OrganizationPlan) -> some View {
+        let review = plan.reviewMovesIncludingExcluded
+        let auto = plan.autoMovesIncludingExcluded
+
+        return VStack(alignment: .leading, spacing: AppTheme.space14) {
+            if !review.isEmpty {
+                sectionTitle("À revoir", count: review.filter { !$0.excluded }.count)
+                ForEach(review) { move in
+                    moveCard(move, kind: .review)
                 }
             }
-        }
-    }
-
-    private func movesSection(_ plan: OrganizationPlan) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.space8) {
-            Text("Déplacements proposés")
-                .font(CNFont.headline)
+            if !auto.isEmpty {
+                sectionTitle("Propositions", count: auto.filter { !$0.excluded }.count)
+                ForEach(auto) { move in
+                    moveCard(move, kind: .auto)
+                }
+            }
             if plan.moves.isEmpty {
-                Text("Aucun déplacement.")
+                Text("Aucune proposition.")
                     .foregroundStyle(AppTheme.muted)
-            } else {
-                ForEach(plan.moves.filter { !$0.needsReview }) { move in
-                    moveRow(move, badge: nil)
-                }
             }
         }
     }
 
-    private func moveRow(_ move: OrganizationMove, badge: String?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(OrganizationPathUtils.basename(of: move.sourceRelativePath))
-                        .font(CNFont.callout.weight(.semibold))
-                        .strikethrough(move.excluded)
-                    Text("\(shortPath(move.sourceRelativePath)) → \(shortPath(move.destinationRelativePath))")
-                        .font(CNFont.caption)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                        .strikethrough(move.excluded)
-                    Text(move.reason)
-                        .font(CNFont.caption)
-                        .foregroundStyle(AppTheme.muted)
-                }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 6) {
-                    if let badge {
-                        Text(badge)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(AppTheme.filesAccent.opacity(0.18), in: Capsule())
-                            .foregroundStyle(AppTheme.filesAccent)
+    private func sectionTitle(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(CNFont.headline)
+            Spacer()
+            Text("\(count)")
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.muted)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(AppTheme.surfaceElevated, in: Capsule())
+        }
+    }
+
+    private enum MoveKind { case review, auto }
+
+    private func moveCard(_ move: OrganizationMove, kind: MoveKind) -> some View {
+        let excluded = move.excluded
+        return HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(OrganizationPathUtils.basename(of: move.sourceRelativePath))
+                    .font(CNFont.callout.weight(.semibold))
+                    .foregroundStyle(excluded ? AppTheme.muted : AppTheme.foreground)
+                    .strikethrough(excluded, color: AppTheme.muted)
+                    .lineLimit(2)
+
+                Text("\(shortPath(move.sourceRelativePath))  →  \(shortPath(move.destinationRelativePath))")
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .strikethrough(excluded, color: AppTheme.muted)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    if kind == .review && !excluded {
+                        statusChip("Revue", tint: AppTheme.warning)
                     }
+                    if excluded {
+                        statusChip("Exclu", tint: AppTheme.danger)
+                    }
+                    Text(move.reason)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            VStack(spacing: 8) {
+                if kind == .review && !excluded {
                     Button {
-                        engine.toggleExclude(moveId: move.id)
+                        engine.acceptReview(moveId: move.id)
                         AppHaptics.selection()
                     } label: {
-                        Image(systemName: move.excluded ? "plus.circle" : "minus.circle")
-                            .foregroundStyle(move.excluded ? AppTheme.success : AppTheme.danger)
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.success)
                     }
-                    .accessibilityLabel(move.excluded ? "Réinclure le fichier" : "Exclure le fichier")
+                    .accessibilityLabel("Accepter ce déplacement")
                 }
+
+                Button {
+                    engine.toggleExclude(moveId: move.id)
+                    AppHaptics.selection()
+                } label: {
+                    Image(systemName: excluded ? "arrow.uturn.backward.circle.fill" : "minus.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(excluded ? AppTheme.filesAccent : AppTheme.danger)
+                }
+                .accessibilityLabel(excluded ? "Réinclure le fichier" : "Exclure le fichier")
             }
         }
         .padding(AppTheme.space12)
         .background(
-            AppTheme.surfaceElevated.opacity(move.excluded ? 0.4 : 0.9),
+            AppTheme.surfaceElevated.opacity(excluded ? 0.35 : 0.92),
             in: RoundedRectangle(cornerRadius: AppTheme.radiusSm, style: .continuous)
         )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(OrganizationPathUtils.basename(of: move.sourceRelativePath)), de \(shortPath(move.sourceRelativePath)) vers \(shortPath(move.destinationRelativePath))"
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusSm, style: .continuous)
+                .strokeBorder(excluded ? AppTheme.danger.opacity(0.25) : Color.clear, lineWidth: 1)
         )
+        .opacity(excluded ? 0.72 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityMoveLabel(move, excluded: excluded))
+        .accessibilityHint(excluded ? "Exclu de la réorganisation" : "Inclus dans la réorganisation")
     }
 
-    private var refineSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space8) {
-            Text("Affiner en langage naturel")
+    private func statusChip(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.16), in: Capsule())
+    }
+
+    private var refineBox: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Affiner")
                 .font(CNFont.headline)
-            TextField("Ex. : mets les PDF dans Factures 2024", text: $refineText)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Instruction d’affinage")
-            Button {
-                let text = refineText
-                refineText = ""
-                engine.refine(instruction: text, client: client)
-            } label: {
-                Label("Relancer l’analyse", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .disabled(refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .tint(AppTheme.filesAccent)
-            .accessibilityLabel("Relancer l’analyse avec l’instruction")
-        }
-    }
+            HStack(spacing: 8) {
+                TextField("Ex. : PDF → Factures 2024", text: $refineText)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.go)
+                    .onSubmit { runRefine() }
+                    .accessibilityLabel("Instruction d’affinage")
 
-    private var reminderBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(AppTheme.filesAccent)
-            Text("Rappel : aucune suppression. Seuls des déplacements et créations de dossiers seront effectués après validation explicite.")
-                .font(CNFont.caption)
-                .foregroundStyle(AppTheme.mutedForeground)
-        }
-        .padding(AppTheme.space12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.filesAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: AppTheme.radiusSm, style: .continuous))
-        .accessibilityLabel("Rappel : aucune suppression")
-    }
-
-    private var approveButton: some View {
-        Button {
-            Task {
-                AppHaptics.medium()
-                await engine.approveAndExecute(client: client)
-                if engine.phase == .completed || engine.phase == .partiallyCompleted {
-                    await onFinished?()
+                Button {
+                    runRefine()
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .frame(width: 36, height: 36)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.filesAccent)
+                .disabled(refineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Relancer l’analyse")
             }
-        } label: {
-            Text("Valider et réorganiser")
-                .font(CNFont.headline)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: AppTheme.touchMin)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(AppTheme.filesAccent)
-        .disabled(engine.plan?.executableMoves.isEmpty == true)
-        .accessibilityLabel("Valider et réorganiser")
-        .accessibilityHint("Exécute les déplacements automatiques validés")
+    }
+
+    private var approveBar: some View {
+        VStack(spacing: 0) {
+            Divider().opacity(0.4)
+            Button {
+                Task {
+                    AppHaptics.medium()
+                    await engine.approveAndExecute(client: client)
+                    if engine.phase == .completed || engine.phase == .partiallyCompleted {
+                        await onFinished?()
+                    }
+                }
+            } label: {
+                Text(approveTitle)
+                    .font(CNFont.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: AppTheme.touchMin)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(AppTheme.filesAccent)
+            .disabled(engine.plan?.executableMoves.isEmpty == true)
+            .padding(.horizontal, AppTheme.space16)
+            .padding(.vertical, 10)
+            .background(AppTheme.surface.opacity(0.96))
+            .accessibilityLabel("Valider et réorganiser")
+            .accessibilityHint("Exécute uniquement les déplacements non exclus")
+        }
+    }
+
+    private var approveTitle: String {
+        let n = engine.plan?.executableMoves.count ?? 0
+        if n == 0 { return "Rien à exécuter" }
+        return "Valider · \(n) déplacement\(n > 1 ? "s" : "")"
+    }
+
+    private func runRefine() {
+        let text = refineText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        refineText = ""
+        engine.refine(instruction: text, client: client)
+        AppHaptics.light()
+    }
+
+    private func accessibilityMoveLabel(_ move: OrganizationMove, excluded: Bool) -> String {
+        let name = OrganizationPathUtils.basename(of: move.sourceRelativePath)
+        let state = excluded ? "exclu" : "inclus"
+        return "\(name), \(state), vers \(shortPath(move.destinationRelativePath))"
     }
 
     private func shortPath(_ path: String) -> String {
         let n = OrganizationPathUtils.normalize(path)
-        if n.count <= 42 { return n.isEmpty ? "/" : n }
-        return "…" + n.suffix(40)
+        if n.count <= 36 { return n.isEmpty ? "/" : n }
+        return "…" + n.suffix(34)
     }
 }

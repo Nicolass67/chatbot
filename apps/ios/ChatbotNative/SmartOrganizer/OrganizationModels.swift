@@ -124,6 +124,19 @@ struct OrganizationPlan: Hashable, Sendable, Codable, Identifiable {
     var reviewMoves: [OrganizationMove] {
         moves.filter { $0.needsReview && !$0.excluded }
     }
+
+    /// Inclut les exclus — pour garder la ligne visible dans l'UI.
+    var reviewMovesIncludingExcluded: [OrganizationMove] {
+        moves.filter(\.needsReview)
+    }
+
+    var autoMovesIncludingExcluded: [OrganizationMove] {
+        moves.filter { !$0.needsReview }
+    }
+
+    var excludedCount: Int { moves.filter(\.excluded).count }
+
+    var activeMoveCount: Int { moves.filter { !$0.excluded }.count }
 }
 
 enum OrganizationConfidence {
