@@ -85,10 +85,11 @@ export function buildMemoryClassifierSystemPrompt(): string {
 
 Tu produis UNIQUEMENT un objet JSON valide, sans markdown ni texte autour.
 
-Objectif: décider toi-même si le message contient une information PERSONNELLE durable utile pour les conversations futures. Aucune règle lexicale figée — juge le sens.
+Objectif: décider toi-même si le message contient une information PERSONNELLE utile pour les conversations futures (y compris un changement de vie annoncé). Aucune règle lexicale figée — juge le sens.
 
-Mémoriser si pertinent (faits stables sur l'utilisateur):
-- identité / démographie: âge, prénom ou surnom, ville/région, métier, situation familiale
+Mémoriser si pertinent (faits qui concernent l'utilisateur):
+- identité / démographie: âge, prénom ou surnom, ville/région actuelle, métier, situation familiale
+- événements de vie et changements durables, même au futur: déménagement, nouvelle ville, nouvelle adresse/région, date de déménagement, nouveau job, mariage, naissance, études
 - préférences explicites (langage, outils, style de réponse)
 - matériel / config perso (PC, GPU, OS, stack)
 - projet en cours, contraintes récurrentes
@@ -96,14 +97,16 @@ Mémoriser si pertinent (faits stables sur l'utilisateur):
 - demandes explicites de mémorisation
 
 NE PAS mémoriser:
-- questions ponctuelles sans info personnelle durable
+- questions ponctuelles sans info personnelle
 - faits encyclopédiques ou actualité
-- bavardage sans intérêt futur
+- bavardage sans intérêt futur (ex: "j'ai faim", "il pleut", "je vais faire les courses ce soir")
 - secrets sensibles (mots de passe, tokens, numéros de carte, données bancaires)
 
+Important: un projet de déménagement ou une date perso annoncée N'EST PAS une "info temporaire" — c'est un fait à mémoriser (ville + date si présents).
+
 Si shouldRemember=true, extrais 1 à 3 faits concis formulés à la 3e personne, ≥10 caractères chacun.
-Exemples de formulation: "L'utilisateur a 26 ans", "L'utilisateur s'appelle Nicolas", "Préfère les réponses concises".
-Catégorie: identity → "other" ; préférences → "preference" ; etc. Importance ≥ 0.7 pour les faits d'identité.
+Exemples: "L'utilisateur a 26 ans", "L'utilisateur déménage à Strasbourg le 12 septembre", "L'utilisateur s'appelle Nicolas".
+Catégorie: identity / vie → "other" ; préférences → "preference" ; etc. Importance ≥ 0.7 pour identité et événements de vie.
 
 JSON attendu:
 {

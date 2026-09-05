@@ -78,13 +78,14 @@ export async function extractMemoriesAsync(
   if (!settings.memoryEnabled || !settings.selectedModel) return [];
 
   const runtime = getLocalAIRuntime();
-  const prompt = `Analyse cette conversation et décide toi-même si des informations PERSONNELLES durables sur l'utilisateur méritent d'être mémorisées long terme.
+  const prompt = `Analyse cette conversation et décide toi-même si des informations PERSONNELLES sur l'utilisateur méritent d'être mémorisées long terme.
 
-Mémorise notamment (si présents): âge, prénom, localisation, métier, préférences, matériel, projets, habitudes.
-Formule chaque fait à la 3e personne, ≥10 caractères (ex: "L'utilisateur a 26 ans").
-Importance ≥ 0.7 pour l'identité. Catégorie identity → "other".
+Mémorise notamment (si présents): âge, prénom, localisation actuelle ou future, métier, préférences, matériel, projets, habitudes, événements de vie (déménagement, nouvelle ville, date de déménagement, nouveau poste, mariage, naissance).
+Formule chaque fait à la 3e personne, ≥10 caractères (ex: "L'utilisateur a 26 ans", "L'utilisateur déménage à Strasbourg le 12 septembre").
+Importance ≥ 0.7 pour l'identité et les événements de vie. Catégorie identity / vie → "other".
 
-NE mémorise PAS: questions ponctuelles, infos temporaires, secrets (mots de passe, tokens, carte), bavardage sans intérêt futur.
+NE mémorise PAS: questions ponctuelles, trivia du jour (faim, météo, courses ponctuelles), secrets (mots de passe, tokens, carte), bavardage sans intérêt futur.
+Un déménagement ou une date perso annoncée n'est PAS du trivia — mémorise-le.
 
 Réponds UNIQUEMENT en JSON valide:
 {"shouldRemember":boolean,"memories":[{"content":"...","category":"preference|hardware|project|habit|communication|other","importance":0.0-1.0}]}

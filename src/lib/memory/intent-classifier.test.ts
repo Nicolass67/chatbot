@@ -89,10 +89,10 @@ describe("classifyMemoryIntent", () => {
     expect(decision.source).toBe("disabled");
   });
 
-  it("none sans signal et sans runtime", async () => {
+  it("filet déterministe: déménagement sans runtime LLM", async () => {
     const decision = await classifyMemoryIntent(
       {
-        message: "Quelle est la capitale de la France ?",
+        message: "Je vais déménager à Strasbourg le 12 septembre",
         webSearchEnabled: true,
         chatMode: "chat",
         imageCount: 0,
@@ -103,8 +103,11 @@ describe("classifyMemoryIntent", () => {
       { memoryEnabled: true }
     );
 
-    expect(decision.shouldRemember).toBe(false);
-    expect(decision.source).toBe("none");
+    expect(decision.shouldRemember).toBe(true);
+    expect(decision.source).toBe("fast_path");
+    expect(decision.memories.some((m) => /Strasbourg/i.test(m.content))).toBe(
+      true
+    );
   });
 });
 

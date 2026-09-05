@@ -7,6 +7,10 @@ import {
   parseMemoryIntentClassification,
   type MemoryIntentDecision,
 } from "./intent-classifier";
+import {
+  extractPersonalFactCandidates,
+  mergePersonalFacts,
+} from "./personal-facts";
 
 export const MEMORY_CLASSIFIER_TIMEOUT_MS = 8_000;
 export const MEMORY_CLASSIFIER_MAX_TOKENS = 320;
@@ -39,6 +43,20 @@ function noneDecision(reason: string, latencyMs: number): MemoryIntentDecision {
   };
 }
 
+function personalFactsDecision(
+  memories: MemoryIntentDecision["memories"],
+  latencyMs: number
+): MemoryIntentDecision {
+  return {
+    shouldRemember: true,
+    memories,
+    confidence: 0.92,
+    source: "fast_path",
+    reason: "Fait personnel / événement de vie détecté",
+    latencyMs,
+  };
+}
+
 export async function classifyMemoryIntent(
   ctx: RequestContext,
   objective?: ObjectiveContext,
@@ -52,8 +70,12 @@ export async function classifyMemoryIntent(
   }
 
   const obj = objective ?? buildObjectiveContext(ctx);
+  const personalFacts = extractPersonalFactCandidates(obj.trimmedMessage);
 
   if (!shouldUseMemoryClassifier(ctx) || !ctx.runtime) {
+    if (personalFacts.length > 0) {
+      return personalFactsDecision(personalFacts, Date.now() - started);
+    }
     return noneDecision("Classifier mémoire indisponible", Date.now() - started);
   }
 
@@ -73,23 +95,39 @@ export async function classifyMemoryIntent(
     });
 
     if (!response.content?.trim()) {
+      if (personalFacts.length > 0) {
+        return personalFactsDecision(personalFacts, Date.now() - started);
+      }
       return noneDecision("Classifier mémoire: réponse vide", Date.now() - started);
     }
 
     const parsed = parseMemoryIntentClassification(response.content);
-    if (!parsed.shouldRemember || parsed.confidence < MEMORY_CLASSIFIER_ACCEPT_CONFIDENCE) {
-      return noneDecision(parsed.reason, Date.now() - started);
+    const accepted =
+      parsed.shouldRemember &&
+      parsed.confidence >= MEMORY_CLASSIFIER_ACCEPT_CONFIDENCE &&
+      parsed.memories.length > 0;
+
+    if (accepted) {
+      const memories = mergePersonalFacts(parsed.memories, personalFacts);
+      return {
+        shouldRemember: true,
+        memories: memories as MemoryIntentDecision["memories"],
+        confidence: parsed.confidence,
+        source: "llm_classifier",
+        reason: parsed.reason,
+        latencyMs: Date.now() - started,
+      };
     }
 
-    return {
-      shouldRemember: true,
-      memories: parsed.memories,
-      confidence: parsed.confidence,
-      source: "llm_classifier",
-      reason: parsed.reason,
-      latencyMs: Date.now() - started,
-    };
+    if (personalFacts.length > 0) {
+      return personalFactsDecision(personalFacts, Date.now() - started);
+    }
+
+    return noneDecision(parsed.reason, Date.now() - started);
   } catch {
+    if (personalFacts.length > 0) {
+      return personalFactsDecision(personalFacts, Date.now() - started);
+    }
     return noneDecision("Classifier mémoire indisponible", Date.now() - started);
   }
 }

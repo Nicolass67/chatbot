@@ -1,5 +1,6 @@
 import { extractMemoriesAsync, insertMemoryIfValid } from "./extract";
 import type { MemoryIntentDecision } from "./intent-classifier";
+import { extractPersonalFactCandidates } from "./personal-facts";
 import type { SavedMemoryItem } from "./saved-memory";
 
 export async function applyImmediateMemories(
@@ -24,22 +25,31 @@ export async function applyMemoryAfterResponse(params: {
   if (!params.memoryEnabled) return [];
 
   const already = params.alreadySavedCount ?? 0;
+  const saved: SavedMemoryItem[] = [];
+
+  // Filet déterministe: faits perso évidents même si le 1er passage a déjà sauvé autre chose.
+  const personalFacts = extractPersonalFactCandidates(params.userMessage);
+  for (const mem of personalFacts) {
+    const inserted = await insertMemoryIfValid(mem);
+    if (inserted) saved.push(inserted);
+  }
 
   // Premier passage a déjà persisté → pas de second appel LLM.
-  if (already > 0) return [];
+  if (already > 0) return saved;
 
-  // Second temps: l'IA décide à nouveau (extract) si le classifier a dit oui
-  // sans items exploitables, a échoué à l'insert, ou a manqué un fait.
-  // On lance aussi quand shouldRemember=false pour laisser l'extract juger
-  // le tour complet (user + réponse) — sans heuristique lexicale.
+  // Second temps: extract LLM sur le tour complet.
   if (
     params.intent.shouldRemember ||
     params.intent.source === "none" ||
     params.intent.source === "llm_classifier" ||
     params.intent.source === "fast_path"
   ) {
-    return extractMemoriesAsync(params.userMessage, params.assistantMessage);
+    const extracted = await extractMemoriesAsync(
+      params.userMessage,
+      params.assistantMessage
+    );
+    saved.push(...extracted);
   }
 
-  return [];
+  return saved;
 }
