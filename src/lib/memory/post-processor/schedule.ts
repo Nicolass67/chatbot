@@ -9,6 +9,8 @@ import { emitMemorySaved } from "../emit-saved";
 
 const MAX_RECENT_TURNS = 4;
 const MAX_TURN_CHARS = 500;
+/** Garde le SSE ouvert après `done` le temps d’émettre `memory_saved` (chip UI). */
+const MEMORY_SSE_BUDGET_MS = 25_000;
 
 /**
  * Charge un contexte conversationnel borné pour le Memory Post-Processor.
@@ -44,11 +46,7 @@ export async function loadRecentTurnsForMemory(
   }
 }
 
-/**
- * Déclenche le Memory Post-Processor en arrière-plan après `done`.
- * Ne bloque jamais le chemin critique chat / streaming.
- */
-export function scheduleMemoryPostProcess(params: {
+export type MemoryPostProcessParams = {
   settings: Pick<AppSettings, "memoryEnabled" | "selectedModel">;
   conversationId: string;
   messageId: string;
@@ -56,32 +54,62 @@ export function scheduleMemoryPostProcess(params: {
   assistantMessage: string;
   onEvent: (event: OrchestratorEvent) => void;
   signal?: AbortSignal;
-}): void {
+};
+
+/**
+ * Exécute le Memory Post-Processor et émet `memory_saved` si mutations.
+ * Ne throw jamais.
+ */
+export async function runMemoryPostProcess(
+  params: MemoryPostProcessParams
+): Promise<void> {
   if (!params.settings.memoryEnabled) return;
   if (!params.userMessage.trim() || !params.assistantMessage.trim()) return;
 
-  void (async () => {
-    try {
-      if (params.signal?.aborted) return;
+  try {
+    if (params.signal?.aborted) return;
 
-      const recentTurns = await loadRecentTurnsForMemory(
-        params.conversationId,
-        params.messageId
-      );
+    const recentTurns = await loadRecentTurnsForMemory(
+      params.conversationId,
+      params.messageId
+    );
 
-      const saved = await applyMemoryAfterResponse({
-        messageId: params.messageId,
-        userMessage: params.userMessage,
-        assistantMessage: params.assistantMessage,
-        memoryEnabled: params.settings.memoryEnabled,
-        modelId: params.settings.selectedModel,
-        recentTurns,
-        signal: params.signal,
-      });
+    const saved = await applyMemoryAfterResponse({
+      messageId: params.messageId,
+      userMessage: params.userMessage,
+      assistantMessage: params.assistantMessage,
+      memoryEnabled: params.settings.memoryEnabled,
+      modelId: params.settings.selectedModel,
+      recentTurns,
+      signal: params.signal,
+    });
 
-      emitMemorySaved(params.onEvent, params.messageId, saved);
-    } catch {
-      // Échec mémoire : la réponse principale reste valide.
-    }
-  })();
+    emitMemorySaved(params.onEvent, params.messageId, saved);
+  } catch {
+    // Échec mémoire : la réponse principale reste valide.
+  }
+}
+
+/**
+ * Après `done` : attend le post-processeur (budget borné) pour que
+ * `memory_saved` parte encore sur le même SSE avant closeStream.
+ * Ne retarde pas la génération — seulement la fermeture du stream.
+ */
+export async function awaitMemoryPostProcessAfterDone(
+  params: MemoryPostProcessParams
+): Promise<void> {
+  await Promise.race([
+    runMemoryPostProcess(params),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, MEMORY_SSE_BUDGET_MS);
+    }),
+  ]);
+}
+
+/**
+ * Fire-and-forget (hors chemin SSE). Préférer `awaitMemoryPostProcessAfterDone`
+ * dans orchestrator/loop pour l’indicateur chat.
+ */
+export function scheduleMemoryPostProcess(params: MemoryPostProcessParams): void {
+  void runMemoryPostProcess(params);
 }

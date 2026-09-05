@@ -2798,7 +2798,7 @@ struct ChatScreen: View {
                     messageId: targetId
                 )
             }
-            // Pas de toast : l'indicateur « Souvenirs actualisés » est sur le message.
+            // Pas de toast : l'indicateur « Souvenir mis à jour » est à côté d'Assistant.
         case "mail_handoff":
             streamMailHandoff = MailHandoffDTO(
                 intent: obj["intent"] as? String,

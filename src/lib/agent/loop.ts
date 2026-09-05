@@ -5,7 +5,7 @@ import { maybeSummarizeConversation } from "@/lib/context/summarizer";
 import { maybeGenerateConversationTitle } from "@/lib/conversation/title-generator";
 import { getDb } from "@/lib/db";
 import { conversations, messageSources, messages } from "@/lib/db/schema";
-import { scheduleMemoryPostProcess } from "@/lib/memory/post-processor";
+import { awaitMemoryPostProcessAfterDone } from "@/lib/memory/post-processor";
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
 import type { LocalAIRuntime } from "@/lib/runtime/types";
 import type { AppSettings } from "@/lib/settings/service";
@@ -1348,7 +1348,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     input.onEvent({ type: "done", messageId: assistantId });
 
-    scheduleMemoryPostProcess({
+    // Attendre (budget borné) pour que memory_saved parte avant close SSE.
+    await awaitMemoryPostProcessAfterDone({
       settings: input.settings,
       conversationId: input.conversationId,
       messageId: assistantId,

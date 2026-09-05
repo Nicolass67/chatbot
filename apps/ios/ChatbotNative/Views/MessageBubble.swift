@@ -74,15 +74,6 @@ struct MessageBubble: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                // Un seul indicateur discret, même si plusieurs souvenirs ont changé.
-                if let memory = savedMemories.first {
-                    MemoryUpdatedChip(
-                        memory: memory,
-                        onOpen: { onOpenMemory?(memory) },
-                        onForget: onForgetMemory.map { cb in { cb(memory) } }
-                    )
-                }
-
                 assistantCanvas
 
                 if let attachments = message.attachments, !attachments.isEmpty {
@@ -174,9 +165,20 @@ struct MessageBubble: View {
     /// Canvas lecture assistant — pas de bulle web, actions uniquement via context menu.
     private var assistantCanvas: some View {
         VStack(alignment: .leading, spacing: AppTheme.space8) {
-            Text(isStreaming ? "Assistant…" : "Assistant")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppTheme.mutedForeground)
+            HStack(alignment: .center, spacing: 8) {
+                Text(isStreaming ? "Assistant…" : "Assistant")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.mutedForeground)
+
+                if let memory = savedMemories.first {
+                    MemoryUpdatedChip(
+                        memory: memory,
+                        compact: true,
+                        onOpen: { onOpenMemory?(memory) },
+                        onForget: onForgetMemory.map { cb in { cb(memory) } }
+                    )
+                }
+            }
 
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {

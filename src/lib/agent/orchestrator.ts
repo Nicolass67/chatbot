@@ -24,7 +24,7 @@ import {
   toolCalls,
 } from "@/lib/db/schema";
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
-import { scheduleMemoryPostProcess } from "@/lib/memory/post-processor";
+import { awaitMemoryPostProcessAfterDone } from "@/lib/memory/post-processor";
 import { analyzeRequest, type RouteDecision } from "@/lib/request-router";
 import {
   buildMailHandoffUrl,
@@ -208,7 +208,7 @@ async function persistAssistantMessage(params: {
     },
   });
 
-  // Mémoire : jamais ici — scheduleMemoryPostProcess après `done`.
+  // Mémoire : jamais ici — awaitMemoryPostProcessAfterDone après `done`.
   void maybeSummarizeConversation(input.conversationId);
 }
 
@@ -352,7 +352,8 @@ async function finalizeStreamedAssistant(params: {
 
   input.onEvent({ type: "done", messageId: assistantId });
 
-  scheduleMemoryPostProcess({
+  // Attendre (budget borné) pour que memory_saved parte avant close SSE.
+  await awaitMemoryPostProcessAfterDone({
     settings,
     conversationId: input.conversationId,
     messageId: assistantId,
@@ -1368,7 +1369,8 @@ async function streamFinalResponse(params: {
 
   input.onEvent({ type: "done", messageId: assistantId });
 
-  scheduleMemoryPostProcess({
+  // Attendre (budget borné) pour que memory_saved parte avant close SSE.
+  await awaitMemoryPostProcessAfterDone({
     settings,
     conversationId: input.conversationId,
     messageId: assistantId,

@@ -5,8 +5,11 @@ export {
 } from "./run";
 export {
   scheduleMemoryPostProcess,
+  runMemoryPostProcess,
+  awaitMemoryPostProcessAfterDone,
   loadRecentTurnsForMemory,
 } from "./schedule";
+export type { MemoryPostProcessParams } from "./schedule";
 export type {
   MemoryPostProcessorResult,
   AppliedMemoryChange,

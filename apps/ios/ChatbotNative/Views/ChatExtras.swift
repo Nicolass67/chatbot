@@ -259,9 +259,10 @@ struct MemorySavedNotice: View {
     }
 }
 
-/// Chip discret au-dessus d'une réponse assistant (style ChatGPT).
+/// Chip discret à côté du label Assistant (style ChatGPT).
 struct MemoryUpdatedChip: View {
     let memory: SavedMemoryChipDTO
+    var compact: Bool = false
     var onOpen: (() -> Void)? = nil
     var onForget: (() -> Void)? = nil
 
@@ -304,28 +305,30 @@ struct MemoryUpdatedChip: View {
                 Button {
                     onOpen?()
                 } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: compact ? 5 : 7) {
                         Image(systemName: "brain.head.profile")
-                            .font(.caption.weight(.semibold))
+                            .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
-                        Text("Souvenirs actualisés")
-                            .font(.caption.weight(.semibold))
+                        Text("Souvenir mis à jour")
+                            .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
                             .foregroundStyle(AppTheme.foreground)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(AppTheme.mutedForeground)
+                        if !compact {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(AppTheme.mutedForeground)
+                        }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.accentSubtle.opacity(0.85))
+                    .padding(.horizontal, compact ? 8 : 12)
+                    .padding(.vertical, compact ? 4 : 8)
+                    .background(compact ? Color.clear : AppTheme.accentSubtle.opacity(0.85))
                     .clipShape(Capsule(style: .continuous))
                     .overlay(
                         Capsule(style: .continuous)
-                            .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                            .stroke(compact ? Color.clear : AppTheme.borderSubtle, lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Souvenirs actualisés")
+                .accessibilityLabel("Souvenir mis à jour")
                 .accessibilityHint(memory.content)
                 .contextMenu {
                     Button("Voir le souvenir", systemImage: "brain.head.profile") {
@@ -339,7 +342,7 @@ struct MemoryUpdatedChip: View {
                 }
             }
         }
-        .accessibilityLabel("Souvenirs actualisés: \(memory.content)")
+        .accessibilityLabel("Souvenir mis à jour: \(memory.content)")
     }
 }
 
