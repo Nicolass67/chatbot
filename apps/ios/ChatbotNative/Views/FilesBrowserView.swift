@@ -21,6 +21,19 @@ enum FilesViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum FilesSortMode: String, CaseIterable, Identifiable {
+    case name, date, size, type
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .name: return "Nom"
+        case .date: return "Date"
+        case .size: return "Taille"
+        case .type: return "Type"
+        }
+    }
+}
+
 enum FilesTypeFilter: String, CaseIterable, Identifiable {
     case all, folders, images, pdf, documents, indexed
     var id: String { rawValue }
@@ -766,7 +779,24 @@ struct FileFolderView: View {
     @State private var error: String?
     @State private var openError: String?
     @AppStorage("files.viewMode") private var viewModeRaw: String = FilesViewMode.list.rawValue
+    @AppStorage("files.sortMode") private var sortModeRaw: String = FilesSortMode.name.rawValue
     @State private var typeFilter: FilesTypeFilter = .all
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var sortMode: FilesSortMode {
+        FilesSortMode(rawValue: sortModeRaw) ?? .name
+    }
+
+    private var sortModeBinding: Binding<FilesSortMode> {
+        Binding(
+            get: { FilesSortMode(rawValue: sortModeRaw) ?? .name },
+            set: { next in
+                guard next.rawValue != sortModeRaw else { return }
+                sortModeRaw = next.rawValue
+                AppHaptics.selection()
+            }
+        )
+    }
 
     private var viewModeBinding: Binding<FilesViewMode> {
         Binding(
@@ -808,8 +838,9 @@ struct FileFolderView: View {
         path.isEmpty ? (root.label ?? "Root") : "\(root.label ?? "Root") / \(path.replacingOccurrences(of: "/", with: " / "))"
     }
 
-    private var filtered: [FileEntryDTO] {
-        entries.filter { entry in
+    /// Filtre + tri unique (Liste / Grille / Détails).
+    private var displayedEntries: [FileEntryDTO] {
+        let filtered = entries.filter { entry in
             switch typeFilter {
             case .all: return true
             case .folders: return entry.isDirectory == true
@@ -826,6 +857,7 @@ struct FileFolderView: View {
                 return [".txt", ".md", ".docx", ".doc", ".csv", ".json", ".pdf"].contains { n.hasSuffix($0) }
             }
         }
+        return Self.sorted(filtered, by: sortMode)
     }
 
     var body: some View {
@@ -841,7 +873,7 @@ struct FileFolderView: View {
                         message: error,
                         actionTitle: "Réessayer"
                     ) { Task { await load(reset: true) } }
-                } else if filtered.isEmpty {
+                } else if displayedEntries.isEmpty {
                     SoftEmptyState(
                         systemImage: "folder",
                         title: "Dossier vide",
@@ -858,6 +890,8 @@ struct FileFolderView: View {
                     list
                 }
             }
+            .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: viewModeRaw)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: sortModeRaw)
         }
         .overlay(alignment: .bottomTrailing) {
             if !selection.isSelecting {
@@ -877,6 +911,33 @@ struct FileFolderView: View {
                         .font(.caption2)
                         .foregroundStyle(AppTheme.mutedForeground)
                         .lineLimit(1)
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if !selection.isSelecting {
+                    Menu {
+                        Picker("Vue", selection: viewModeBinding) {
+                            ForEach(FilesViewMode.allCases) { mode in
+                                Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: viewMode.systemImage)
+                    }
+                    .accessibilityLabel("Mode d'affichage")
+                    .accessibilityValue(viewMode.label)
+
+                    Menu {
+                        Picker("Trier", selection: sortModeBinding) {
+                            ForEach(FilesSortMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                    }
+                    .accessibilityLabel("Trier")
+                    .accessibilityValue(sortMode.label)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -907,6 +968,11 @@ struct FileFolderView: View {
                         Picker("Vue", selection: viewModeBinding) {
                             ForEach(FilesViewMode.allCases) { mode in
                                 Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                            }
+                        }
+                        Picker("Trier", selection: sortModeBinding) {
+                            ForEach(FilesSortMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
                             }
                         }
                         Divider()
@@ -1095,7 +1161,7 @@ struct FileFolderView: View {
 
     private var list: some View {
         List {
-            ForEach(filtered) { entry in
+            ForEach(displayedEntries) { entry in
                 Button {
                     handleEntryTap(entry)
                 } label: {
@@ -1132,7 +1198,7 @@ struct FileFolderView: View {
                     }
                 }
                 .onAppear {
-                    if entry.id == filtered.last?.id {
+                    if entry.id == displayedEntries.last?.id {
                         Task { await loadMoreIfNeeded() }
                     }
                 }
@@ -1153,7 +1219,7 @@ struct FileFolderView: View {
     private var grid: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 12) {
-                ForEach(filtered) { entry in
+                ForEach(displayedEntries) { entry in
                     Button {
                         handleEntryTap(entry)
                     } label: {
@@ -1164,13 +1230,20 @@ struct FileFolderView: View {
                                     .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
                                     .frame(height: 48)
                                 Text(entry.name ?? entry.relativePath)
-                                    .font(.caption2)
+                                    .font(.caption2.weight(.medium))
                                     .foregroundStyle(AppTheme.foreground)
                                     .lineLimit(2)
                                     .multilineTextAlignment(.center)
+                                if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                                        .font(.caption2)
+                                        .foregroundStyle(AppTheme.mutedForeground)
+                                        .lineLimit(1)
+                                }
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
                             .background(
                                 selection.contains(entry.fileId ?? "")
                                     ? AppTheme.accent.opacity(0.15)
@@ -1198,7 +1271,7 @@ struct FileFolderView: View {
                     .buttonStyle(.plain)
                     .contextMenu { entryContextMenu(entry) }
                     .onAppear {
-                        if entry.id == filtered.last?.id {
+                        if entry.id == displayedEntries.last?.id {
                             Task { await loadMoreIfNeeded() }
                         }
                     }
@@ -1212,7 +1285,7 @@ struct FileFolderView: View {
     private var details: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                ForEach(filtered) { entry in
+                ForEach(displayedEntries) { entry in
                     Button {
                         handleEntryTap(entry)
                     } label: {
@@ -1275,7 +1348,7 @@ struct FileFolderView: View {
                     .buttonStyle(.plain)
                     .contextMenu { entryContextMenu(entry) }
                     .onAppear {
-                        if entry.id == filtered.last?.id {
+                        if entry.id == displayedEntries.last?.id {
                             Task { await loadMoreIfNeeded() }
                         }
                     }
@@ -1306,10 +1379,43 @@ struct FileFolderView: View {
         if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
             parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
         }
+        if let when = formatMtime(entry.mtimeMs) {
+            parts.append(when)
+        }
         let folder = path.isEmpty ? (root.label ?? "Documents") : path
         if !folder.isEmpty { parts.append(folder) }
         if entry.indexed == true { parts.append("Indexé") }
         return parts.isEmpty ? (isFolder(entry) ? "Dossier" : "Fichier") : parts.joined(separator: " · ")
+    }
+
+    private func formatMtime(_ ms: Int?) -> String? {
+        guard let ms, ms > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Aujourd’hui" }
+        if cal.isDateInYesterday(date) { return "Hier" }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "fr_FR")
+        fmt.dateStyle = .medium
+        fmt.timeStyle = .none
+        return fmt.string(from: date)
+    }
+
+    private func secondaryListLine(for entry: FileEntryDTO) -> String {
+        if isFolder(entry) {
+            if let when = formatMtime(entry.mtimeMs) {
+                return "Dossier · " + when
+            }
+            return "Dossier"
+        }
+        var parts: [String] = [detailTypeLabel(for: entry)]
+        if let size = entry.sizeBytes, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        if let when = formatMtime(entry.mtimeMs) {
+            parts.append(when)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func fileRow(_ entry: FileEntryDTO) -> some View {
@@ -1321,7 +1427,7 @@ struct FileFolderView: View {
                 Text(entry.name ?? entry.relativePath)
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
-                Text(detailMetaLine(for: entry))
+                Text(secondaryListLine(for: entry))
                     .font(.caption2)
                     .foregroundStyle(AppTheme.mutedForeground)
                     .lineLimit(1)
@@ -1369,7 +1475,7 @@ struct FileFolderView: View {
         defer { loading = false }
         do {
             let list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
-            entries = Self.sorted(list.entries)
+            entries = Self.sorted(list.entries, by: sortMode)
             nextCursor = list.nextCursor
             error = nil
             TabMemoryCache.saveFolder(
@@ -1390,7 +1496,7 @@ struct FileFolderView: View {
         do {
             let list = try await client.listFiles(rootId: root.id, path: path, cursor: cursor)
             let merged = entries + list.entries
-            entries = Self.sorted(merged)
+            entries = Self.sorted(merged, by: sortMode)
             nextCursor = list.nextCursor
             TabMemoryCache.saveFolder(
                 rootId: root.id,
@@ -1403,13 +1509,38 @@ struct FileFolderView: View {
         }
     }
 
-    private static func sorted(_ items: [FileEntryDTO]) -> [FileEntryDTO] {
+    private static func sorted(_ items: [FileEntryDTO], by mode: FilesSortMode = .name) -> [FileEntryDTO] {
         items.sorted { a, b in
             let ad = a.isDirectory == true
             let bd = b.isDirectory == true
             if ad != bd { return ad && !bd }
-            return (a.name ?? "").localizedCaseInsensitiveCompare(b.name ?? "") == .orderedAscending
+            switch mode {
+            case .name:
+                return (a.name ?? "").localizedCaseInsensitiveCompare(b.name ?? "") == .orderedAscending
+            case .date:
+                let am = a.mtimeMs ?? 0
+                let bm = b.mtimeMs ?? 0
+                if am != bm { return am > bm }
+                return (a.name ?? "").localizedCaseInsensitiveCompare(b.name ?? "") == .orderedAscending
+            case .size:
+                let asz = a.sizeBytes ?? 0
+                let bsz = b.sizeBytes ?? 0
+                if asz != bsz { return asz > bsz }
+                return (a.name ?? "").localizedCaseInsensitiveCompare(b.name ?? "") == .orderedAscending
+            case .type:
+                let at = fileExtension(a.name ?? "")
+                let bt = fileExtension(b.name ?? "")
+                let cmp = at.localizedCaseInsensitiveCompare(bt)
+                if cmp != .orderedSame { return cmp == .orderedAscending }
+                return (a.name ?? "").localizedCaseInsensitiveCompare(b.name ?? "") == .orderedAscending
+            }
         }
+    }
+
+    private static func fileExtension(_ name: String) -> String {
+        let n = name.lowercased()
+        guard let dot = n.lastIndex(of: "."), dot < n.endIndex else { return "" }
+        return String(n[n.index(after: dot)...])
     }
 
     private func createDirectory() async {
@@ -1457,6 +1588,7 @@ struct FileFolderView: View {
                             relativePath: dest,
                             isDirectory: true,
                             sizeBytes: nil,
+                            mtimeMs: nil,
                             indexed: nil
                         )
                     )

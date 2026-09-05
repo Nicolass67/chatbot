@@ -1294,6 +1294,8 @@ struct FileEntryDTO: Identifiable, Codable, Hashable {
     let relativePath: String
     let isDirectory: Bool?
     let sizeBytes: Int?
+    /// Epoch ms — déjà fourni par `/api/files/list`.
+    let mtimeMs: Int?
     let indexed: Bool?
 }
 

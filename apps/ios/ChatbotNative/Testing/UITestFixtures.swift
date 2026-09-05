@@ -278,6 +278,7 @@ enum UITestFixtures {
         relativePath: "Projets",
         isDirectory: true,
         sizeBytes: nil,
+        mtimeMs: nil,
         indexed: false
     )
 
@@ -287,6 +288,7 @@ enum UITestFixtures {
         relativePath: "notes.txt",
         isDirectory: false,
         sizeBytes: 128,
+        mtimeMs: nil,
         indexed: true
     )
 
@@ -296,6 +298,7 @@ enum UITestFixtures {
         relativePath: "Projets/spec.md",
         isDirectory: false,
         sizeBytes: 256,
+        mtimeMs: nil,
         indexed: true
     )
 
@@ -318,6 +321,7 @@ enum UITestFixtures {
                         relativePath: "invoice.pdf",
                         isDirectory: false,
                         sizeBytes: 4096,
+                        mtimeMs: nil,
                         indexed: false
                     ),
                 ],
