@@ -5,6 +5,7 @@ Requires Python 3.13+ (native TLS-PSK). Does not use usbmux Network.
 
 Env:
   IOS_REMOTE_UDID   (default: first remote_* pair record / known Chatbot device)
+  IOS_REMOTE_PAIRING  optional host:port bypass when Bonjour/mDNS is blocked
   IOS_BUNDLE_ID     (optional override; else read from app Info.plist)
   IOS_NO_LAUNCH=1   skip CoreDevice launch after install
   IOS_EXPECT_VERSION / IOS_EXPECT_BUILD  optional strict post-install match
@@ -79,7 +80,136 @@ def default_udid() -> str:
     return "00008110-000170222186401E"
 
 
+def _parse_host_port(value: str) -> tuple[str, int] | None:
+    raw = (value or "").strip()
+    if not raw or ":" not in raw:
+        return None
+    host, _, port_s = raw.rpartition(":")
+    host = host.strip().strip("[]")
+    try:
+        port = int(port_s)
+    except ValueError:
+        return None
+    if not host or port <= 0:
+        return None
+    return host, port
+
+
+def _tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _candidate_lan_hosts() -> list[str]:
+    """IPv4 neighbors / same /24 as local Wi-Fi-ish adapters (Bonjour bypass)."""
+    import socket
+
+    hosts: list[str] = []
+    seen: set[str] = set()
+
+    def add(ip: str) -> None:
+        if not ip or ip.startswith("127.") or ip.startswith("169.254."):
+            return
+        if ip in seen:
+            return
+        seen.add(ip)
+        hosts.append(ip)
+
+    # Prefer ARP neighbors on Windows when available
+    try:
+        import subprocess
+
+        out = subprocess.check_output(["arp", "-a"], text=True, errors="replace", timeout=5)
+        for line in out.splitlines():
+            parts = line.split()
+            if parts and parts[0][0].isdigit():
+                add(parts[0])
+    except Exception:
+        pass
+
+    # Enumerate local IPv4s and probe .1-.254 is too heavy — only .0/24 gateways + known ARP already added
+    try:
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            for ip in adapter.ips:
+                if getattr(ip, "is_IPv4", False) or (isinstance(ip.ip, str) and "." in str(ip.ip)):
+                    addr = ip.ip if isinstance(ip.ip, str) else ip.ip[0]
+                    if not isinstance(addr, str) or addr.startswith("127."):
+                        continue
+                    # include self network peers via ARP only; keep local addr for logging
+                    add(addr)
+    except Exception:
+        pass
+
+    # Hostname resolution fallback
+    try:
+        add(socket.gethostbyname(socket.gethostname()))
+    except Exception:
+        pass
+
+    return hosts
+
+
+async def _probe_remotepairing_port(hosts: list[str], ports: tuple[int, ...] = (49152,)) -> tuple[str, int] | None:
+    import concurrent.futures
+
+    local: set[str] = set()
+    try:
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            for ip in adapter.ips:
+                addr = ip.ip if isinstance(ip.ip, str) else (ip.ip[0] if isinstance(ip.ip, tuple) else None)
+                if isinstance(addr, str):
+                    local.add(addr)
+    except Exception:
+        pass
+
+    jobs = [
+        (h, p)
+        for h in hosts
+        for p in ports
+        if h not in local and not h.endswith(".255") and not h.endswith(".0")
+    ]
+
+    def check(item: tuple[str, int]) -> tuple[str, int] | None:
+        host, port = item
+        return (host, port) if _tcp_open(host, port) else None
+
+    loop = asyncio.get_running_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+        futs = [loop.run_in_executor(pool, check, job) for job in jobs]
+        for fut in asyncio.as_completed(futs):
+            hit = await fut
+            if hit:
+                return hit
+    return None
+
+
 async def discover_rp_endpoint(timeout: float = 8.0) -> tuple[str, int]:
+    """Find RemotePairing host:port.
+
+    Bonjour/mDNS is often blocked on Freebox / Windows Public Wi-Fi profiles even when
+    unicast TCP to the phone works. Order: env override → Bonjour → LAN TCP probe.
+    """
+    env = _parse_host_port(os.environ.get("IOS_REMOTE_PAIRING", ""))
+    if env:
+        host, port = env
+        log(f"[wifi-rsd] using IOS_REMOTE_PAIRING {host}:{port}")
+        if not _tcp_open(host, port, timeout=1.0):
+            die(f"IOS_REMOTE_PAIRING {host}:{port} not reachable")
+        return host, port
+
     from pymobiledevice3.bonjour import browse_remotepairing
 
     answers = await browse_remotepairing(timeout=timeout)
@@ -88,8 +218,19 @@ async def discover_rp_endpoint(timeout: float = 8.0) -> tuple[str, int]:
             ip = str(addr.ip)
             if ip.startswith("fe80"):
                 continue
+            log(f"[wifi-rsd] Bonjour RemotePairing {ip}:{ans.port}")
             return ip, int(ans.port)
-    die("RemotePairing Bonjour endpoint not found (same Wi-Fi? phone unlocked? RP paired?)")
+
+    log("[wifi-rsd] Bonjour empty — probing LAN TCP :49152 (mDNS often blocked)")
+    hit = await _probe_remotepairing_port(_candidate_lan_hosts())
+    if hit:
+        log(f"[wifi-rsd] probed RemotePairing {hit[0]}:{hit[1]}")
+        return hit
+
+    die(
+        "RemotePairing endpoint not found (Bonjour blocked?). "
+        "Unlock iPhone, same Wi-Fi, or set IOS_REMOTE_PAIRING=ip:49152"
+    )
 
 
 async def launch_via_rsd(rsd, bundle_id: str) -> tuple[bool, Any]:
