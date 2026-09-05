@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   groundSearchQueryWithContext,
+  isAmbiguousSearchQuery,
   isFollowUpTurn,
   priorUserMessages,
 } from "./conversation-continuity";
@@ -10,6 +11,13 @@ describe("conversation continuity", () => {
     expect(
       isFollowUpTurn("Donne clairement 5 modèles maintenant", true)
     ).toBe(true);
+  });
+
+  it("détecte un follow-up long (top 10 + recherche internet)", () => {
+    const msg =
+      "Tu peux me donner un top 10 des models maintenant ? Si besoin fait une recherche internet";
+    expect(isFollowUpTurn(msg, true)).toBe(true);
+    expect(isAmbiguousSearchQuery(msg)).toBe(true);
   });
 
   it("ancre la requête web sur aspirateurs", () => {
@@ -22,9 +30,33 @@ describe("conversation continuity", () => {
     expect(q.toLowerCase()).toContain("aspirateur");
   });
 
+  it("ancre top 10 models sur gazinières (pas les LLM)", () => {
+    const q = groundSearchQueryWithContext({
+      query:
+        "Tu peux me donner un top 10 des models maintenant ? Si besoin fait une recherche internet",
+      recentUserMessages: [
+        "Fais un comparatif des meilleurs gazinières sur le marché",
+      ],
+    });
+    const lower = q.toLowerCase();
+    expect(lower).toMatch(/gazini/);
+    expect(lower).not.toMatch(/llm|chatgpt|claude/);
+  });
+
   it("exclut le message courant des priors", () => {
     expect(
       priorUserMessages(["Aspirateurs", "Donne 5 modèles"], "Donne 5 modèles")
     ).toEqual(["Aspirateurs"]);
+  });
+
+  it("ne force pas le follow-up sans historique", () => {
+    // Sans historique : un top 10 ambigu n'est PAS un follow-up
+    // (mais reste une query ambiguë pour l'ancrage si des priors existent ailleurs).
+    expect(
+      isFollowUpTurn(
+        "Quels sont les meilleurs LLM open source en 2026 ?",
+        false
+      )
+    ).toBe(false);
   });
 });

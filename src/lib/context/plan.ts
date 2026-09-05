@@ -80,12 +80,29 @@ export function buildContextPlan(input: BuildContextPlanInput): ContextPlan {
 
   memoryBudget = clampMemoryBudget(memoryBudget);
 
+  // Dès qu’il y a un historique utilisateur, ne jamais passer en "minimal" :
+  // sinon les follow-ups longs perdent le sujet (gazinières → « modèles » LLM).
   let historyMode: HistoryMode = "standard";
-  if (followUp) historyMode = "standard";
-  else if (staticKnowledge && !input.hasAttachments && personalRelevance === "none") {
+  if (hasPrior) {
+    historyMode =
+      input.route.execution.mode === "agent" || filesIntent
+        ? "extended"
+        : "standard";
+  } else if (
+    staticKnowledge &&
+    !input.hasAttachments &&
+    personalRelevance === "none"
+  ) {
     historyMode = "minimal";
   } else if (input.route.execution.mode === "agent" || filesIntent) {
     historyMode = "extended";
+  }
+
+  if (followUp && memoryBudget < 2) {
+    memoryBudget = 2;
+  }
+  if (hasPrior && memoryBudget === 0) {
+    memoryBudget = 2;
   }
 
   let answerContract: AnswerContract = "plain";
@@ -98,7 +115,8 @@ export function buildContextPlan(input: BuildContextPlanInput): ContextPlan {
     historyMode,
     personalRelevance,
     includeMemories: memoryBudget > 0,
-    includeDocuments: input.hasAttachments || filesIntent || input.hasActiveFile,
+    includeDocuments:
+      input.hasAttachments || filesIntent || input.hasActiveFile,
     includeWeb: webUseful,
     preferActiveFile: input.hasActiveFile,
     preferActiveMail: input.hasActiveMail,

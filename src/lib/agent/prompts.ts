@@ -73,7 +73,7 @@ ${contextHint}`;
   if (history) {
     prompt += `
 
-Rappel : le message actuel peut être un suivi. Interprète-le dans le contexte de l'historique (ex. « modèles » = modèles du sujet précédent, pas un autre domaine).`;
+Rappel CRITIQUE : le message actuel est souvent un suivi. Résous TOUTES les références (modèles, marques, top N, « maintenant », « ceux-là ») UNIQUEMENT via l'historique ci-dessus. N'invente JAMAIS un autre domaine (ex. LLM / IA) si l'historique parle déjà d'un sujet concret.`;
   }
   return prompt;
 }
