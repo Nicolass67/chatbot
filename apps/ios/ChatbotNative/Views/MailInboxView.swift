@@ -20,6 +20,7 @@ enum MailSortOption: String, CaseIterable, Identifiable {
 struct MailInboxView: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
     @State private var messages: [MailMessageSummary] = []
     @State private var loading = false
@@ -385,6 +386,17 @@ struct MailInboxView: View {
 
     private var mailStack: some View {
         VStack(spacing: 0) {
+            if let banner = ServiceStatusBanner.backendContext(
+                infra: infra,
+                surface: "Mail",
+                onRepair: { id in Task { await infra.repairService(id: id) } },
+                onWake: { Task { await infra.wake() } }
+            ) {
+                banner
+                    .padding(.horizontal, AppTheme.space12)
+                    .padding(.top, AppTheme.space8)
+                    .padding(.bottom, AppTheme.space4)
+            }
             mailChrome
             MailListLoadingIndicator(isActive: showInlineProgress)
             content

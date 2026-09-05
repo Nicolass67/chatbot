@@ -38,7 +38,23 @@ export class HostPowerController implements PowerController {
   }
 
   async getPowerStatus(): Promise<"on" | "off" | "unknown"> {
-    return "on";
+    const fetchImpl = this.opts.fetchImpl ?? fetch;
+    const urls = [
+      `http://127.0.0.1:${process.env.CHATBOT_SUPERVISOR_PORT || 3927}/health`,
+      "http://127.0.0.1:3000/api/health",
+    ];
+    for (const url of urls) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 2_000);
+        const res = await fetchImpl(url, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (res.ok || res.status === 503) return "on";
+      } catch {
+        // try next
+      }
+    }
+    return "unknown";
   }
 
   shutdownPc(delaySeconds = 60): PowerActionResult {

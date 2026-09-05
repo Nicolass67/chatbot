@@ -88,6 +88,7 @@ enum FilesIndexStatus: Equatable {
 struct FilesBrowserView: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
     /// Pile typée (pas `NavigationPath`) pour pouvoir la cacher entre onglets.
     @State private var path: [FilesDestination] = []
@@ -150,6 +151,17 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 VStack(spacing: 0) {
+                    if let banner = ServiceStatusBanner.backendContext(
+                        infra: infra,
+                        surface: "Fichiers",
+                        onRepair: { id in Task { await infra.repairService(id: id) } },
+                        onWake: { Task { await infra.wake() } }
+                    ) {
+                        banner
+                            .padding(.horizontal, AppTheme.space12)
+                            .padding(.top, AppTheme.space8)
+                            .padding(.bottom, AppTheme.space4)
+                    }
                     filesIndexBanner
                     content
                 }

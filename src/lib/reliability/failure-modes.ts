@@ -14,6 +14,7 @@ export type FailureDomain =
   | "streaming"
   | "validation"
   | "cancellation"
+  | "infrastructure"
   | "unknown";
 
 export type FailureModeId =
@@ -27,7 +28,13 @@ export type FailureModeId =
   | "persist_fail"
   | "stale_response"
   | "double_submit"
-  | "validation_error";
+  | "validation_error"
+  | "docker_down"
+  | "nextjs_down"
+  | "tunnel_down"
+  | "pc_offline"
+  | "crash_loop"
+  | "supervisor_unreachable";
 
 export interface FailureContract {
   id: FailureModeId;
@@ -39,7 +46,9 @@ export interface FailureContract {
     | "retry_bounded"
     | "cancel_clean"
     | "ignore_stale"
-    | "user_retry";
+    | "user_retry"
+    | "infra_repair"
+    | "wake_pc";
   userVisible: string;
 }
 
@@ -121,6 +130,48 @@ export const FAILURE_CONTRACTS: readonly FailureContract[] = [
     requiredForStartup: false,
     expectedRecovery: "fail_fast",
     userVisible: "Requête invalide",
+  },
+  {
+    id: "docker_down",
+    domain: "infrastructure",
+    requiredForStartup: false,
+    expectedRecovery: "infra_repair",
+    userVisible: "Conteneurs indisponibles — Recherche Web dégradée",
+  },
+  {
+    id: "nextjs_down",
+    domain: "infrastructure",
+    requiredForStartup: true,
+    expectedRecovery: "infra_repair",
+    userVisible: "Chatbot hors service — réparation ciblée",
+  },
+  {
+    id: "tunnel_down",
+    domain: "infrastructure",
+    requiredForStartup: false,
+    expectedRecovery: "infra_repair",
+    userVisible: "Connexion distante interrompue",
+  },
+  {
+    id: "pc_offline",
+    domain: "infrastructure",
+    requiredForStartup: true,
+    expectedRecovery: "wake_pc",
+    userVisible: "PC hors ligne — allumer depuis l’app",
+  },
+  {
+    id: "crash_loop",
+    domain: "infrastructure",
+    requiredForStartup: false,
+    expectedRecovery: "degrade",
+    userVisible: "Service instable — circuit ouvert, réessayer plus tard",
+  },
+  {
+    id: "supervisor_unreachable",
+    domain: "infrastructure",
+    requiredForStartup: false,
+    expectedRecovery: "degrade",
+    userVisible: "Supervision locale indisponible — état partiel",
   },
 ] as const;
 

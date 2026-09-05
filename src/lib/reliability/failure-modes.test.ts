@@ -21,6 +21,13 @@ describe("failure contracts", () => {
     expect(isOptionalAtStartup("sqlite_down")).toBe(false);
   });
 
+  it("infrastructure modes use infra_repair or wake_pc", () => {
+    expect(contractFor("nextjs_down").expectedRecovery).toBe("infra_repair");
+    expect(contractFor("docker_down").expectedRecovery).toBe("infra_repair");
+    expect(contractFor("pc_offline").expectedRecovery).toBe("wake_pc");
+    expect(contractFor("crash_loop").expectedRecovery).toBe("degrade");
+  });
+
   it("abort/cancel must cancel_clean", () => {
     expect(contractFor("stream_abort").expectedRecovery).toBe("cancel_clean");
   });

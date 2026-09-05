@@ -43,14 +43,14 @@ struct ServiceStatusBanner: View {
                             .controlSize(.mini)
                             .frame(minWidth: 56)
                     } else {
-                        Text("Réparer")
+                        Text(actionLabel)
                             .font(CNFont.caption.weight(.semibold))
                     }
                 }
                 .foregroundStyle(AppTheme.accent)
                 .disabled(repairing)
                 .accessibilityLabel(repairA11yLabel)
-                .accessibilityHint("Tente de rétablir le service")
+                .accessibilityHint(actionHint)
             }
         }
         .padding(.horizontal, AppTheme.space12)
@@ -72,7 +72,20 @@ struct ServiceStatusBanner: View {
         return title
     }
 
+    private var actionLabel: String {
+        serviceId == nil && title.localizedCaseInsensitiveContains("hors ligne")
+            ? "Allumer"
+            : "Réparer"
+    }
+
+    private var actionHint: String {
+        actionLabel == "Allumer"
+            ? "Envoie un signal de réveil au PC"
+            : "Tente de rétablir le service"
+    }
+
     private var repairA11yLabel: String {
+        if actionLabel == "Allumer" { return "Allumer le PC" }
         if let serviceId, !serviceId.isEmpty {
             return "Réparer le service \(serviceId)"
         }
@@ -114,6 +127,32 @@ extension ServiceStatusBanner {
             serviceId: InfrastructureServiceID.webSearch,
             repairing: infra.repairing,
             onRepair: { onRepair(InfrastructureServiceID.webSearch) }
+        )
+    }
+
+    /// Mail / Files : uniquement si le backend Chatbot (ou le PC) est hors service.
+    static func backendContext(
+        infra: InfrastructureStore,
+        surface: String,
+        onRepair: @escaping (String) -> Void,
+        onWake: (() -> Void)? = nil
+    ) -> ServiceStatusBanner? {
+        if !infra.isPcOnline, infra.status != nil {
+            return ServiceStatusBanner(
+                title: "PC hors ligne",
+                detail: "\(surface) nécessite que le PC soit allumé.",
+                serviceId: nil,
+                repairing: infra.repairing,
+                onRepair: onWake
+            )
+        }
+        guard infra.chatbotAvailability.needsAttention else { return nil }
+        return ServiceStatusBanner(
+            title: "Serveur indisponible",
+            detail: "\(surface) ne peut pas joindre Chatbot.",
+            serviceId: InfrastructureServiceID.chatbot,
+            repairing: infra.repairing,
+            onRepair: { onRepair(InfrastructureServiceID.chatbot) }
         )
     }
 }
