@@ -9,7 +9,7 @@
  * Unload/load temporaire lab, puis restore du modèle initial.
  */
 import path from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   listAvailableLlms,
@@ -968,6 +968,10 @@ async function main() {
         ),
         "utf8"
       );
+      // Re-mirror so latest/ includes RESTORE.json written after the main report.
+      if (existsSync(path.join(outDir, "REPORT.md"))) {
+        mirrorLatest(OUT_ROOT, outDir);
+      }
     } catch (e) {
       log("WARN could not write RESTORE.json", e);
     }
