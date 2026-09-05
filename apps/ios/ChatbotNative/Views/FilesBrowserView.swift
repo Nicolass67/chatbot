@@ -107,8 +107,8 @@ struct FilesBrowserView: View {
         case .folder(let rootId, let path, let title):
             organizerScope = .root(rootId: rootId, relativePath: path, displayName: title)
         case .file(_, let name, let rootId, let path):
-            let parent = AppNavigation.parentFolder(of: path)
-            let title = parent.isEmpty ? name : AppNavigation.lastSegment(of: parent)
+            let parent = FilesPathHelpers.parentFolder(of: path)
+            let title = parent.isEmpty ? name : FilesPathHelpers.lastSegment(of: parent)
             organizerScope = .root(
                 rootId: rootId,
                 relativePath: parent,
