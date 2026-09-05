@@ -262,6 +262,12 @@ struct MailInboxView: View {
                 AmbientBackground()
                 mailStack
             }
+            .overlay(alignment: .bottomTrailing) {
+                // Overlay intrinsèque — jamais un sibling plein écran.
+                ContextualAssistantButton {
+                    openMailAssistant(.global)
+                }
+            }
             .navigationTitle("Mail")
             .tabRootNavigationChrome()
             .accessibilityIdentifier(A11yID.Mail.root)
@@ -979,6 +985,12 @@ struct MailThreadView: View {
                 } else if let thread {
                     threadContent(thread)
                 }
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            ContextualAssistantButton {
+                assistantDetent = .large
+                showAssistant = true
             }
         }
         .navigationTitle(summary.subject ?? "Fil")
