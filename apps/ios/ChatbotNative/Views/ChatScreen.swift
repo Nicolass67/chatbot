@@ -576,7 +576,6 @@ struct ChatScreen: View {
     }
 
     @ViewBuilder
-    @ViewBuilder
     private func messageRow(_ msg: MessageDTO) -> some View {
         let chrome = chromeById[msg.id] ?? MessageChromeMeta()
         let liveStreaming = streamingAssistantId == msg.id && isSending
