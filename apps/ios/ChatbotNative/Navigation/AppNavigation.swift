@@ -79,6 +79,8 @@ final class AppNavigation {
     var mailAssistantContext: MailAssistantContext = .global
     /// Fichiers Files → PJ assistant Mail (consommés par ChatScreen scope mail).
     var mailAttachHandoffs: [MailAttachHandoff] = []
+    /// Sources Files→Mail persistantes : survivent à « Nouveau chat » jusqu’à envoi / retrait.
+    var mailStickyAttachSources: [MailAttachHandoff] = []
     var mailComposerPrefill: String?
 
     /// Files Assistant sheet (in-place).
@@ -192,9 +194,15 @@ final class AppNavigation {
         prefill: String? = nil
     ) {
         guard !files.isEmpty else { return }
-        mailAttachHandoffs = files.map {
+        let handoffs = files.map {
             MailAttachHandoff(fileId: $0.fileId, filename: $0.filename)
         }
+        for handoff in handoffs {
+            if !mailStickyAttachSources.contains(where: { $0.fileId == handoff.fileId }) {
+                mailStickyAttachSources.append(handoff)
+            }
+        }
+        mailAttachHandoffs = handoffs
         mailComposerPrefill = prefill
         // Armer Mail AVANT le dismiss Files : sinon `assistantDismissToken`
         // ferme aussi la sheet Mail qu’on vient d’ouvrir (course SwiftUI).
@@ -203,6 +211,11 @@ final class AppNavigation {
         presentFilesAssistant = false
         assistantDismissToken &+= 1
         selectedTab = .mail
+    }
+
+    func clearMailStickyAttachments() {
+        mailStickyAttachSources = []
+        mailAttachHandoffs = []
     }
 
     /// Files Assistant sheet (in-place, comme Mail — pas de redirect Chat).

@@ -282,11 +282,11 @@ struct ChatScreen: View {
         }
         .onChange(of: nav.mailAttachHandoffs) { _, items in
             guard forcedScope == .mail, !items.isEmpty else { return }
-            Task { await consumeMailAttachHandoffs() }
+            Task { await ensureMailPendingAttachments() }
         }
         .onAppear {
             if forcedScope == .mail {
-                Task { await consumeMailAttachHandoffs() }
+                Task { await ensureMailPendingAttachments() }
             } else if let text = nav.chatComposerPrefill, !text.isEmpty {
                 draft = text
                 nav.chatComposerPrefill = nil
@@ -306,6 +306,9 @@ struct ChatScreen: View {
             isSending = false
             thinkingKind = nil
             Task { await streamingService.cancel() }
+            if forcedScope == .mail, !nav.mailStickyAttachSources.isEmpty {
+                Task { await rehydrateMailStickyAttachments() }
+            }
         }
         // Ne pas annuler le stream sur changement d’onglet / preview fichier —
         // seul le background (scenePhase) ou Stop explicite interrompt.
@@ -939,6 +942,18 @@ struct ChatScreen: View {
         AppHaptics.light()
     }
 
+    /// Handoffs frais et/ou sources sticky (après « Nouveau chat »).
+    private func ensureMailPendingAttachments() async {
+        guard forcedScope == .mail else { return }
+        if !nav.mailAttachHandoffs.isEmpty {
+            await consumeMailAttachHandoffs()
+            return
+        }
+        if pendingAttachments.isEmpty, !nav.mailStickyAttachSources.isEmpty {
+            await rehydrateMailStickyAttachments()
+        }
+    }
+
     private func consumeMailAttachHandoffs() async {
         guard forcedScope == .mail else { return }
         let items = nav.mailAttachHandoffs
@@ -947,9 +962,29 @@ struct ChatScreen: View {
         // Handoff Files → Mail : PJ seulement, jamais de texte prérempli.
         nav.mailComposerPrefill = nil
         for item in items {
+            if !nav.mailStickyAttachSources.contains(where: { $0.fileId == item.fileId }) {
+                nav.mailStickyAttachSources.append(item)
+            }
+            if pendingAttachments.contains(where: { $0.sourceFileId == item.fileId }) {
+                continue
+            }
             await attachFilesEntryToComposer(fileId: item.fileId, filename: item.filename)
         }
         AppHaptics.success()
+    }
+
+    /// Ré-attache les sources Files sur la conversation courante (IDs PJ liés à la conv).
+    private func rehydrateMailStickyAttachments() async {
+        guard forcedScope == .mail else { return }
+        let sources = nav.mailStickyAttachSources
+        guard !sources.isEmpty else { return }
+        pendingAttachments.removeAll {
+            $0.sourceFileId != nil || $0.id.hasPrefix("local-mail-")
+        }
+        for item in sources {
+            await attachFilesEntryToComposer(fileId: item.fileId, filename: item.filename)
+        }
+        AppHaptics.light()
     }
 
     private func attachFilesEntryToComposer(fileId: String, filename: String) async {
@@ -960,17 +995,19 @@ struct ChatScreen: View {
                 filename: filename,
                 mimeType: "application/octet-stream",
                 sizeBytes: 0,
-                isUploading: true
+                isUploading: true,
+                sourceFileId: fileId
             )
         )
         do {
             let (data, resolvedName, mime) = try await client.downloadFileBytes(fileId: fileId)
-            let uploaded = try await client.uploadAttachment(
+            var uploaded = try await client.uploadAttachment(
                 conversationId: conversation.id,
                 filename: resolvedName.isEmpty ? filename : resolvedName,
                 mimeType: mime,
                 fileData: data
             )
+            uploaded.sourceFileId = fileId
             if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
                 pendingAttachments[idx] = uploaded
             } else {
@@ -1019,6 +1056,9 @@ struct ChatScreen: View {
             )
             // Carte → reçu vert ; PJ composer retirées.
             pendingAttachments = []
+            if forcedScope == .mail {
+                nav.clearMailStickyAttachments()
+            }
             draftCardSent = true
             draftCardStatus = "Envoyé"
             draftCardEditing = false
@@ -1816,6 +1856,9 @@ struct ChatScreen: View {
 
     private func removePending(_ att: UploadedAttachment) async {
         pendingAttachments.removeAll { $0.id == att.id }
+        if let sourceId = att.sourceFileId {
+            nav.mailStickyAttachSources.removeAll { $0.fileId == sourceId }
+        }
         if !att.id.hasPrefix("local-") {
             try? await client.deleteAttachment(id: att.id)
         }
@@ -1971,6 +2014,9 @@ struct ChatScreen: View {
                 messages = Array(messages.prefix(through: idx))
             }
             pendingAttachments = []
+            if forcedScope == .mail {
+                nav.clearMailStickyAttachments()
+            }
             editingMessageId = nil
         }
 

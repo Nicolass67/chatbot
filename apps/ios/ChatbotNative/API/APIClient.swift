@@ -37,6 +37,8 @@ struct UploadedAttachment: Identifiable, Hashable {
     var previewData: Data?
     var isUploading: Bool = false
     var error: String? = nil
+    /// Origine Files → Mail : conserve la source pour réhydrater après « Nouveau chat ».
+    var sourceFileId: String? = nil
 
     var isImage: Bool {
         mimeType.hasPrefix("image/") || typeHint == "image"
