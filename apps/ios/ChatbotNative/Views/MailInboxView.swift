@@ -855,11 +855,16 @@ struct MailInboxView: View {
             WidgetSharedStore.publishMailUnread(estimate ?? page.count, previews: previews)
             return
         }
-        // Hors filtre non-lu : rafraîchit seulement les aperçus si on a déjà un compteur.
+        // Hors filtre non-lu : garde le compteur existant si présent, sinon seed avec l’estimé.
         if let defaults = UserDefaults(suiteName: WidgetSharedStore.appGroupId),
            defaults.object(forKey: WidgetSharedStore.Key.mailUnread) != nil {
             let current = defaults.integer(forKey: WidgetSharedStore.Key.mailUnread)
             WidgetSharedStore.publishMailUnread(current, previews: previews)
+        } else if let estimate {
+            WidgetSharedStore.publishMailUnread(estimate, previews: previews)
+        } else {
+            let unreadCount = page.filter { $0.isUnread == true }.count
+            WidgetSharedStore.publishMailUnread(unreadCount, previews: previews.filter(\.unread))
         }
     }
 

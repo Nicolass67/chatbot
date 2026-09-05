@@ -3,7 +3,14 @@ import SwiftUI
 import WidgetKit
 
 enum WidgetSharedStore {
-    static let appGroupId = "group.fr.nicolazer.chatbot.native"
+    /// ID déclaré dans les entitlements (build Flash / Xcode).
+    static let canonicalAppGroupId = "group.fr.nicolazer.chatbot.native"
+
+    private static let resolvedAppGroupId: String = {
+        resolveAppGroupId()
+    }()
+
+    static var appGroupId: String { resolvedAppGroupId }
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: appGroupId)
@@ -16,6 +23,7 @@ enum WidgetSharedStore {
         static let updatedAt = "widget.updatedAt"
         static let mailUnread = "widget.mailUnread"
         static let mailPreviews = "widget.mailPreviews"
+        static let mailSynced = "widget.mailSynced"
         static let filesRecentCount = "widget.filesRecentCount"
         static let filesFolderName = "widget.filesFolderName"
         static let filesPreviews = "widget.filesPreviews"
@@ -25,6 +33,7 @@ enum WidgetSharedStore {
         static let secondaryDark = "widget.secondaryDark"
         static let backgroundLight = "widget.backgroundLight"
         static let backgroundDark = "widget.backgroundDark"
+        static let themeSynced = "widget.themeSynced"
     }
 
     struct MailPreviewItem: Codable, Equatable, Identifiable, Hashable {
@@ -41,6 +50,43 @@ enum WidgetSharedStore {
         var name: String
         var detail: String
         var isDirectory: Bool
+    }
+
+    private static func resolveAppGroupId() -> String {
+        let base = canonicalAppGroupId
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: base) != nil {
+            return base
+        }
+        if let remapped = remappedAppGroupId(from: Bundle.main.bundleIdentifier),
+           FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: remapped) != nil {
+            return remapped
+        }
+        if let remapped = remappedAppGroupId(from: Bundle.main.bundleIdentifier) {
+            return remapped
+        }
+        return base
+    }
+
+    private static func remappedAppGroupId(from bundleId: String?) -> String? {
+        guard let bundleId, !bundleId.isEmpty else { return nil }
+        let mainPrefix = "fr.nicolazer.chatbot.native."
+        let widgetPrefix = "fr.nicolazer.chatbot.native.widgets."
+        let suffix: String
+        if bundleId.hasPrefix(widgetPrefix) {
+            suffix = String(bundleId.dropFirst(widgetPrefix.count))
+        } else if bundleId.hasPrefix(mainPrefix) {
+            let rest = String(bundleId.dropFirst(mainPrefix.count))
+            if rest == "widgets" { return nil }
+            if rest.hasPrefix("widgets.") {
+                suffix = String(rest.dropFirst("widgets.".count))
+            } else {
+                suffix = rest
+            }
+        } else {
+            return nil
+        }
+        guard !suffix.isEmpty else { return nil }
+        return "\(canonicalAppGroupId).\(suffix)"
     }
 
     static func snapshot() -> WidgetSnapshot {
@@ -65,21 +111,27 @@ enum WidgetSharedStore {
             let t = d?.double(forKey: Key.updatedAt) ?? 0
             return t > 0 ? Date(timeIntervalSince1970: t) : nil
         }()
+        let mailSynced = d?.object(forKey: Key.mailSynced) != nil
+        let themeSynced = d?.object(forKey: Key.themeSynced) != nil
+            || d?.object(forKey: Key.accentLight) != nil
         return WidgetSnapshot(
             runtimeStatus: d?.string(forKey: Key.runtimeStatus) ?? "",
             modelName: d?.string(forKey: Key.modelName) ?? "",
             conversationTitle: d?.string(forKey: Key.conversationTitle) ?? "",
             mailUnread: d?.integer(forKey: Key.mailUnread) ?? 0,
             mailPreviews: mailPreviews,
+            mailSynced: mailSynced,
             filesRecentCount: d?.integer(forKey: Key.filesRecentCount) ?? 0,
             filesFolderName: d?.string(forKey: Key.filesFolderName) ?? "",
             filesPreviews: filesPreviews,
+            // Fallbacks = défauts catalogue app (ice-blue / cyan / graphite).
             accentLight: hex(Key.accentLight, fallback: 0x3B82F6),
             accentDark: hex(Key.accentDark, fallback: 0x7DD3FC),
-            secondaryLight: hex(Key.secondaryLight, fallback: 0x6366F1),
-            secondaryDark: hex(Key.secondaryDark, fallback: 0xA5B4FC),
-            backgroundLight: hex(Key.backgroundLight, fallback: 0xF4F7FB),
-            backgroundDark: hex(Key.backgroundDark, fallback: 0x0B1220),
+            secondaryLight: hex(Key.secondaryLight, fallback: 0x0EA5E9),
+            secondaryDark: hex(Key.secondaryDark, fallback: 0x67E8F9),
+            backgroundLight: hex(Key.backgroundLight, fallback: 0xF3F5F9),
+            backgroundDark: hex(Key.backgroundDark, fallback: 0x0B0F14),
+            themeSynced: themeSynced,
             updatedAt: updated
         )
     }
@@ -91,6 +143,7 @@ struct WidgetSnapshot: Equatable {
     var conversationTitle: String
     var mailUnread: Int
     var mailPreviews: [WidgetSharedStore.MailPreviewItem]
+    var mailSynced: Bool
     var filesRecentCount: Int
     var filesFolderName: String
     var filesPreviews: [WidgetSharedStore.FilePreviewItem]
@@ -100,6 +153,7 @@ struct WidgetSnapshot: Equatable {
     var secondaryDark: UInt32
     var backgroundLight: UInt32
     var backgroundDark: UInt32
+    var themeSynced: Bool
     var updatedAt: Date?
 
     enum AssistantPhase: Equatable {
@@ -165,24 +219,25 @@ struct WidgetSnapshot: Equatable {
             conversationTitle: "Conversation",
             mailUnread: 3,
             mailPreviews: [
-                .init(id: "1", from: "Alice Martin", subject: "Facture mars", snippet: "Voici la facture jointe…", dateLabel: "09:12", unread: true),
-                .init(id: "2", from: "Banque", subject: "Votre relevé", snippet: "Votre relevé est disponible", dateLabel: "Hier", unread: true),
-                .init(id: "3", from: "Nicolas", subject: "Weekend", snippet: "On se voit samedi ?", dateLabel: "Lun.", unread: false),
+                .init(id: "1", from: "Alice Martin", subject: "Facture mars", snippet: "Voici la facture…", dateLabel: "09:12", unread: true),
+                .init(id: "2", from: "Banque", subject: "Votre relevé", snippet: "Relevé disponible", dateLabel: "Hier", unread: true),
+                .init(id: "3", from: "Nicolas", subject: "Weekend", snippet: "Samedi ?", dateLabel: "Lun.", unread: false),
             ],
+            mailSynced: true,
             filesRecentCount: 12,
             filesFolderName: "Documents",
             filesPreviews: [
                 .init(id: "a", name: "Contrat.pdf", detail: "PDF · 240 Ko", isDirectory: false),
                 .init(id: "b", name: "Photos", detail: "Dossier", isDirectory: true),
                 .init(id: "c", name: "Notes.md", detail: "MD · 12 Ko", isDirectory: false),
-                .init(id: "d", name: "Budget.xlsx", detail: "XLSX · 88 Ko", isDirectory: false),
             ],
             accentLight: 0x3B82F6,
             accentDark: 0x7DD3FC,
-            secondaryLight: 0x6366F1,
-            secondaryDark: 0xA5B4FC,
-            backgroundLight: 0xF4F7FB,
-            backgroundDark: 0x0B1220,
+            secondaryLight: 0x0EA5E9,
+            secondaryDark: 0x67E8F9,
+            backgroundLight: 0xF3F5F9,
+            backgroundDark: 0x0B0F14,
+            themeSynced: true,
             updatedAt: Date()
         )
     }
@@ -208,24 +263,23 @@ struct WidgetAccentBackground: View {
             canvas
             LinearGradient(
                 colors: [
-                    accent.opacity(colorScheme == .dark ? 0.52 : 0.34),
-                    secondary.opacity(colorScheme == .dark ? 0.28 : 0.16),
-                    canvas.opacity(colorScheme == .dark ? 0.92 : 0.88),
+                    accent.opacity(colorScheme == .dark ? 0.58 : 0.42),
+                    secondary.opacity(colorScheme == .dark ? 0.34 : 0.22),
+                    canvas.opacity(colorScheme == .dark ? 0.90 : 0.82),
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             Circle()
-                .fill(accent.opacity(colorScheme == .dark ? 0.38 : 0.22))
+                .fill(accent.opacity(colorScheme == .dark ? 0.44 : 0.28))
                 .frame(width: 168, height: 168)
                 .blur(radius: 36)
                 .offset(x: 62, y: -58)
             Circle()
-                .fill(secondary.opacity(colorScheme == .dark ? 0.26 : 0.16))
+                .fill(secondary.opacity(colorScheme == .dark ? 0.30 : 0.20))
                 .frame(width: 132, height: 132)
                 .blur(radius: 30)
                 .offset(x: -68, y: 60)
-            // Soft glass wash
             LinearGradient(
                 colors: [
                     Color.white.opacity(colorScheme == .dark ? 0.06 : 0.22),
@@ -251,7 +305,7 @@ struct WidgetHeader: View {
                 .frame(width: 28, height: 28)
                 .background(
                     LinearGradient(
-                        colors: [accent, accent.opacity(0.75)],
+                        colors: [accent, accent.opacity(0.72)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -275,12 +329,12 @@ struct WidgetMetricHero: View {
             Text(value)
                 .font(.system(size: 42, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(.primary)
+                .foregroundStyle(accent)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
             Text(caption)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(accent)
+                .foregroundStyle(accent.opacity(0.9))
                 .textCase(.uppercase)
                 .tracking(0.4)
         }
@@ -323,12 +377,12 @@ struct WidgetRowCard: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
         .background(
-            Color.primary.opacity(emphasized ? 0.09 : 0.055),
+            accent.opacity(emphasized ? 0.16 : 0.08),
             in: RoundedRectangle(cornerRadius: 11, style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(accent.opacity(emphasized ? 0.45 : 0.16), lineWidth: 1)
+                .strokeBorder(accent.opacity(emphasized ? 0.55 : 0.22), lineWidth: 1)
         )
     }
 }

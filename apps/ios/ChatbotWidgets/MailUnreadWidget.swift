@@ -80,6 +80,7 @@ struct MailWidgetView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(first.from)
                         .font(.caption.weight(.bold))
+                        .foregroundStyle(accent)
                         .lineLimit(1)
                     Text(first.subject)
                         .font(.caption2.weight(.medium))
@@ -92,10 +93,14 @@ struct MailWidgetView: View {
                             .lineLimit(2)
                     }
                 }
-            } else {
-                Text(snap.mailUnread == 0 ? "Boîte à jour" : "Ouvre Mail pour synchroniser")
+            } else if snap.mailSynced {
+                Text(snap.mailUnread == 0 ? "Boîte à jour" : "Pas d’aperçu")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(secondary)
+            } else {
+                Text("Ouvre l’app pour sync")
+                    .font(.caption)
+                    .foregroundStyle(secondary)
             }
         }
     }
@@ -119,8 +124,10 @@ struct MailWidgetView: View {
             VStack(spacing: 6) {
                 if snap.mailPreviews.isEmpty {
                     WidgetRowCard(
-                        title: "Aucun aperçu",
-                        subtitle: "Ouvre Mail pour synchroniser",
+                        title: snap.mailSynced ? "Aucun aperçu" : "Pas encore synchronisé",
+                        subtitle: snap.mailSynced
+                            ? (snap.mailUnread == 0 ? "Boîte à jour" : "Ouvre Mail")
+                            : "Ouvre Chatbot pour sync",
                         trailing: nil,
                         symbol: "tray",
                         accent: accent

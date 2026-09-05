@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ChatbotNativeApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = AppSessionStore()
     @StateObject private var appearance = AppearanceStore()
     @StateObject private var infrastructure = InfrastructureStore()
@@ -24,9 +25,20 @@ struct ChatbotNativeApp: App {
                 .onAppear {
                     infrastructure.bind(session: session)
                     AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
+                    appearance.republishThemeToWidgets()
+                    Task { await WidgetMailSync.syncIfNeeded(session: session, force: true) }
                 }
-                .onChange(of: session.token) { _, _ in
+                .onChange(of: session.token) { _, token in
                     infrastructure.bind(session: session)
+                    if token != nil {
+                        appearance.republishThemeToWidgets()
+                        Task { await WidgetMailSync.syncIfNeeded(session: session, force: true) }
+                    }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    appearance.republishThemeToWidgets()
+                    Task { await WidgetMailSync.syncIfNeeded(session: session) }
                 }
         }
     }

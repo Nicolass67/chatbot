@@ -220,16 +220,23 @@ final class AppearanceStore: ObservableObject {
         let primary = ThemePaletteCatalog.primary(id: primaryId)
         let secondary = ThemePaletteCatalog.secondary(id: secondaryId)
         let background = ThemePaletteCatalog.background(id: backgroundId)
+        // force: le sideload remappe l’App Group — republier garantit le pont widget.
         WidgetSharedStore.publishTheme(
             accentLight: primary.light,
             accentDark: primary.dark,
             secondaryLight: secondary.light,
             secondaryDark: secondary.dark,
             backgroundLight: background.light,
-            backgroundDark: background.dark
+            backgroundDark: background.dark,
+            force: true
         )
         if bumpRevision {
             themeRevision &+= 1
         }
+    }
+
+    /// Republie le thème vers les widgets (retour premier plan / après login).
+    func republishThemeToWidgets() {
+        applyPaletteToBridge(bumpRevision: false)
     }
 }

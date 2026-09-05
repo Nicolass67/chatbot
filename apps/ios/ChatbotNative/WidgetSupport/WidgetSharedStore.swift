@@ -3,10 +3,27 @@ import WidgetKit
 
 /// Données partagées App ↔ Widget (App Group). Autorisé : sujets mail, noms fichiers, modèle.
 enum WidgetSharedStore {
-    static let appGroupId = "group.fr.nicolazer.chatbot.native"
+    /// ID déclaré dans les entitlements (build Flash / Xcode).
+    static let canonicalAppGroupId = "group.fr.nicolazer.chatbot.native"
+
+    /// ID réel après sideload free Apple ID (souvent `….native.<TEAM>`).
+    private static let resolvedAppGroupId: String = {
+        resolveAppGroupId()
+    }()
+
+    static var appGroupId: String { resolvedAppGroupId }
 
     private static var defaults: UserDefaults? {
         UserDefaults(suiteName: appGroupId)
+    }
+
+    /// Conteneur partagé — nil si App Group inaccessible (signature / profil).
+    static var containerURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId)
+    }
+
+    static var isAppGroupReady: Bool {
+        defaults != nil && containerURL != nil
     }
 
     enum Key {
@@ -16,6 +33,7 @@ enum WidgetSharedStore {
         static let updatedAt = "widget.updatedAt"
         static let mailUnread = "widget.mailUnread"
         static let mailPreviews = "widget.mailPreviews"
+        static let mailSynced = "widget.mailSynced"
         static let filesRecentCount = "widget.filesRecentCount"
         static let filesFolderName = "widget.filesFolderName"
         static let filesPreviews = "widget.filesPreviews"
@@ -25,6 +43,7 @@ enum WidgetSharedStore {
         static let secondaryDark = "widget.secondaryDark"
         static let backgroundLight = "widget.backgroundLight"
         static let backgroundDark = "widget.backgroundDark"
+        static let themeSynced = "widget.themeSynced"
     }
 
     struct MailPreviewItem: Codable, Equatable, Identifiable {
@@ -41,6 +60,48 @@ enum WidgetSharedStore {
         var name: String
         var detail: String
         var isDirectory: Bool
+    }
+
+    /// Free sideload (isideload) remappe souvent :
+    /// - bundle `fr.nicolazer.chatbot.native` → `….native.<TEAM>`
+    /// - group `group.fr.nicolazer.chatbot.native` → `….native.<TEAM>`
+    /// Sans ce suffixe, app et widget écrivent dans des suites isolées.
+    private static func resolveAppGroupId() -> String {
+        let base = canonicalAppGroupId
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: base) != nil {
+            return base
+        }
+        if let remapped = remappedAppGroupId(from: Bundle.main.bundleIdentifier),
+           FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: remapped) != nil {
+            return remapped
+        }
+        // Dernier recours : ID remappé même si containerURL est encore nil au cold start.
+        if let remapped = remappedAppGroupId(from: Bundle.main.bundleIdentifier) {
+            return remapped
+        }
+        return base
+    }
+
+    private static func remappedAppGroupId(from bundleId: String?) -> String? {
+        guard let bundleId, !bundleId.isEmpty else { return nil }
+        let mainPrefix = "fr.nicolazer.chatbot.native."
+        let widgetPrefix = "fr.nicolazer.chatbot.native.widgets."
+        let suffix: String
+        if bundleId.hasPrefix(widgetPrefix) {
+            suffix = String(bundleId.dropFirst(widgetPrefix.count))
+        } else if bundleId.hasPrefix(mainPrefix) {
+            let rest = String(bundleId.dropFirst(mainPrefix.count))
+            if rest == "widgets" { return nil }
+            if rest.hasPrefix("widgets.") {
+                suffix = String(rest.dropFirst("widgets.".count))
+            } else {
+                suffix = rest
+            }
+        } else {
+            return nil
+        }
+        guard !suffix.isEmpty, !suffix.contains("/") else { return nil }
+        return "\(canonicalAppGroupId).\(suffix)"
     }
 
     static func publishAssistant(status: String, modelName: String?, conversationTitle: String? = nil) {
@@ -81,9 +142,11 @@ enum WidgetSharedStore {
                 previewsChanged = true
             }
         }
-        if countSame && !previewsChanged { return }
+        let firstSync = defaults.object(forKey: Key.mailSynced) == nil
+        if countSame && !previewsChanged && !firstSync { return }
 
         defaults.set(next, forKey: Key.mailUnread)
+        defaults.set(true, forKey: Key.mailSynced)
         touch(defaults)
         WidgetCenter.shared.reloadTimelines(ofKind: "MailUnreadWidget")
     }
@@ -122,7 +185,8 @@ enum WidgetSharedStore {
         secondaryLight: UInt32,
         secondaryDark: UInt32,
         backgroundLight: UInt32,
-        backgroundDark: UInt32
+        backgroundDark: UInt32,
+        force: Bool = false
     ) {
         guard let defaults else { return }
         let values: [(String, Int)] = [
@@ -133,7 +197,7 @@ enum WidgetSharedStore {
             (Key.backgroundLight, Int(backgroundLight & 0x00FF_FFFF)),
             (Key.backgroundDark, Int(backgroundDark & 0x00FF_FFFF)),
         ]
-        var changed = false
+        var changed = force || defaults.object(forKey: Key.themeSynced) == nil
         for (key, value) in values {
             if defaults.object(forKey: key) == nil || defaults.integer(forKey: key) != value {
                 defaults.set(value, forKey: key)
@@ -141,6 +205,7 @@ enum WidgetSharedStore {
             }
         }
         guard changed else { return }
+        defaults.set(true, forKey: Key.themeSynced)
         touch(defaults)
         WidgetCenter.shared.reloadAllTimelines()
     }
@@ -152,12 +217,14 @@ enum WidgetSharedStore {
             accentDark: dark,
             secondaryLight: light,
             secondaryDark: dark,
-            backgroundLight: 0xF4F7FB,
-            backgroundDark: 0x0B1220
+            backgroundLight: 0xF3F5F9,
+            backgroundDark: 0x0B0F14,
+            force: true
         )
     }
 
     private static func touch(_ defaults: UserDefaults) {
         defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
+        defaults.synchronize()
     }
 }
