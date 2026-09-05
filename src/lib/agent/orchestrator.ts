@@ -870,6 +870,7 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       collectedSources,
       routeDecision: route,
       memoryIntent: analysis.memory,
+      alreadySavedCount: initialMemorySaves.length,
       flushInitialMemorySaves,
       toolCtxBase,
       emailEnabled: Boolean(
@@ -917,6 +918,7 @@ async function runChatMode(params: {
   collectedSources: SearchResult[];
   routeDecision: RouteDecision;
   memoryIntent?: MemoryIntentDecision;
+  alreadySavedCount?: number;
   flushInitialMemorySaves?: (messageId: string) => void;
   toolCtxBase: Omit<ToolContext, "signal">;
   emailEnabled: boolean;
@@ -938,6 +940,7 @@ async function runChatMode(params: {
     collectedSources,
     routeDecision,
     memoryIntent,
+    alreadySavedCount = 0,
     flushInitialMemorySaves,
     toolCtxBase,
     emailEnabled,
@@ -1029,7 +1032,7 @@ async function runChatMode(params: {
           collectedSources,
           pendingAttachments,
           memoryIntent,
-          alreadySavedCount: initialMemorySaves.length,
+          alreadySavedCount,
           flushInitialMemorySaves,
         });
         return;
@@ -1310,6 +1313,7 @@ async function runChatMode(params: {
     pendingAttachments,
     reasoningEffort,
     requestId,
+    alreadySavedCount,
     memoryIntent,
     flushInitialMemorySaves,
   });
