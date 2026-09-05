@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { memoryCategorySchema } from "@/lib/settings/service";
 import type { ObjectiveContext } from "@/lib/request-router/types";
+import { coerceMemoryItems } from "./normalize-items";
 
 export const memoryIntentClassificationSchema = z.object({
   shouldRemember: z.boolean(),
@@ -50,9 +51,35 @@ function extractJsonFromContent(content: string): unknown {
 
 export function parseMemoryIntentClassification(content: string) {
   const raw = extractJsonFromContent(content);
-  return memoryIntentClassificationSchema.parse(raw);
-}
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Réponse mémoire JSON invalide");
+  }
+  const obj = raw as Record<string, unknown>;
+  const memories = coerceMemoryItems(obj.memories);
+  const shouldRemember =
+    typeof obj.shouldRemember === "boolean"
+      ? obj.shouldRemember
+      : memories.length > 0;
+  const confidence =
+    typeof obj.confidence === "number" && Number.isFinite(obj.confidence)
+      ? obj.confidence
+      : shouldRemember
+        ? 0.85
+        : 0.5;
+  const reason =
+    typeof obj.reason === "string" && obj.reason.trim()
+      ? obj.reason.trim()
+      : shouldRemember
+        ? "Fait personnel détecté"
+        : "Rien à mémoriser";
 
+  return memoryIntentClassificationSchema.parse({
+    shouldRemember: shouldRemember || memories.length > 0,
+    memories,
+    confidence,
+    reason,
+  });
+}
 export function buildMemoryClassifierSystemPrompt(): string {
   return `Tu es un analyseur de mémoire long terme pour un chatbot local. Tu ne réponds PAS à l'utilisateur.
 

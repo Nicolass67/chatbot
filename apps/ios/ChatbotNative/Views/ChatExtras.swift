@@ -248,33 +248,29 @@ struct MemoryUpdatedChip: View {
                 Button {
                     onOpen?()
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 7) {
                         Image(systemName: "brain.head.profile")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
                         Text("Mémoire mise à jour")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.foreground)
-                        Text("·")
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(AppTheme.mutedForeground)
-                        Text(memory.categoryLabel)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.mutedForeground)
-                        Text(memory.content)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.foreground.opacity(0.9))
-                            .lineLimit(1)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(AppTheme.accentSubtle.opacity(0.85))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .clipShape(Capsule(style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                        Capsule(style: .continuous)
                             .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Mémoire mise à jour")
+                .accessibilityHint(memory.content)
                 .contextMenu {
                     Button("Voir le souvenir", systemImage: "brain.head.profile") {
                         onOpen?()

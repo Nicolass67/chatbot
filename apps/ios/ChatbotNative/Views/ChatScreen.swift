@@ -2048,7 +2048,7 @@ struct ChatScreen: View {
                 options: opts,
                 streaming: streamingService
             ) { event in
-                Task { @MainActor in
+                await MainActor.run {
                     guard gen == sendGeneration else { return }
                     handleSSE(type: event.type, obj: event.payload)
                 }
@@ -2773,9 +2773,12 @@ struct ChatScreen: View {
                 filesFound: streamFilesFound
             )
             if let id = streamingAssistantId ?? (obj["messageId"] as? String) {
-                // Préserve le panel agent déjà syncé.
+                // Préserve le panel agent déjà syncé + souvenirs SSE.
                 if chromeById[id]?.agentRun != nil {
                     chrome.agentRun = chromeById[id]?.agentRun
+                }
+                if let existing = chromeById[id]?.savedMemories, !existing.isEmpty {
+                    chrome.savedMemories = existing
                 }
                 chromeById[id] = {
                     var merged = chromeById[id] ?? MessageChromeMeta()
@@ -2783,6 +2786,9 @@ struct ChatScreen: View {
                     if chrome.mailHandoff != nil { merged.mailHandoff = chrome.mailHandoff }
                     if chrome.filesHandoff != nil { merged.filesHandoff = chrome.filesHandoff }
                     if !chrome.filesFound.isEmpty { merged.filesFound = chrome.filesFound }
+                    if merged.savedMemories.isEmpty, !chrome.savedMemories.isEmpty {
+                        merged.savedMemories = chrome.savedMemories
+                    }
                     return merged
                 }()
                 if let final = chromeById[id] {

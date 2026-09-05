@@ -18,7 +18,7 @@ actor ChatStreamingService {
         conversationId: String,
         message: String,
         options: ChatSendOptions,
-        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) async -> Void
     ) async throws {
         cancel()
         let myGeneration = generation
@@ -76,7 +76,7 @@ actor ChatStreamingService {
         message: String,
         options: ChatSendOptions,
         myGeneration: UInt64,
-        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) async -> Void
     ) async throws {
         var req = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         req.httpMethod = "POST"
@@ -135,7 +135,7 @@ actor ChatStreamingService {
             try Task.checkCancellation()
             guard myGeneration == generation else { throw CancellationError() }
             if let event = ChatSSEParser.parseLine(line) {
-                onEvent(event)
+                await onEvent(event)
             }
         }
     }
@@ -144,17 +144,17 @@ actor ChatStreamingService {
     private func streamUITestFixture(
         mode: String,
         myGeneration: UInt64,
-        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) async -> Void
     ) async throws {
         let scenario = UITestMode.sseScenario
         let useAgent = mode == "agent" || scenario == "agent" || scenario == "agent-error"
 
         if useAgent {
-            onEvent(ChatSSEParser.Event(type: "agent_start", payload: ["type": "agent_start"]))
+            await onEvent(ChatSSEParser.Event(type: "agent_start", payload: ["type": "agent_start"]))
             try await Task.sleep(nanoseconds: 120_000_000)
             guard myGeneration == generation else { throw CancellationError() }
 
-            onEvent(ChatSSEParser.Event(type: "agent_plan", payload: [
+            await onEvent(ChatSSEParser.Event(type: "agent_plan", payload: [
                 "type": "agent_plan",
                 "plan": [
                     "steps": [
@@ -166,7 +166,7 @@ actor ChatStreamingService {
             try await Task.sleep(nanoseconds: 200_000_000)
             guard myGeneration == generation else { throw CancellationError() }
 
-            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+            await onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
                 "type": "agent_step",
                 "stepId": "1",
                 "stepIndex": 0,
@@ -179,7 +179,7 @@ actor ChatStreamingService {
             guard myGeneration == generation else { throw CancellationError() }
 
             if scenario == "agent-error" {
-                onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+                await onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
                     "type": "agent_step",
                     "stepId": "1",
                     "status": "error",
@@ -187,16 +187,16 @@ actor ChatStreamingService {
                 ]))
                 try await Task.sleep(nanoseconds: 400_000_000)
                 guard myGeneration == generation else { throw CancellationError() }
-                onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+                await onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
                 return
             }
 
-            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+            await onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
                 "type": "agent_step",
                 "stepId": "1",
                 "status": "done",
             ]))
-            onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
+            await onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
                 "type": "agent_step",
                 "stepId": "2",
                 "stepIndex": 1,
@@ -207,17 +207,17 @@ actor ChatStreamingService {
             try await Task.sleep(nanoseconds: 200_000_000)
             guard myGeneration == generation else { throw CancellationError() }
 
-            onEvent(ChatSSEParser.Event(type: "token", payload: [
+            await onEvent(ChatSSEParser.Event(type: "token", payload: [
                 "type": "token",
                 "content": "Réponse Agent UITest. ",
             ]))
-            onEvent(ChatSSEParser.Event(type: "agent_done", payload: ["type": "agent_done"]))
-            onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+            await onEvent(ChatSSEParser.Event(type: "agent_done", payload: ["type": "agent_done"]))
+            await onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
             return
         }
 
         // Chat / thinking : status visible avant le premier token.
-        onEvent(ChatSSEParser.Event(type: "thinking", payload: [
+        await onEvent(ChatSSEParser.Event(type: "thinking", payload: [
             "type": "thinking",
             "message": "Réflexion…",
         ]))
@@ -227,12 +227,12 @@ actor ChatStreamingService {
         try await Task.sleep(nanoseconds: holdNs)
         guard myGeneration == generation else { throw CancellationError() }
 
-        onEvent(ChatSSEParser.Event(type: "token", payload: [
+        await onEvent(ChatSSEParser.Event(type: "token", payload: [
             "type": "token",
             "content": "Réponse UITest déterministe. ",
         ]))
         if scenario == "handoff" {
-            onEvent(ChatSSEParser.Event(type: "mail_handoff", payload: [
+            await onEvent(ChatSSEParser.Event(type: "mail_handoff", payload: [
                 "type": "mail_handoff",
                 "threadId": "uitest-thread-free",
                 "query": "facture Free",
@@ -241,7 +241,7 @@ actor ChatStreamingService {
             ] as [String: Any]))
             try await Task.sleep(nanoseconds: 400_000_000)
             guard myGeneration == generation else { throw CancellationError() }
-            onEvent(ChatSSEParser.Event(type: "files_handoff", payload: [
+            await onEvent(ChatSSEParser.Event(type: "files_handoff", payload: [
                 "type": "files_handoff",
                 "rootId": "uitest-root-documents",
                 "query": "notes.txt",
@@ -250,7 +250,7 @@ actor ChatStreamingService {
             try await Task.sleep(nanoseconds: 600_000_000)
             guard myGeneration == generation else { throw CancellationError() }
         }
-        onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
+        await onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
     }
 }
 

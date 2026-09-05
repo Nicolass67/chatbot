@@ -8,9 +8,9 @@ import {
   type MemoryIntentDecision,
 } from "./intent-classifier";
 
-export const MEMORY_CLASSIFIER_TIMEOUT_MS = 4_000;
-export const MEMORY_CLASSIFIER_MAX_TOKENS = 160;
-export const MEMORY_CLASSIFIER_ACCEPT_CONFIDENCE = 0.7;
+export const MEMORY_CLASSIFIER_TIMEOUT_MS = 8_000;
+export const MEMORY_CLASSIFIER_MAX_TOKENS = 320;
+export const MEMORY_CLASSIFIER_ACCEPT_CONFIDENCE = 0.55;
 
 export function shouldUseMemoryClassifier(ctx: RequestContext): boolean {
   if (process.env.MEMORY_DISABLE_LLM_CLASSIFIER === "1") return false;

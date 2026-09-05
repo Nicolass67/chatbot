@@ -107,3 +107,21 @@ describe("classifyMemoryIntent", () => {
     expect(decision.source).toBe("none");
   });
 });
+
+
+describe("parseMemoryIntentClassification coercion", () => {
+  it("accepte memories comme tableau de chaines", () => {
+    const parsed = parseMemoryIntentClassification(
+      JSON.stringify({
+        shouldRemember: true,
+        memories: ["L'utilisateur a 26 ans"],
+        confidence: 0.9,
+        reason: "age",
+      })
+    );
+    expect(parsed.shouldRemember).toBe(true);
+    expect(parsed.memories).toHaveLength(1);
+    expect(parsed.memories[0].content).toContain("26");
+    expect(parsed.memories[0].category).toBe("other");
+  });
+});

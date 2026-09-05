@@ -769,7 +769,7 @@ final class APIClient: @unchecked Sendable {
         message: String,
         options: ChatSendOptions = ChatSendOptions(),
         streaming: ChatStreamingService,
-        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) async -> Void
     ) async throws {
         try await streaming.stream(
             baseURL: baseURL,
@@ -786,7 +786,7 @@ final class APIClient: @unchecked Sendable {
         conversationId: String,
         message: String,
         options: ChatSendOptions = ChatSendOptions(),
-        onEvent: @escaping @Sendable (ChatSSEParser.Event) -> Void
+        onEvent: @escaping @Sendable (ChatSSEParser.Event) async -> Void
     ) async throws {
         let streaming = ChatStreamingService()
         try await sendChat(

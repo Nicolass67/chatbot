@@ -9,6 +9,7 @@ import {
   type AppSettings,
 } from "@/lib/settings/service";
 import type { SavedMemoryItem } from "./saved-memory";
+import { coerceMemoryItems } from "./normalize-items";
 import { memoryRetriever } from "./search";
 
 const MIN_IMPORTANCE = 0.5;
@@ -103,7 +104,25 @@ Assistant: ${assistantMessage}`;
     const jsonMatch = response.content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return [];
 
-    const parsed = memoryExtractionSchema.safeParse(JSON.parse(jsonMatch[0]));
+    let raw: unknown;
+    try {
+      raw = JSON.parse(jsonMatch[0]);
+    } catch {
+      return [];
+    }
+    if (!raw || typeof raw !== "object") return [];
+    const obj = raw as Record<string, unknown>;
+    const memories = coerceMemoryItems(obj.memories);
+    const shouldRemember =
+      typeof obj.shouldRemember === "boolean"
+        ? obj.shouldRemember
+        : memories.length > 0;
+    if (!shouldRemember && memories.length === 0) return [];
+
+    const parsed = memoryExtractionSchema.safeParse({
+      shouldRemember: shouldRemember || memories.length > 0,
+      memories,
+    });
     if (!parsed.success || !parsed.data.shouldRemember) return [];
 
     const saved: SavedMemoryItem[] = [];
