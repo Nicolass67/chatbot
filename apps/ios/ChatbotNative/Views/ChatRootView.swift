@@ -350,6 +350,7 @@ struct ConversationSwitcherSheet: View {
             } label: {
                 Label("Supprimer", systemImage: "trash")
             }
+            .tint(AppTheme.danger)
         }
         .swipeActions(edge: .leading) {
             Button {
