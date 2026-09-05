@@ -102,26 +102,38 @@ function log(level, msg, extra) {
 
 function run(cmd, args, timeoutMs = 20_000) {
   return new Promise((resolve) => {
-    execFile(
-      cmd,
-      args,
-      { timeout: timeoutMs, windowsHide: true, cwd: ROOT },
-      (err, stdout, stderr) => {
-        resolve({
-          ok: !err,
-          stdout: String(stdout || ""),
-          stderr: String(stderr || ""),
-        });
-      }
-    );
+    const opts = {
+      timeout: timeoutMs,
+      windowsHide: true,
+      cwd: ROOT,
+      env: process.env,
+    };
+    // Windows: execFile("npm.cmd") → EINVAL ; passer par cmd.exe
+    const useCmd =
+      process.platform === "win32" &&
+      (/\.cmd$/i.test(cmd) || /\.bat$/i.test(cmd));
+    const file = useCmd ? "cmd.exe" : cmd;
+    const argv = useCmd ? ["/d", "/s", "/c", cmd, ...args] : args;
+    execFile(file, argv, opts, (err, stdout, stderr) => {
+      resolve({
+        ok: !err,
+        stdout: String(stdout || ""),
+        stderr: String(stderr || ""),
+        error: err ? String(err.message || err) : null,
+      });
+    });
   });
 }
 
-async function httpProbe(url, timeoutMs = 5000) {
+async function httpProbe(url, timeoutMs = 5000, headers = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctrl.signal, redirect: "follow" });
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      redirect: "follow",
+      headers,
+    });
     let body = null;
     const text = await res.text();
     try {
@@ -141,6 +153,33 @@ async function httpProbe(url, timeoutMs = 5000) {
     clearTimeout(timer);
   }
 }
+
+function loadDotEnvLocal() {
+  try {
+    const p = path.join(ROOT, ".env.local");
+    if (!fs.existsSync(p)) return;
+    const text = fs.readFileSync(p, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!m) continue;
+      const key = m[1];
+      let val = m[2].trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (process.env[key] == null || process.env[key] === "") {
+        process.env[key] = val;
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+loadDotEnvLocal();
 
 async function probeDocker() {
   const r = await run("docker", ["info"], 12_000);
@@ -166,7 +205,10 @@ async function probeSearxng() {
 }
 
 async function probeNextjs() {
-  const r = await httpProbe("http://127.0.0.1:3000/api/health", 5000);
+  const headers = {};
+  const token = process.env.HEALTH_CHECK_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await httpProbe("http://127.0.0.1:3000/api/health", 5000, headers);
   if (r.status === 0) {
     return {
       process: "stopped",

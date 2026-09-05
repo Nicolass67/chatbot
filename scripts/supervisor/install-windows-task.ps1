@@ -15,10 +15,14 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $IndexPath = Join-Path $RepoRoot "scripts\supervisor\index.mjs"
 
 $NodeCmd = Get-Command node -ErrorAction SilentlyContinue
-if (-not $NodeCmd) {
+$SystemNode = "C:\Program Files\nodejs\node.exe"
+if (Test-Path -LiteralPath $SystemNode) {
+  $NodePath = $SystemNode
+} elseif ($NodeCmd) {
+  $NodePath = $NodeCmd.Source
+} else {
   throw "node introuvable dans le PATH. Installe Node.js puis réessaie."
 }
-$NodePath = $NodeCmd.Source
 
 if (-not (Test-Path -LiteralPath $IndexPath)) {
   throw "Fichier introuvable: $IndexPath"
@@ -53,7 +57,7 @@ Register-ScheduledTask `
   -Trigger $Trigger `
   -Settings $Settings `
   -Principal $Principal `
-  -Description "Chatbot Supervisor — surveille docker/searxng/nextjs/lm_studio/cloudflared" `
+  -Description "Chatbot Supervisor - docker searxng nextjs lm_studio cloudflared" `
   | Out-Null
 
 Write-Host "Tâche '$TaskName' installée."
@@ -62,8 +66,17 @@ Write-Host "  Script : $IndexPath"
 Write-Host "  Cwd : $RepoRoot"
 Write-Host "Démarre au logon ; redémarrage auto en cas d'échec (toutes les 1 min)."
 
-$start = Read-Host "Démarrer la tâche maintenant ? (o/N)"
-if ($start -match '^[oOyY]') {
+# Non-interactif : SUPERVISOR_START=1 ou -StartNow → démarre immédiatement
+$autoStart = ($env:SUPERVISOR_START -eq "1") -or ($args -contains "-StartNow")
+if ($autoStart) {
   Start-ScheduledTask -TaskName $TaskName
   Write-Host "Tâche démarrée."
+} elseif ([Environment]::UserInteractive -and -not $env:CI) {
+  $start = Read-Host "Démarrer la tâche maintenant ? (o/N)"
+  if ($start -match '^[oOyY]') {
+    Start-ScheduledTask -TaskName $TaskName
+    Write-Host "Tâche démarrée."
+  }
+} else {
+  Write-Host "Tâche enregistrée (pas démarrée). Utilise: Start-ScheduledTask -TaskName $TaskName"
 }
