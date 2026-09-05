@@ -2,11 +2,11 @@ import Foundation
 import WidgetKit
 
 /// Synchronise le widget Mail hors de l’onglet Mail (lancement / retour premier plan).
+@MainActor
 enum WidgetMailSync {
     private static var lastAttempt: Date?
     private static let minInterval: TimeInterval = 45
 
-    @MainActor
     static func syncIfNeeded(session: AppSessionStore, force: Bool = false) async {
         guard session.isAuthenticated, let token = session.token, !token.isEmpty else { return }
         if !force, let lastAttempt, Date().timeIntervalSince(lastAttempt) < minInterval {
