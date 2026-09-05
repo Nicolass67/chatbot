@@ -65,3 +65,17 @@ npx vitest run src/lib/lm-studio src/lib/agent/orchestrator-abort.test.ts src/ap
 ## Limites
 
 On ne garantit pas l’absence totale de bugs. On garantit que les classes de panne ci-dessus ont une stratégie explicite et des tests de non-régression sur les chemins critiques.
+
+## Application reliability vs Infrastructure supervision
+
+Deux couches distinctes :
+
+| Couche | Owner | Ce qu’elle garantit |
+|--------|--------|---------------------|
+| **Application reliability** | Backend Next (`src/lib/reliability/**`, health, orchestrateur, SSE) | Contrats de panne métier : SQLite, abort, persist-before-done, retries bornés, isolation Chat/Mail/Files |
+| **Infrastructure supervision** | Supervisor Node (`scripts/supervisor/`) + `src/lib/infrastructure/**` | Processus / health / readiness des services OS (`docker`, `searxng`, `nextjs`, `lm_studio`, `cloudflared`), réparation minimale, crash-loop, power PC |
+
+L’app ne remplace pas le Supervisor : `/api/health` décrit l’état **applicatif** ; `/api/infrastructure/status` agrège l’état **infrastructure** (Supervisor HTTP `127.0.0.1:3927` ou `data/supervisor/status.json`).
+
+Détails : [`docs/INFRASTRUCTURE-SUPERVISOR.md`](./INFRASTRUCTURE-SUPERVISOR.md).
+

@@ -30,6 +30,8 @@
     "boot:restart": "node scripts/boot/restart-stack.mjs",
     "boot:install-poll-task": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/boot/install-poll-task.ps1",
     "boot:enable-warm-autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/boot/enable-warm-autostart.ps1",
+    "supervisor": "node scripts/supervisor/index.mjs",
+    "supervisor:install-task": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/supervisor/install-windows-task.ps1",
     "cap:sync": "npx cap sync",
     "cap:sync:ios": "npx cap sync ios",
     "cap:open:ios": "npx cap open ios",

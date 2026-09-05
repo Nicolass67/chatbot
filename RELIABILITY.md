@@ -33,6 +33,9 @@ Détails opérationnels : [`docs/RELIABILITY.md`](docs/RELIABILITY.md).
 
 ```bash
 npx vitest run src/lib/lm-studio src/lib/agent/orchestrator-abort.test.ts src/app/api/health src/lib/health src/lib/reliability
+npx vitest run src/lib/infrastructure
 ```
+
+Infrastructure (Supervisor / self-healing) : [`docs/INFRASTRUCTURE-SUPERVISOR.md`](docs/INFRASTRUCTURE-SUPERVISOR.md) — distinct de la fiabilité applicative (`docs/RELIABILITY.md`).
 
 Pas de CI dans ce rework. Pas de déploiement.

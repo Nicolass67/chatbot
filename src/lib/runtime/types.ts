@@ -146,11 +146,13 @@ export interface LocalAIRuntime {
   abort(requestId: string): Promise<void>;
 }
 
-/** V2: Wake-on-LAN / shutdown — types only */
+/** Wake-on-LAN / shutdown / restart — implemented by HostPowerController */
 export interface PowerController {
   wake(): Promise<void>;
   shutdown(): Promise<void>;
   getPowerStatus(): Promise<"on" | "off" | "unknown">;
+  /** Optional host reboot (Windows). */
+  restart?(): Promise<void>;
 }
 
 /** V2: Inactivity timeout — types only */
