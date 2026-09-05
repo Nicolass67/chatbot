@@ -421,18 +421,26 @@ export function moveAcrossRoots(input: {
   fs.renameSync(src, dest);
 }
 
-/** Supprime un fichier (pas un dossier) sous la root. */
+/**
+ * Supprime un fichier ou un dossier (récursif) sous la root.
+ * Refuse de supprimer la racine elle-même.
+ */
 export function deleteFileUnderRoot(
   rootAbsolute: string,
   relativePath: string
 ): void {
-  const abs = resolveUnderRoot(rootAbsolute, relativePath);
+  const rel = relativePath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!rel || rel === "." || rel === "..") {
+    throw new Error("Impossible de supprimer la racine.");
+  }
+  const abs = resolveUnderRoot(rootAbsolute, rel);
   if (!fs.existsSync(abs)) {
-    throw new Error("Fichier introuvable.");
+    throw new Error("Chemin introuvable.");
   }
   const st = fs.lstatSync(abs);
   if (st.isDirectory()) {
-    throw new Error("La suppression de dossiers n’est pas autorisée ici.");
+    fs.rmSync(abs, { recursive: true, force: false });
+    return;
   }
   fs.unlinkSync(abs);
 }

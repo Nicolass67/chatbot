@@ -207,14 +207,15 @@ export const POST = withAuth(apiAuthGuard, async (request, auth) => {
         return Response.json({ error: "sourceFileId requis" }, { status: 400 });
       }
       const resolved = await resolveFileReference(userId, body.sourceFileId);
-      if (resolved.isDirectory) {
-        return Response.json(
-          { error: "La suppression de dossiers n’est pas supportée ici." },
-          { status: 400 }
-        );
-      }
       if (!resolved.access.canMutate) {
         return Response.json({ error: "Mutation non autorisée" }, { status: 403 });
+      }
+      const rel = resolved.relativePath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (!rel) {
+        return Response.json(
+          { error: "Impossible de supprimer la racine." },
+          { status: 400 }
+        );
       }
       const proposed = await createFilesMutationAction({
         userId,
@@ -241,6 +242,7 @@ export const POST = withAuth(apiAuthGuard, async (request, auth) => {
           sourceRelativePath: resolved.relativePath,
           destRootId: resolved.rootId,
           destRelativePath: resolved.relativePath,
+          isDirectory: resolved.isDirectory,
         },
       });
     }

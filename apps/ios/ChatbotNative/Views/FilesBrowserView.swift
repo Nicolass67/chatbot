@@ -1146,8 +1146,8 @@ struct FileFolderView: View {
             Button("Annuler", role: .cancel) { renameTarget = nil }
             Button("Proposer") { Task { await renameEntry() } }
         }
-        .alert(
-            "Supprimer le fichier ?",
+                .alert(
+            (deleteTarget.map { isFolder($0) } ?? false) ? "Supprimer le dossier ?" : "Supprimer le fichier ?",
             isPresented: Binding(
                 get: { deleteTarget != nil },
                 set: { if !$0 { deleteTarget = nil } }
@@ -1159,10 +1159,15 @@ struct FileFolderView: View {
                 Task { await deleteSingleFile(target) }
             }
         } message: {
-            if let name = deleteTarget?.name ?? deleteTarget?.relativePath {
-                Text("« \(name) » sera définitivement supprimé.")
+            if let target = deleteTarget {
+                let name = target.name ?? target.relativePath
+                if isFolder(target) {
+                    Text("« \(name) » et tout son contenu seront définitivement supprimés.")
+                } else {
+                    Text("« \(name) » sera définitivement supprimé.")
+                }
             } else {
-                Text("Ce fichier sera définitivement supprimé.")
+                Text("Cet élément sera définitivement supprimé.")
             }
         }
         .alert("Confirmer l’action ?", isPresented: Binding(
@@ -1287,6 +1292,14 @@ struct FileFolderView: View {
             } label: {
                 Label("Toujours protéger", systemImage: "lock.shield")
             }
+            Divider()
+            Button(role: .destructive) {
+                deleteTarget = entry
+                AppHaptics.light()
+            } label: {
+                Label("Supprimer", systemImage: "trash")
+            }
+            .disabled(deletingSingle || entry.fileId == nil)
         } else if entry.fileId != nil {
             Button {
                 renameTarget = entry
@@ -1339,7 +1352,7 @@ struct FileFolderView: View {
                 .listRowInsets(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
                 .contextMenu { entryContextMenu(entry) }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    if entry.fileId != nil, !isFolder(entry) {
+                    if entry.fileId != nil { // fichiers + dossiers
                         Button(role: .destructive) {
                             deleteTarget = entry
                             AppHaptics.light()
