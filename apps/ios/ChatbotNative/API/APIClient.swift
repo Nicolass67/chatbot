@@ -374,19 +374,293 @@ final class APIClient: @unchecked Sendable {
         if UITestMode.isActive {
             return "Extinction simulée (UITest)."
         }
-        let req = authorizedRequest(path: "api/host/shutdown", method: "POST")
+        // Préférer le contrôle d’alimentation unifié ; fallback legacy.
+        do {
+            let power = try await shutdownPc()
+            if !power.message.isEmpty { return power.message }
+            return "Extinction du PC planifiée."
+        } catch {
+            let req = authorizedRequest(path: "api/host/shutdown", method: "POST")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            try throwIfNeeded(resp, data)
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let message = obj["message"] as? String, !message.isEmpty {
+                    return message
+                }
+                if let ok = obj["ok"] as? Bool, !ok {
+                    let message = (obj["message"] as? String) ?? "Échec de l'extinction du PC"
+                    throw APIClientError.http(500, message)
+                }
+            }
+            return "Extinction du PC planifiée."
+        }
+    }
+
+    // MARK: - Infrastructure
+
+    func fetchInfrastructureStatus() async throws -> InfrastructureStatusDTO {
+        if UITestMode.isActive {
+            return InfrastructureStatusDTO(
+                overallState: .healthy,
+                powerState: .online,
+                generatedAt: "2099-01-01T12:00:00Z",
+                supervisorAlive: true,
+                message: "Système nominal (UITest)",
+                services: [
+                    ServiceStatusDTO(
+                        id: InfrastructureServiceID.chatbot,
+                        displayName: "Chatbot",
+                        humanName: "Chatbot",
+                        category: "core",
+                        criticality: "required",
+                        process: .running,
+                        health: .healthy,
+                        readiness: .ready,
+                        summary: "OK",
+                        lastCheckAt: nil,
+                        lastRecoveryAt: nil,
+                        restartCount: 0,
+                        incidentId: nil,
+                        crashLoop: false
+                    ),
+                    ServiceStatusDTO(
+                        id: InfrastructureServiceID.assistant,
+                        displayName: "LM Studio",
+                        humanName: "Assistant IA",
+                        category: "ai",
+                        criticality: "optional",
+                        process: .running,
+                        health: .healthy,
+                        readiness: .ready,
+                        summary: "OK",
+                        lastCheckAt: nil,
+                        lastRecoveryAt: nil,
+                        restartCount: 0,
+                        incidentId: nil,
+                        crashLoop: false
+                    ),
+                    ServiceStatusDTO(
+                        id: InfrastructureServiceID.webSearch,
+                        displayName: "SearXNG",
+                        humanName: "Recherche Web",
+                        category: "search",
+                        criticality: "optional",
+                        process: .running,
+                        health: .healthy,
+                        readiness: .ready,
+                        summary: "OK",
+                        lastCheckAt: nil,
+                        lastRecoveryAt: nil,
+                        restartCount: 0,
+                        incidentId: nil,
+                        crashLoop: false
+                    ),
+                ],
+                activeRepairId: nil
+            )
+        }
+        let req = authorizedRequest(path: "api/infrastructure/status")
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let message = obj["message"] as? String, !message.isEmpty {
-                return message
-            }
-            if let ok = obj["ok"] as? Bool, !ok {
-                let message = (obj["message"] as? String) ?? "Échec de l'extinction du PC"
-                throw APIClientError.http(500, message)
-            }
+        return try JSONDecoder().decode(InfrastructureStatusDTO.self, from: data)
+    }
+
+    @discardableResult
+    func diagnoseInfrastructure() async throws -> RepairResultDTO {
+        if UITestMode.isActive {
+            return RepairResultDTO(
+                planId: "uitest-diag",
+                incidentId: nil,
+                status: "success",
+                actions: [],
+                repairedServices: [],
+                untouchedServices: [],
+                durationMs: 12,
+                message: "Diagnostic simulé"
+            )
         }
-        return "Extinction du PC planifiée."
+        var req = authorizedRequest(path: "api/infrastructure/diagnose", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(RepairResultDTO.self, from: data) {
+            return decoded
+        }
+        // Shape backend : `{ status, plan, summary }`
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let plan = obj["plan"] as? [String: Any]
+            let summary = (obj["summary"] as? String)
+                ?? (obj["message"] as? String)
+                ?? "Diagnostic terminé"
+            return RepairResultDTO(
+                planId: plan?["planId"] as? String ?? obj["planId"] as? String,
+                incidentId: plan?["incidentId"] as? String ?? obj["incidentId"] as? String,
+                status: "success",
+                actions: [],
+                repairedServices: (plan?["targetServiceIds"] as? [String]) ?? [],
+                untouchedServices: (plan?["untouchedServiceIds"] as? [String]) ?? [],
+                durationMs: obj["durationMs"] as? Int,
+                message: summary
+            )
+        }
+        throw APIClientError.decode
+    }
+
+    @discardableResult
+    func repairInfrastructure(serviceId: String? = nil) async throws -> RepairResultDTO {
+        if UITestMode.isActive {
+            return RepairResultDTO(
+                planId: "uitest-repair",
+                incidentId: nil,
+                status: "success",
+                actions: [],
+                repairedServices: serviceId.map { [$0] } ?? [],
+                untouchedServices: [],
+                durationMs: 40,
+                message: "Réparation simulée"
+            )
+        }
+        var req = authorizedRequest(path: "api/infrastructure/repair", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let serviceId, !serviceId.isEmpty { body["serviceId"] = serviceId }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(RepairResultDTO.self, from: data) {
+            return decoded
+        }
+        // Shape backend : `{ plan, summary, result }`
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let plan = obj["plan"] as? [String: Any]
+            let result = obj["result"] as? [String: Any]
+            let summary = (obj["summary"] as? String)
+                ?? (result?["message"] as? String)
+                ?? (obj["message"] as? String)
+                ?? "Commande de réparation envoyée"
+            if let resultData = try? JSONSerialization.data(withJSONObject: result ?? obj),
+               let nested = try? JSONDecoder().decode(RepairResultDTO.self, from: resultData) {
+                return RepairResultDTO(
+                    planId: nested.planId ?? plan?["planId"] as? String,
+                    incidentId: nested.incidentId ?? plan?["incidentId"] as? String,
+                    status: nested.status,
+                    actions: nested.actions,
+                    repairedServices: nested.repairedServices.isEmpty
+                        ? ((plan?["targetServiceIds"] as? [String]) ?? [])
+                        : nested.repairedServices,
+                    untouchedServices: nested.untouchedServices,
+                    durationMs: nested.durationMs,
+                    message: nested.message.isEmpty ? summary : nested.message
+                )
+            }
+            return RepairResultDTO(
+                planId: plan?["planId"] as? String ?? obj["planId"] as? String,
+                incidentId: plan?["incidentId"] as? String ?? obj["incidentId"] as? String,
+                status: (result?["status"] as? String) ?? (obj["status"] as? String) ?? "queued",
+                actions: [],
+                repairedServices: (result?["repairedServices"] as? [String])
+                    ?? (plan?["targetServiceIds"] as? [String])
+                    ?? [],
+                untouchedServices: (result?["untouchedServices"] as? [String])
+                    ?? (plan?["untouchedServiceIds"] as? [String])
+                    ?? [],
+                durationMs: result?["durationMs"] as? Int,
+                message: summary
+            )
+        }
+        throw APIClientError.decode
+    }
+
+    func fetchInfrastructureIncidents() async throws -> [IncidentDTO] {
+        if UITestMode.isActive { return [] }
+        let req = authorizedRequest(path: "api/infrastructure/incidents")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let arr = try? JSONDecoder().decode([IncidentDTO].self, from: data) {
+            return arr
+        }
+        struct Wrap: Decodable { let incidents: [IncidentDTO]? }
+        if let wrap = try? JSONDecoder().decode(Wrap.self, from: data) {
+            return wrap.incidents ?? []
+        }
+        return []
+    }
+
+    func fetchPowerStatus() async throws -> PowerStatusDTO {
+        if UITestMode.isActive {
+            return PowerStatusDTO(powerState: .online, message: "PC allumé", ok: true)
+        }
+        let req = authorizedRequest(path: "api/infrastructure/power")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        return try JSONDecoder().decode(PowerStatusDTO.self, from: data)
+    }
+
+    @discardableResult
+    func wakePc() async throws -> PowerStatusDTO {
+        if UITestMode.isActive {
+            return PowerStatusDTO(powerState: .starting, message: "Réveil simulé", ok: true)
+        }
+        var req = authorizedRequest(path: "api/infrastructure/power/wake", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(PowerStatusDTO.self, from: data) {
+            return decoded
+        }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? true
+            let message = (obj["message"] as? String) ?? "Signal de réveil envoyé"
+            if !ok { throw APIClientError.http(500, message) }
+            return PowerStatusDTO(powerState: .starting, message: message, ok: true)
+        }
+        throw APIClientError.decode
+    }
+
+    @discardableResult
+    func shutdownPc() async throws -> PowerStatusDTO {
+        if UITestMode.isActive {
+            return PowerStatusDTO(powerState: .stopping, message: "Extinction simulée", ok: true)
+        }
+        var req = authorizedRequest(path: "api/infrastructure/power/shutdown", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(PowerStatusDTO.self, from: data) {
+            return decoded
+        }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? true
+            let message = (obj["message"] as? String) ?? "Extinction planifiée"
+            if !ok { throw APIClientError.http(500, message) }
+            return PowerStatusDTO(powerState: .stopping, message: message, ok: true)
+        }
+        throw APIClientError.decode
+    }
+
+    @discardableResult
+    func restartPc() async throws -> PowerStatusDTO {
+        if UITestMode.isActive {
+            return PowerStatusDTO(powerState: .starting, message: "Redémarrage simulé", ok: true)
+        }
+        var req = authorizedRequest(path: "api/infrastructure/power/restart", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(PowerStatusDTO.self, from: data) {
+            return decoded
+        }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? true
+            let message = (obj["message"] as? String) ?? "Redémarrage planifié"
+            if !ok { throw APIClientError.http(500, message) }
+            return PowerStatusDTO(powerState: .starting, message: message, ok: true)
+        }
+        throw APIClientError.decode
     }
 
     func listModels() async throws -> [ModelOptionDTO] {

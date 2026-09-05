@@ -105,5 +105,6 @@ enum A11yID {
         static let appearance = "settings.appearance"
         static let haptics = "settings.haptics"
         static let shutdownPc = "settings.shutdownPc"
+        static let systemStatus = "settings.systemStatus"
     }
 }

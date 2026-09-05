@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatbotNativeApp: App {
     @StateObject private var session = AppSessionStore()
     @StateObject private var appearance = AppearanceStore()
+    @StateObject private var infrastructure = InfrastructureStore()
     @State private var nav = AppNavigation()
 
     var body: some Scene {
@@ -11,6 +12,7 @@ struct ChatbotNativeApp: App {
             RootView()
                 .environmentObject(session)
                 .environmentObject(appearance)
+                .environmentObject(infrastructure)
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
                 .tint(AppTheme.accent)
@@ -20,7 +22,11 @@ struct ChatbotNativeApp: App {
                     handleDeepLink(url)
                 }
                 .onAppear {
+                    infrastructure.bind(session: session)
                     AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
+                }
+                .onChange(of: session.token) { _, _ in
+                    infrastructure.bind(session: session)
                 }
         }
     }

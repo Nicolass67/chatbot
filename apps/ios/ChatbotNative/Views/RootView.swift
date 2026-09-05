@@ -154,6 +154,7 @@ struct MainTabView: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var appearance: AppearanceStore
+    @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
 
     var body: some View {
@@ -184,6 +185,7 @@ struct MainTabView: View {
             SettingsHubView()
                 .environmentObject(session)
                 .environmentObject(appearance)
+                .environmentObject(infra)
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
                 // Bridge UIKit seulement — pas de preferredColorScheme ici (remount).

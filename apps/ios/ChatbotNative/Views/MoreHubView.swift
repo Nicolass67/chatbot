@@ -3,6 +3,7 @@ import SwiftUI
 /// Hub Réglages / Mémoire / À propos (ex-tab « Plus » — désormais sheet).
 struct SettingsHubView: View {
     @Environment(AppNavigation.self) private var nav
+    @EnvironmentObject private var infra: InfrastructureStore
     @State private var path = NavigationPath()
 
     var body: some View {
@@ -46,6 +47,38 @@ struct SettingsHubView: View {
                     }
 
                     Section {
+                        NavigationLink {
+                            SystemStatusView()
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: AppTheme.space4) {
+                                    Text("État du système")
+                                        .font(CNFont.body.weight(.medium))
+                                    if let subtitle = infra.statusSubtitle {
+                                        Text(subtitle)
+                                            .font(CNFont.caption)
+                                            .foregroundStyle(AppTheme.warning)
+                                    }
+                                }
+                            } icon: {
+                                Image(systemName: "gauge.with.dots.needle.33percent")
+                                    .foregroundStyle(AppTheme.accent)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .listRowBackground(AppTheme.surface)
+                        .accessibilityIdentifier(A11yID.Settings.systemStatus)
+                        .accessibilityHint("Ouvre l’état du PC et des services")
+                        .accessibilityLabel(
+                            infra.statusSubtitle == nil
+                                ? "État du système"
+                                : "État du système, un problème"
+                        )
+                    } header: {
+                        Text("Système")
+                    }
+
+                    Section {
                         LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
                         LabeledContent("Client", value: "ios · Mobile 3.0")
                     } header: {
@@ -57,6 +90,11 @@ struct SettingsHubView: View {
             }
             .navigationTitle("Réglages")
             .tabRootNavigationChrome()
+            .task {
+                if infra.status == nil {
+                    await infra.refresh()
+                }
+            }
             .onChange(of: nav.memoryDeepLink) { _, link in
                 guard link != nil else { return }
                 path.append(MemoryRoute.list)

@@ -6,6 +6,7 @@ import UIKit
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
@@ -181,6 +182,13 @@ struct ChatScreen: View {
                     .padding(.top, 8)
                     .padding(.bottom, 6)
                 }
+                if let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
+                    Task { await infra.repairService(id: serviceId) }
+                }) {
+                    banner
+                        .padding(.horizontal, AppTheme.space12)
+                        .padding(.bottom, AppTheme.space4)
+                }
                 composer
             }
         }
@@ -240,6 +248,12 @@ struct ChatScreen: View {
                 await loadSettings()
             }
             await refreshRuntimeStatus()
+            let needsInfraRefresh =
+                infra.status == nil
+                || infra.lastRefresh.map { Date().timeIntervalSince($0) > 60 } ?? true
+            if needsInfraRefresh {
+                await infra.refresh()
+            }
         }
         .task {
             while !Task.isCancelled {
