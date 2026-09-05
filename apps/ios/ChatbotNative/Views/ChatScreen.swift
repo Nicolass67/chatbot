@@ -2039,6 +2039,7 @@ struct ChatScreen: View {
             } else {
                 self.error = friendlyChatSendError(error)
                 canRetrySend = true
+                AppHaptics.error()
                 if case APIClientError.unauthorized = error {
                     await session.logout()
                 }
@@ -2265,6 +2266,7 @@ struct ChatScreen: View {
                 thinkingKind = .searching
             }
         case "agent_start":
+            let startedFresh = !agentActivity.visible
             thinkingKind = nil
             agentActivity.visible = true
             agentActivity.completed = false
@@ -2274,6 +2276,7 @@ struct ChatScreen: View {
             agentActivity.lockedThoughtSeconds = nil
             agentActivity.activitySummary = nil
             agentActivity.planSteps = []
+            if startedFresh { AppHaptics.light() }
         case "agent_plan":
             thinkingKind = nil
             agentActivity.visible = true
@@ -2524,6 +2527,7 @@ struct ChatScreen: View {
             if let code = obj["code"] as? String, code == "ABORTED" {
                 thinkingKind = nil
                 agentActivity = AgentActivityState()
+                AppHaptics.light()
                 return
             }
             let msg = obj["message"] as? String ?? "Erreur"
@@ -2531,6 +2535,7 @@ struct ChatScreen: View {
                 agentActivity.lastError = AgentToolLabels.friendlyError(msg)
             }
             error = AgentToolLabels.friendlyError(msg)
+            AppHaptics.error()
         case "done":
             thinkingKind = nil
             if agentActivity.visible || agentActivity.webPhase != .idle || !agentActivity.planSteps.isEmpty {

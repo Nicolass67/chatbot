@@ -103,6 +103,7 @@ enum A11yID {
         static let root = "settings.root"
         static let close = "settings.close"
         static let appearance = "settings.appearance"
+        static let haptics = "settings.haptics"
         static let shutdownPc = "settings.shutdownPc"
     }
 }

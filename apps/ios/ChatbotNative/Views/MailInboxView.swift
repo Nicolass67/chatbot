@@ -292,9 +292,18 @@ struct MailInboxView: View {
             .onChange(of: search) { _, q in
                 if q.isEmpty { scheduleLoad() }
             }
-            .onChange(of: unreadOnly) { _, _ in scheduleLoad() }
-            .onChange(of: category) { _, _ in scheduleLoad() }
-            .onChange(of: sort) { _, _ in scheduleLoad() }
+            .onChange(of: unreadOnly) { _, _ in
+                AppHaptics.selection()
+                scheduleLoad()
+            }
+            .onChange(of: category) { _, _ in
+                AppHaptics.selection()
+                scheduleLoad()
+            }
+            .onChange(of: sort) { _, _ in
+                AppHaptics.selection()
+                scheduleLoad()
+            }
             .refreshable { scheduleLoad() }
             .task {
                 restoreMailCacheIfNeeded()

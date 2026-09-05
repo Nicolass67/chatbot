@@ -138,7 +138,7 @@ struct ComposerCapsule: View {
         Group {
             if isSending {
                 Button {
-                    AppHaptics.warning()
+                    AppHaptics.light()
                     onStop()
                 } label: {
                     Image(systemName: "stop.fill")
@@ -153,7 +153,7 @@ struct ComposerCapsule: View {
                 Button {
                     fieldFocused = false
                     Keyboard.dismiss()
-                    AppHaptics.medium()
+                    AppHaptics.light()
                     onSend()
                 } label: {
                     Image(systemName: "arrow.up")
@@ -230,7 +230,7 @@ struct ChatToolsSheet: View {
                         get: { localMode },
                         set: { next in
                             localMode = next
-                            AppHaptics.light()
+                            AppHaptics.selection()
                             onModeChange(next)
                         }
                     )) {
@@ -244,7 +244,7 @@ struct ChatToolsSheet: View {
                         get: { localWeb },
                         set: { next in
                             localWeb = next
-                            AppHaptics.light()
+                            AppHaptics.selection()
                             onWebChange(next)
                         }
                     ))
@@ -266,7 +266,7 @@ struct ChatToolsSheet: View {
                     ForEach(models) { model in
                         Button {
                             localModel = model.id
-                            AppHaptics.light()
+                            AppHaptics.selection()
                             onModelChange(model.id)
                         } label: {
                             HStack {
@@ -292,7 +292,7 @@ struct ChatToolsSheet: View {
                         ForEach(reasoningModes) { mode in
                             Button {
                                 localReasoning = mode.id
-                                AppHaptics.light()
+                                AppHaptics.selection()
                                 onReasoningChange(mode.id)
                             } label: {
                                 HStack {

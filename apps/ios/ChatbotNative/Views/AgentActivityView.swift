@@ -235,7 +235,7 @@ struct AgentActivityView: View {
                 withAnimation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.85)) {
                     expanded.toggle()
                 }
-                AppHaptics.light()
+                AppHaptics.selection()
             } label: {
                 HStack {
                     Text("Étapes \(min(doneCount, max(totalCount, 1)))/\(max(totalCount, 1))")

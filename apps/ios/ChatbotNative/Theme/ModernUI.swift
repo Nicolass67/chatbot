@@ -1,25 +1,74 @@
 import SwiftUI
 import UIKit
 
+/// Retours haptiques centralisés — actions utilisateur significatives uniquement.
+/// Respecte le toggle app (`enabledKey`) et les Réglages système iOS (générateurs no-op si désactivés).
 enum AppHaptics {
-    static func light() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    static let enabledKey = "hapticsEnabled"
+
+    /// Défaut ON. `nil` dans UserDefaults = activé.
+    static var isEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: enabledKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: enabledKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
+    // Générateurs réutilisés (évite alloc à chaque tap). Toujours appeler depuis le main thread UI.
+    private static let lightImpact = UIImpactFeedbackGenerator(style: .light)
+    private static let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
+    private static let selectionGenerator = UISelectionFeedbackGenerator()
+    private static let notificationGenerator = UINotificationFeedbackGenerator()
+
+    private static func gated(_ fire: () -> Void) {
+        guard isEnabled else { return }
+        fire()
+    }
+
+    /// Changement de sélection (filtre, tri, toggle mode).
+    static func selection() {
+        gated {
+            selectionGenerator.selectionChanged()
+            selectionGenerator.prepare()
+        }
+    }
+
+    /// Action discrète (envoi, stop, ouverture assistant, navigation).
+    static func light() {
+        gated {
+            lightImpact.impactOccurred()
+            lightImpact.prepare()
+        }
+    }
+
+    /// Action un peu plus marquée (login, confirmation forte).
     static func medium() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        gated {
+            mediumImpact.impactOccurred()
+            mediumImpact.prepare()
+        }
     }
 
     static func warning() {
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        gated {
+            notificationGenerator.notificationOccurred(.warning)
+            notificationGenerator.prepare()
+        }
     }
 
     static func success() {
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        gated {
+            notificationGenerator.notificationOccurred(.success)
+            notificationGenerator.prepare()
+        }
     }
 
     static func error() {
-        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        gated {
+            notificationGenerator.notificationOccurred(.error)
+            notificationGenerator.prepare()
+        }
     }
 }
 

@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var fileRoots: [FileRootDTO] = []
     @State private var confirmShutdownPc = false
     @State private var shutdownBusy = false
+    @AppStorage(AppHaptics.enabledKey) private var hapticsEnabled = true
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -112,6 +113,23 @@ struct SettingsView: View {
                 .listRowBackground(AppTheme.surface)
 
                 ThemeColorSettingsSection()
+
+                Section {
+                    Toggle("Retours haptiques", isOn: $hapticsEnabled)
+                        .tint(AppTheme.accent)
+                        .accessibilityIdentifier(A11yID.Settings.haptics)
+                        .accessibilityHint("Vibrations discrètes sur les actions importantes")
+                        .onChange(of: hapticsEnabled) { _, enabled in
+                            AppHaptics.isEnabled = enabled
+                            if enabled { AppHaptics.selection() }
+                        }
+                    Text("Retour tactile subtil à l’envoi, aux succès et aux erreurs. Jamais à chaque scroll.")
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.muted)
+                } header: {
+                    Text("Haptics")
+                }
+                .listRowBackground(AppTheme.surface)
 
                 Section {
                     Toggle("Verrouillage Face ID", isOn: Binding(

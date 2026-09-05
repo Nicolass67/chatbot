@@ -876,6 +876,7 @@ struct FileFolderView: View {
                             Label("Liste", systemImage: "list.bullet").tag(FilesViewMode.list)
                             Label("Grille", systemImage: "square.grid.2x2").tag(FilesViewMode.grid)
                         }
+                        .onChange(of: viewMode) { _, _ in AppHaptics.selection() }
                         Divider()
                         Picker("Filtrer", selection: $typeFilter) {
                             ForEach(FilesTypeFilter.allCases) { f in Text(f.label).tag(f) }
