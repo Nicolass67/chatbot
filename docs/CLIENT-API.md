@@ -38,6 +38,7 @@ Erreurs publiques : `{ "error": string, "code": ApiErrorCode }` — voir `contra
 | GET | `/api/runtime/web-status` |
 | POST | `/api/runtime/model` |
 | GET | `/api/runtime/reasoning-capabilities` |
+| POST | `/api/host/shutdown` |
 | GET | `/api/lm-studio/models` |
 | GET, POST | `/api/memories` |
 | DELETE | `/api/memories/[id]` |

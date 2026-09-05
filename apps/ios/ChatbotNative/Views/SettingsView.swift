@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var oauthEmails: [String] = []
     @State private var oauthConfigured = false
     @State private var fileRoots: [FileRootDTO] = []
+    @State private var confirmShutdownPc = false
+    @State private var shutdownBusy = false
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -234,6 +236,29 @@ struct SettingsView: View {
                 .listRowBackground(AppTheme.surface)
 
                 Section {
+                    Button("Éteindre le PC", role: .destructive) {
+                        confirmShutdownPc = true
+                    }
+                    .disabled(shutdownBusy)
+                    .accessibilityIdentifier(A11yID.Settings.shutdownPc)
+                    .frame(minHeight: AppTheme.touchMin)
+                    Text("Arrête le PC serveur après confirmation. Délai ~60 s (annulation locale : shutdown /a).")
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.muted)
+                    if shutdownBusy {
+                        HStack(spacing: AppTheme.space8) {
+                            ProgressView().controlSize(.small)
+                            Text("Demande d'extinction…")
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.muted)
+                        }
+                    }
+                } header: {
+                    Text("Alimentation")
+                }
+                .listRowBackground(AppTheme.surface)
+
+                Section {
                     Text("Mobile 3.0 — Chat · Mail · Files. Réglages via compte.")
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.muted)
@@ -249,6 +274,16 @@ struct SettingsView: View {
         .tabRootNavigationChrome()
         .task { await load() }
         .refreshable { await load() }
+        .alert("Éteindre le PC ?", isPresented: $confirmShutdownPc) {
+            Button("Annuler", role: .cancel) {}
+            Button("Éteindre", role: .destructive) {
+                Task { await shutdownPc() }
+            }
+        } message: {
+            Text(
+                "Le PC serveur s’éteindra dans environ 60 secondes. Sur le PC, tu peux encore annuler avec « shutdown /a »."
+            )
+        }
     }
 
     private func load() async {
@@ -352,6 +387,20 @@ struct SettingsView: View {
             AppHaptics.warning()
             statusNote = "Gmail déconnecté"
         } catch {
+            statusNote = error.localizedDescription
+        }
+    }
+
+    private func shutdownPc() async {
+        guard !shutdownBusy else { return }
+        shutdownBusy = true
+        defer { shutdownBusy = false }
+        do {
+            let message = try await client.shutdownHostPc()
+            AppHaptics.warning()
+            statusNote = message
+        } catch {
+            AppHaptics.error()
             statusNote = error.localizedDescription
         }
     }

@@ -358,6 +358,27 @@ final class APIClient: @unchecked Sendable {
         try throwIfNeeded(resp, data)
     }
 
+    /// Planifie l'extinction du PC hôte (Windows, ~60 s).
+    @discardableResult
+    func shutdownHostPc() async throws -> String {
+        if UITestMode.isActive {
+            return "Extinction simulée (UITest)."
+        }
+        let req = authorizedRequest(path: "api/host/shutdown", method: "POST")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let message = obj["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let ok = obj["ok"] as? Bool, !ok {
+                let message = (obj["message"] as? String) ?? "Échec de l'extinction du PC"
+                throw APIClientError.http(500, message)
+            }
+        }
+        return "Extinction du PC planifiée."
+    }
+
     func listModels() async throws -> [ModelOptionDTO] {
         if UITestMode.isActive {
             return [ModelOptionDTO(id: "uitest-model", name: "UITest Model")]
