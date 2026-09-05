@@ -97,7 +97,10 @@ enum ConversationSessionStore {
             if temp.mailHandoff != nil { merged.mailHandoff = temp.mailHandoff }
             if temp.filesHandoff != nil { merged.filesHandoff = temp.filesHandoff }
             if !temp.filesFound.isEmpty { merged.filesFound = temp.filesFound }
-            if temp.agentRun != nil { merged.agentRun = temp.agentRun }
+            // Ne pas écraser un panel agent déjà finalisé sur un autre message.
+            if temp.agentRun != nil, merged.agentRun == nil || last.id == temporaryId {
+                merged.agentRun = temp.agentRun
+            }
             if !temp.savedMemories.isEmpty {
                 merged.savedMemories = Self.mergeSavedMemories(merged.savedMemories, temp.savedMemories)
             }

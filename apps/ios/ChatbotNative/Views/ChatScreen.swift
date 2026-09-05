@@ -2167,6 +2167,7 @@ struct ChatScreen: View {
         streamFilesHandoff = nil
         streamFilesFound = []
         agentActivity = AgentActivityState()
+        streamingAssistantId = nil
         isPinnedToBottom = true
         showScrollDown = false
         runtimeStatus = "BUSY"
@@ -2426,6 +2427,27 @@ struct ChatScreen: View {
     }
 
     /// Attache / met à jour le panel agent sur le message assistant courant (persistance conversation).
+    /// Ancre message dédiée à ce run agent — ne jamais réutiliser un ancien assistant.
+    @discardableResult
+    private func ensureAgentRunAnchorMessage(forceNew: Bool = false) -> String {
+        if let current = streamingAssistantId,
+           messages.contains(where: { $0.id == current }) {
+            let alreadyFinalized = chromeById[current]?.agentRun?.completed == true
+            // forceNew n'abandonne l'ancre que si elle porte déjà un panel terminé (autre tour).
+            if !forceNew || !alreadyFinalized {
+                return current
+            }
+        }
+        let id = "asst-agent-\(UUID().uuidString)"
+        streamingAssistantId = id
+        if !messages.contains(where: { $0.id == id }) {
+            messages.append(
+                MessageDTO(id: id, role: "assistant", content: "", createdAt: nil)
+            )
+        }
+        return id
+    }
+
     private func syncAgentChromeToStreamingMessage(completed: Bool = false) {
         guard agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.webPhase != .idle else { return }
         var snap = agentActivity.snapshot()
@@ -2437,9 +2459,8 @@ struct ChatScreen: View {
                 snap.thoughtSeconds = max(0, Int(Date().timeIntervalSince(start)))
             }
         }
-        let id = streamingAssistantId
-            ?? messages.last(where: { $0.role == "assistant" })?.id
-        guard let id else { return }
+        // Jamais de fallback sur le dernier assistant : ça écrasait le panel du tour précédent.
+        let id = ensureAgentRunAnchorMessage()
         var chrome = chromeById[id] ?? MessageChromeMeta()
         chrome.agentRun = snap
         chromeById[id] = chrome
@@ -2611,6 +2632,8 @@ struct ChatScreen: View {
             agentActivity.lockedThoughtSeconds = nil
             agentActivity.activitySummary = nil
             agentActivity.planSteps = []
+            // Force une nouvelle ancre : ne pas réécrire le panel d’un message déjà finalisé.
+            _ = ensureAgentRunAnchorMessage(forceNew: true)
             if startedFresh { AppHaptics.light() }
         case "agent_plan":
             thinkingKind = nil
