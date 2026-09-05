@@ -206,9 +206,17 @@ public enum MarkdownBlockParser {
 
 struct MarkdownMessageView: View {
     let markdown: String
+    /// Pendant le stream SSE : reparse throttlé pour garder titres/gras/tableaux lisibles
+    /// sans payer un parse complet à chaque token.
+    var isStreaming: Bool = false
 
-    private var blocks: [MarkdownBlock] {
-        MarkdownBlockParser.parse(markdown)
+    @State private var blocks: [MarkdownBlock]
+    @State private var parseTask: Task<Void, Never>?
+
+    init(markdown: String, isStreaming: Bool = false) {
+        self.markdown = markdown
+        self.isStreaming = isStreaming
+        _blocks = State(initialValue: MarkdownBlockParser.parse(markdown))
     }
 
     var body: some View {
@@ -218,6 +226,38 @@ struct MarkdownMessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            // Resync si le parent a changé le markdown avant l’apparition.
+            if blocks.isEmpty, !markdown.isEmpty {
+                scheduleParse(immediate: true)
+            }
+        }
+        .onChange(of: markdown) { _, _ in
+            scheduleParse(immediate: !isStreaming)
+        }
+        .onChange(of: isStreaming) { _, streaming in
+            if !streaming {
+                scheduleParse(immediate: true)
+            }
+        }
+        .onDisappear {
+            parseTask?.cancel()
+            parseTask = nil
+        }
+    }
+
+    private func scheduleParse(immediate: Bool) {
+        parseTask?.cancel()
+        let source = markdown
+        if immediate {
+            blocks = MarkdownBlockParser.parse(source)
+            return
+        }
+        parseTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            blocks = MarkdownBlockParser.parse(source)
+        }
     }
 
     @ViewBuilder
@@ -279,7 +319,7 @@ struct MarkdownMessageView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top, spacing: 0) {
                         ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
-                            Text(h)
+                            Text(inline(h))
                                 .font(CNFont.caption.weight(.semibold))
                                 .foregroundStyle(AppTheme.foreground)
                                 .padding(AppTheme.space8)
@@ -289,8 +329,8 @@ struct MarkdownMessageView: View {
                     }
                     ForEach(Array(rows.enumerated()), id: \.offset) { rIdx, row in
                         HStack(alignment: .top, spacing: 0) {
-                            ForEach(Array(row.enumerated()), id: \.offset) { cIdx, cell in
-                                Text(cell)
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                                Text(inline(cell))
                                     .font(CNFont.caption)
                                     .foregroundStyle(AppTheme.muted)
                                     .padding(AppTheme.space8)

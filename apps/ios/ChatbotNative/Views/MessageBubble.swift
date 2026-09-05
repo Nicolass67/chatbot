@@ -169,16 +169,10 @@ struct MessageBubble: View {
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
-                    if isStreaming {
-                        Text(message.content)
-                            .font(.body)
-                            .foregroundStyle(AppTheme.foreground)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        MarkdownMessageView(markdown: message.content)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // Toujours rendre le Markdown (titres, gras, listes, tableaux).
+                    // Pendant le stream, MarkdownMessageView throttle le reparse (~80ms).
+                    MarkdownMessageView(markdown: message.content, isStreaming: isStreaming)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
