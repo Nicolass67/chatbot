@@ -20,8 +20,8 @@ enum InfrastructureOverallState: String, Codable, Hashable, Sendable {
 
     var isDegraded: Bool {
         switch self {
-        case .healthy: return false
-        case .degraded, .recovering, .offline, .error, .unknown: return true
+        case .healthy, .unknown: return false
+        case .degraded, .recovering, .offline, .error: return true
         }
     }
 
@@ -134,10 +134,11 @@ enum ServiceAvailability: String, Hashable, Sendable {
         }
     }
 
+    /// Problème confirmé (pas « inconnu » ni encore en cours de check).
     var needsAttention: Bool {
         switch self {
-        case .available: return false
-        case .degraded, .unavailable, .unknown: return true
+        case .available, .unknown: return false
+        case .degraded, .unavailable: return true
         }
     }
 }
@@ -203,7 +204,11 @@ struct ServiceStatusDTO: Identifiable, Hashable, Sendable {
     var availability: ServiceAvailability {
         if crashLoop { return .unavailable }
         if process == .stopped || health == .unhealthy { return .unavailable }
-        if process == .starting || readiness == .loading || readiness == .notReady {
+        // Démarrage / healthcheck : pas une panne utilisateur.
+        if process == .starting || readiness == .loading {
+            return .unknown
+        }
+        if readiness == .notReady {
             return .degraded
         }
         if health == .healthy && (readiness == .ready || readiness == .unknown) {
@@ -211,6 +216,11 @@ struct ServiceStatusDTO: Identifiable, Hashable, Sendable {
         }
         if health == .unknown && process == .unknown { return .unknown }
         return .degraded
+    }
+
+    /// Service encore en warm-up / healthcheck — ne pas afficher de bannière.
+    var isWarmingUp: Bool {
+        process == .starting || readiness == .loading
     }
 }
 

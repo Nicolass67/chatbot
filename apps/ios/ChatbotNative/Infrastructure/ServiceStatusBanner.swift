@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Bannière compacte au-dessus du composer — uniquement si un service contextuel est dégradé.
+/// Bannière compacte — uniquement si un service contextuel a un problème confirmé.
 struct ServiceStatusBanner: View {
     let title: String
     let detail: String?
@@ -94,13 +94,17 @@ struct ServiceStatusBanner: View {
 }
 
 extension ServiceStatusBanner {
-    /// Construit une bannière Chat si assistant ou recherche web sont indisponibles.
+    /// Chat : assistant / recherche — seulement après confirmation (pas pendant healthcheck).
     static func chatContext(
         infra: InfrastructureStore,
         onRepair: @escaping (String) -> Void
     ) -> ServiceStatusBanner? {
-        let assistantDown = infra.assistantAvailability.needsAttention
-        let searchDown = infra.webSearchAvailability.needsAttention
+        // Force SwiftUI à recalculer après la fenêtre de grâce.
+        let _ = infra.alertEpoch
+        guard infra.canSurfaceServiceAlerts else { return nil }
+
+        let assistantDown = infra.shouldSurfaceBanner(forServiceId: InfrastructureServiceID.assistant)
+        let searchDown = infra.shouldSurfaceBanner(forServiceId: InfrastructureServiceID.webSearch)
         guard assistantDown || searchDown else { return nil }
 
         if assistantDown && searchDown {
@@ -130,14 +134,17 @@ extension ServiceStatusBanner {
         )
     }
 
-    /// Mail / Files : uniquement si le backend Chatbot (ou le PC) est hors service.
+    /// Mail / Files : PC hors ligne confirmé, ou backend Chatbot confirmé down.
     static func backendContext(
         infra: InfrastructureStore,
         surface: String,
         onRepair: @escaping (String) -> Void,
         onWake: (() -> Void)? = nil
     ) -> ServiceStatusBanner? {
-        if !infra.isPcOnline, infra.status != nil {
+        let _ = infra.alertEpoch
+        guard infra.canSurfaceServiceAlerts else { return nil }
+
+        if infra.isPcConfirmedOffline {
             return ServiceStatusBanner(
                 title: "PC hors ligne",
                 detail: "\(surface) nécessite que le PC soit allumé.",
@@ -146,7 +153,7 @@ extension ServiceStatusBanner {
                 onRepair: onWake
             )
         }
-        guard infra.chatbotAvailability.needsAttention else { return nil }
+        guard infra.shouldSurfaceBanner(forServiceId: InfrastructureServiceID.chatbot) else { return nil }
         return ServiceStatusBanner(
             title: "Serveur indisponible",
             detail: "\(surface) ne peut pas joindre Chatbot.",

@@ -36,6 +36,8 @@ struct MailInboxView: View {
     @State private var search = ""
     @State private var oauthEmails: [String] = []
     @State private var oauthConfigured = true
+    /// Évite le flash « Connecter Gmail » avant la fin du check OAuth.
+    @State private var oauthCheckCompleted = false
     @State private var trashTarget: MailMessageSummary?
     @State private var showAssistant = false
     @State private var assistantContext: MailAssistantContext = .global
@@ -405,7 +407,7 @@ struct MailInboxView: View {
 
     private var mailChrome: some View {
         VStack(spacing: 10) {
-            if oauthEmails.isEmpty {
+            if oauthCheckCompleted && oauthEmails.isEmpty {
                 HStack(alignment: .top, spacing: AppTheme.space12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(AppTheme.muted)
@@ -591,6 +593,7 @@ struct MailInboxView: View {
     }
 
     private func loadOAuth() async {
+        defer { oauthCheckCompleted = true }
         if let res = try? await client.oauthAccounts() {
             oauthConfigured = res.configured
             oauthEmails = res.emails

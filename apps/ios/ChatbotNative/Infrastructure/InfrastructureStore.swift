@@ -10,10 +10,19 @@ final class InfrastructureStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastRefresh: Date?
     @Published private(set) var lastRepairMessage: String?
+    /// Incrémenté après la fenêtre de grâce — force le refresh des bannières.
+    @Published private(set) var alertEpoch: UInt64 = 0
 
     private weak var session: AppSessionStore?
     private var refreshGeneration: UInt64 = 0
     private var lastAlertFingerprint: String?
+    /// Première détection d’un problème par service (debounce UX).
+    private var problemFirstSeenAt: [String: Date] = [:]
+    private var graceTask: Task<Void, Never>?
+
+    /// Grace courte pour éviter le flash « Réparer » pendant le healthcheck (~2–3 s).
+    private let problemGraceInterval: TimeInterval = 2.4
+    private let outageGraceInterval: TimeInterval = 1.2
 
     func bind(session: AppSessionStore) {
         self.session = session
@@ -55,6 +64,16 @@ final class InfrastructureStore: ObservableObject {
         return "Un problème"
     }
 
+    /// Snapshot reçu — les problèmes ne s’affichent qu’après grâce (pas pendant le 1er check).
+    var canSurfaceServiceAlerts: Bool {
+        status != nil
+    }
+
+    /// PC explicitement éteint (pas « unknown » pendant le check).
+    var isPcConfirmedOffline: Bool {
+        status?.powerState == .offline
+    }
+
     // MARK: - Actions
 
     func refresh() async {
@@ -65,6 +84,7 @@ final class InfrastructureStore: ObservableObject {
         defer {
             if generation == refreshGeneration {
                 loading = false
+                reconcileProblemGraceWindow()
             }
         }
         do {
@@ -81,6 +101,82 @@ final class InfrastructureStore: ObservableObject {
         } catch {
             guard generation == refreshGeneration else { return }
             publishAlert(error.localizedDescription)
+        }
+    }
+
+    /// Bannière utilisateur : uniquement après confirmation (pas pendant loading/unknown/warm-up).
+    func shouldSurfaceBanner(forServiceId id: String) -> Bool {
+        guard canSurfaceServiceAlerts else { return false }
+        guard let service = status?.service(id: id) else { return false }
+        if service.isWarmingUp {
+            problemFirstSeenAt.removeValue(forKey: id)
+            return false
+        }
+        let availability = service.availability
+        switch availability {
+        case .available, .unknown:
+            problemFirstSeenAt.removeValue(forKey: id)
+            return false
+        case .unavailable:
+            return isProblemConfirmed(id: id, grace: outageGraceInterval)
+        case .degraded:
+            return isProblemConfirmed(id: id, grace: problemGraceInterval)
+        }
+    }
+
+    private func isProblemConfirmed(id: String, grace: TimeInterval) -> Bool {
+        let now = Date()
+        if problemFirstSeenAt[id] == nil {
+            problemFirstSeenAt[id] = now
+        }
+        guard let first = problemFirstSeenAt[id] else { return false }
+        return now.timeIntervalSince(first) >= grace
+    }
+
+    private func reconcileProblemGraceWindow() {
+        guard let status else {
+            problemFirstSeenAt.removeAll()
+            graceTask?.cancel()
+            graceTask = nil
+            return
+        }
+        let watched = [
+            InfrastructureServiceID.assistant,
+            InfrastructureServiceID.webSearch,
+            InfrastructureServiceID.chatbot,
+        ]
+        var pendingDelay: TimeInterval?
+        for id in watched {
+            guard let service = status.service(id: id) else {
+                problemFirstSeenAt.removeValue(forKey: id)
+                continue
+            }
+            if service.isWarmingUp || !service.availability.needsAttention {
+                problemFirstSeenAt.removeValue(forKey: id)
+                continue
+            }
+            let grace = service.availability == .unavailable
+                ? outageGraceInterval
+                : problemGraceInterval
+            if problemFirstSeenAt[id] == nil {
+                problemFirstSeenAt[id] = Date()
+            }
+            if let first = problemFirstSeenAt[id] {
+                let remaining = grace - Date().timeIntervalSince(first)
+                if remaining > 0 {
+                    pendingDelay = min(pendingDelay ?? remaining, remaining)
+                }
+            }
+        }
+        graceTask?.cancel()
+        guard let pendingDelay, pendingDelay > 0 else { return }
+        graceTask = Task { [weak self] in
+            let ns = UInt64(pendingDelay * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns + 50_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.alertEpoch &+= 1
+            }
         }
     }
 

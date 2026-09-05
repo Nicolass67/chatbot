@@ -26,19 +26,32 @@ struct ChatbotNativeApp: App {
                     infrastructure.bind(session: session)
                     AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
                     appearance.republishThemeToWidgets()
-                    Task { await WidgetMailSync.syncIfNeeded(session: session, force: true) }
+                    Task {
+                        await WidgetMailSync.syncIfNeeded(session: session, force: true)
+                        if session.isAuthenticated {
+                            await infrastructure.refresh()
+                        }
+                    }
                 }
                 .onChange(of: session.token) { _, token in
                     infrastructure.bind(session: session)
                     if token != nil {
                         appearance.republishThemeToWidgets()
-                        Task { await WidgetMailSync.syncIfNeeded(session: session, force: true) }
+                        Task {
+                            await WidgetMailSync.syncIfNeeded(session: session, force: true)
+                            await infrastructure.refresh()
+                        }
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     appearance.republishThemeToWidgets()
-                    Task { await WidgetMailSync.syncIfNeeded(session: session) }
+                    Task {
+                        await WidgetMailSync.syncIfNeeded(session: session)
+                        if session.isAuthenticated {
+                            await infrastructure.refresh()
+                        }
+                    }
                 }
         }
     }
