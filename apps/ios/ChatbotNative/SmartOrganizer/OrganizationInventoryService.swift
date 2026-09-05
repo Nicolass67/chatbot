@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 enum OrganizationInventoryService {
     static let maxItems = 2500
     static let maxDepth = 8
@@ -9,7 +10,7 @@ enum OrganizationInventoryService {
         client: APIClient,
         scope: OrganizationScope,
         cancelRequested: () -> Bool = { false },
-        onProgress: (@Sendable (String, Double) -> Void)? = nil
+        onProgress: ((String, Double) -> Void)? = nil
     ) async throws -> OrganizationInventory {
         let rootPath = OrganizationPathUtils.normalize(scope.relativePath)
         let rootDepth = OrganizationPathUtils.depth(of: rootPath)
@@ -20,7 +21,9 @@ enum OrganizationInventoryService {
         onProgress?("Scan du dossier…", 0.02)
 
         while !queue.isEmpty {
-            if cancelRequested() { throw OrganizationEngineError.cancelled }
+            if cancelRequested() || Task.isCancelled {
+                throw OrganizationEngineError.cancelled
+            }
             let current = queue.removeFirst()
             let norm = OrganizationPathUtils.normalize(current.path)
             if visited.contains(norm) { continue }
@@ -30,7 +33,9 @@ enum OrganizationInventoryService {
 
             var cursor: String? = nil
             repeat {
-                if cancelRequested() { throw OrganizationEngineError.cancelled }
+                if cancelRequested() || Task.isCancelled {
+                    throw OrganizationEngineError.cancelled
+                }
                 let page = try await client.listFiles(rootId: scope.rootId, path: norm, cursor: cursor)
                 for entry in page.entries {
                     if collected.count >= maxItems { break }

@@ -66,7 +66,7 @@ final class SmartFileOrganizerEngine {
     }
 
     func approveAndExecute(client: APIClient) async {
-        guard var plan, phase == .readyForApproval || phase == .editingProposal else { return }
+        guard let plan, phase == .readyForApproval || phase == .editingProposal else { return }
         cancelRequested = false
         phase = .executing
         progressText = "Exécution…"
@@ -263,10 +263,8 @@ final class SmartFileOrganizerEngine {
                 scope: scope,
                 cancelRequested: { [weak self] in self?.cancelRequested == true },
                 onProgress: { [weak self] text, value in
-                    Task { @MainActor in
-                        self?.progressText = text
-                        self?.progressValue = value * 0.35
-                    }
+                    self?.progressText = text
+                    self?.progressValue = value * 0.35
                 }
             )
             if cancelRequested { throw OrganizationEngineError.cancelled }
