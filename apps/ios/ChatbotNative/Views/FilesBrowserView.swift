@@ -449,6 +449,15 @@ struct FilesBrowserView: View {
         }
     }
 
+    /// Dossier parent d’un `relativePath` fichier/dossier ("" = racine).
+    private static func parentFolderPath(of relativePath: String) -> String {
+        let normalized = relativePath
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let slash = normalized.lastIndex(of: "/") else { return "" }
+        return String(normalized[..<slash])
+    }
+
     private func navigateToFolder(rootId: String?, folderPath: String) {
         let resolvedRootId = rootId ?? roots.first?.id
         guard let resolvedRootId,
@@ -510,6 +519,10 @@ struct FilesBrowserView: View {
                                 folderPath: folderPath
                             )
                         )
+                    },
+                    onRevealDestination: { entry in
+                        let parent = Self.parentFolderPath(of: entry.relativePath)
+                        navigateToFolder(rootId: root.id, folderPath: parent)
                     },
                     onReindex: {
                         Task { await reindexRoot(root) }
@@ -769,6 +782,7 @@ struct FileFolderView: View {
     @Bindable var selection: FilesSelectionStore
     var onOpenFolder: (FileEntryDTO) -> Void
     var onOpenFile: (FileEntryDTO) -> Void
+    var onRevealDestination: (FileEntryDTO) -> Void = { _ in }
     var onReindex: (() -> Void)? = nil
     var isReindexing: Bool = false
 
@@ -782,6 +796,7 @@ struct FileFolderView: View {
     @AppStorage("files.sortMode") private var sortModeRaw: String = FilesSortMode.name.rawValue
     @State private var typeFilter: FilesTypeFilter = .all
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var downloadingFileId: String?
 
     private var sortMode: FilesSortMode {
         FilesSortMode(rawValue: sortModeRaw) ?? .name
@@ -1218,22 +1233,31 @@ struct FileFolderView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 12) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], spacing: 10) {
                 ForEach(displayedEntries) { entry in
                     Button {
                         handleEntryTap(entry)
                     } label: {
                         ZStack(alignment: .topTrailing) {
-                            VStack(spacing: 8) {
-                                Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                                    .font(.system(size: 28))
-                                    .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
-                                    .frame(height: 48)
+                            VStack(spacing: 6) {
+                                FilesEntryThumbnail(
+                                    entry: entry,
+                                    baseURL: session.baseURL,
+                                    token: session.token
+                                )
+                                .frame(height: 72)
+                                .frame(maxWidth: .infinity)
+                                .background(AppTheme.surfaceElevated.opacity(0.55))
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+
                                 Text(entry.name ?? entry.relativePath)
                                     .font(.caption2.weight(.medium))
                                     .foregroundStyle(AppTheme.foreground)
                                     .lineLimit(2)
+                                    .truncationMode(.middle)
                                     .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity)
+
                                 if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
                                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
                                         .font(.caption2)
@@ -1241,34 +1265,36 @@ struct FileFolderView: View {
                                         .lineLimit(1)
                                 }
                             }
-                            .padding(10)
+                            .padding(8)
                             .frame(maxWidth: .infinity)
-                            .contentShape(Rectangle())
                             .background(
                                 selection.contains(entry.fileId ?? "")
-                                    ? AppTheme.accent.opacity(0.15)
-                                    : AppTheme.surface
+                                    ? AppTheme.accent.opacity(0.14)
+                                    : AppTheme.surface.opacity(0.85)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
                                     .stroke(
                                         selection.contains(entry.fileId ?? "")
-                                            ? AppTheme.accent.opacity(0.55)
-                                            : Color.clear,
-                                        lineWidth: 1.5
+                                            ? AppTheme.accent.opacity(0.45)
+                                            : AppTheme.borderSubtle.opacity(0.6),
+                                        lineWidth: 0.5
                                     )
                             )
+
                             if selection.isSelecting, !isFolder(entry) {
                                 Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(
                                         selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
                                     )
-                                    .padding(8)
+                                    .padding(6)
                             }
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .contextMenu { entryContextMenu(entry) }
                     .onAppear {
                         if entry.id == displayedEntries.last?.id {
@@ -1286,15 +1312,21 @@ struct FileFolderView: View {
         ScrollView {
             LazyVStack(spacing: 10) {
                 ForEach(displayedEntries) { entry in
-                    Button {
-                        handleEntryTap(entry)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button {
+                            handleEntryTap(entry)
+                        } label: {
                             HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
-                                    .font(.title2)
-                                    .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
-                                    .frame(width: 36, height: 36)
+                                FilesEntryThumbnail(
+                                    entry: entry,
+                                    baseURL: session.baseURL,
+                                    token: session.token,
+                                    iconSize: 28
+                                )
+                                .frame(width: 52, height: 52)
+                                .background(AppTheme.surfaceElevated.opacity(0.55))
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(entry.name ?? entry.relativePath)
                                         .font(.body.weight(.semibold))
@@ -1304,10 +1336,12 @@ struct FileFolderView: View {
                                     Text(detailTypeLabel(for: entry))
                                         .font(.caption.weight(.medium))
                                         .foregroundStyle(AppTheme.accent)
-                                    Text(detailMetaLine(for: entry))
-                                        .font(.caption)
-                                        .foregroundStyle(AppTheme.mutedForeground)
-                                        .lineLimit(2)
+                                    ForEach(detailMetaLines(for: entry), id: \.self) { line in
+                                        Text(line)
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.mutedForeground)
+                                            .lineLimit(1)
+                                    }
                                 }
                                 Spacer(minLength: 0)
                                 if selection.isSelecting, !isFolder(entry) {
@@ -1317,35 +1351,66 @@ struct FileFolderView: View {
                                         )
                                 }
                             }
-                            if !selection.isSelecting {
-                                HStack(spacing: 10) {
-                                    Label(isFolder(entry) ? "Ouvrir" : "Aperçu", systemImage: isFolder(entry) ? "folder" : "eye")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if !selection.isSelecting {
+                            HStack(spacing: 8) {
+                                Button {
+                                    handleEntryTap(entry)
+                                    AppHaptics.light()
+                                } label: {
+                                    Text("Ouvrir")
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(AppTheme.accent)
-                                    if !isFolder(entry) {
-                                        Label("Télécharger", systemImage: "arrow.down.circle")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(AppTheme.mutedForeground)
-                                    }
-                                    Spacer(minLength: 0)
                                 }
+                                .buttonStyle(.borderedProminent)
+                                .tint(AppTheme.accent)
+                                .controlSize(.small)
+
+                                if !isFolder(entry), entry.fileId != nil {
+                                    Button {
+                                        Task { await downloadEntry(entry) }
+                                    } label: {
+                                        if downloadingFileId == entry.fileId {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Text("Télécharger")
+                                                .font(.caption.weight(.semibold))
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(downloadingFileId != nil)
+                                }
+
+                                Button {
+                                    onRevealDestination(entry)
+                                    AppHaptics.light()
+                                } label: {
+                                    Text("Aller à la destination")
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
                         }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            selection.contains(entry.fileId ?? "")
-                                ? AppTheme.accent.opacity(0.12)
-                                : AppTheme.surface.opacity(0.9)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
-                        )
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        selection.contains(entry.fileId ?? "")
+                            ? AppTheme.accent.opacity(0.12)
+                            : AppTheme.surface.opacity(0.9)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                    )
+                    .contentShape(Rectangle())
                     .contextMenu { entryContextMenu(entry) }
                     .onAppear {
                         if entry.id == displayedEntries.last?.id {
@@ -1366,7 +1431,7 @@ struct FileFolderView: View {
         if isFolder(entry) { return "Dossier" }
         let name = (entry.name ?? "").lowercased()
         if name.hasSuffix(".pdf") { return "PDF" }
-        if [".png", ".jpg", ".jpeg", ".webp", ".gif"].contains(where: { name.hasSuffix($0) }) { return "Image" }
+        if [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"].contains(where: { name.hasSuffix($0) }) { return "Image" }
         if [".txt", ".md"].contains(where: { name.hasSuffix($0) }) { return "Texte" }
         if let ext = name.split(separator: ".").last, ext.count <= 5 {
             return String(ext).uppercased()
@@ -1374,31 +1439,44 @@ struct FileFolderView: View {
         return "Fichier"
     }
 
-    private func detailMetaLine(for entry: FileEntryDTO) -> String {
-        var parts: [String] = []
+    private func detailMetaLines(for entry: FileEntryDTO) -> [String] {
+        var lines: [String] = []
         if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-        }
-        if let when = formatMtime(entry.mtimeMs) {
-            parts.append(when)
+            lines.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
         }
         let folder = path.isEmpty ? (root.label ?? "Documents") : path
-        if !folder.isEmpty { parts.append(folder) }
-        if entry.indexed == true { parts.append("Indexé") }
-        return parts.isEmpty ? (isFolder(entry) ? "Dossier" : "Fichier") : parts.joined(separator: " · ")
+        if !folder.isEmpty { lines.append(folder) }
+        if let when = formatMtime(entry.mtimeMs, style: .details) {
+            lines.append(when)
+        }
+        if entry.indexed == true { lines.append("Indexé") }
+        return lines
     }
 
-    private func formatMtime(_ ms: Int?) -> String? {
+    private enum MtimeStyle { case list, details }
+
+    private func formatMtime(_ ms: Int?, style: MtimeStyle = .list) -> String? {
         guard let ms, ms > 0 else { return nil }
         let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
         let cal = Calendar.current
-        if cal.isDateInToday(date) { return "Aujourd’hui" }
-        if cal.isDateInYesterday(date) { return "Hier" }
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "fr_FR")
-        fmt.dateStyle = .medium
-        fmt.timeStyle = .none
-        return fmt.string(from: date)
+        switch style {
+        case .list:
+            if cal.isDateInToday(date) { return "Modifié aujourd’hui" }
+            if cal.isDateInYesterday(date) { return "Modifié hier" }
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "fr_FR")
+            fmt.dateStyle = .medium
+            fmt.timeStyle = .none
+            return "Modifié le " + fmt.string(from: date)
+        case .details:
+            if cal.isDateInToday(date) { return "Modifié aujourd’hui" }
+            if cal.isDateInYesterday(date) { return "Modifié hier" }
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "fr_FR")
+            fmt.dateStyle = .long
+            fmt.timeStyle = .none
+            return "Modifié le " + fmt.string(from: date)
+        }
     }
 
     private func secondaryListLine(for entry: FileEntryDTO) -> String {
@@ -1418,6 +1496,27 @@ struct FileFolderView: View {
         return parts.joined(separator: " · ")
     }
 
+    private func downloadEntry(_ entry: FileEntryDTO) async {
+        guard let fileId = entry.fileId, !isFolder(entry) else { return }
+        downloadingFileId = fileId
+        defer { downloadingFileId = nil }
+        do {
+            let (data, resolvedName, _) = try await client.downloadFileBytes(fileId: fileId)
+            let name = resolvedName.isEmpty ? (entry.name ?? "fichier") : resolvedName
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("files-dl", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent(name)
+            try data.write(to: dest, options: .atomic)
+            await MainActor.run {
+                NativeShare.present(url: dest, title: name)
+                AppHaptics.success()
+            }
+        } catch {
+            openError = error.localizedDescription
+            AppHaptics.error()
+        }
+    }
+
     private func fileRow(_ entry: FileEntryDTO) -> some View {
         HStack(spacing: 12) {
             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
@@ -1427,12 +1526,13 @@ struct FileFolderView: View {
                 Text(entry.name ?? entry.relativePath)
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 Text(secondaryListLine(for: entry))
                     .font(.caption2)
                     .foregroundStyle(AppTheme.mutedForeground)
                     .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 0)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.mutedForeground)
@@ -1444,7 +1544,9 @@ struct FileFolderView: View {
     private func iconName(for name: String) -> String {
         let n = name.lowercased()
         if n.hasSuffix(".pdf") { return "doc.richtext" }
-        if n.hasSuffix(".png") || n.hasSuffix(".jpg") || n.hasSuffix(".jpeg") || n.hasSuffix(".webp") { return "photo" }
+        if n.hasSuffix(".png") || n.hasSuffix(".jpg") || n.hasSuffix(".jpeg") || n.hasSuffix(".webp") || n.hasSuffix(".heic") || n.hasSuffix(".gif") {
+            return "photo"
+        }
         if n.hasSuffix(".md") || n.hasSuffix(".txt") { return "doc.plaintext" }
         if n.hasSuffix(".json") || n.hasSuffix(".csv") { return "tablecells" }
         return "doc.fill"
@@ -1676,6 +1778,88 @@ struct FileFolderView: View {
             await load(reset: true)
         } catch {
             openError = error.localizedDescription
+        }
+    }
+}
+
+}
+
+/// Miniature lazy pour la grille / détails Files (cache ImagePipeline, pas de gros fichiers).
+private struct FilesEntryThumbnail: View {
+    let entry: FileEntryDTO
+    let baseURL: URL
+    let token: String?
+    var iconSize: CGFloat = 30
+
+    @State private var image: UIImage?
+    @State private var loading = false
+
+    private var isFolder: Bool { entry.isDirectory == true }
+
+    private var isVisual: Bool {
+        guard !isFolder else { return false }
+        let n = (entry.name ?? entry.relativePath).lowercased()
+        return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"].contains { n.hasSuffix($0) }
+    }
+
+    private var cacheKey: String {
+        "files-thumb-\(entry.fileId ?? entry.relativePath)"
+    }
+
+    private var systemIcon: String {
+        if isFolder { return "folder.fill" }
+        let n = (entry.name ?? "").lowercased()
+        if n.hasSuffix(".pdf") { return "doc.richtext" }
+        if isVisual { return "photo" }
+        if n.hasSuffix(".md") || n.hasSuffix(".txt") { return "doc.plaintext" }
+        if n.hasSuffix(".json") || n.hasSuffix(".csv") { return "tablecells" }
+        return "doc.fill"
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: systemIcon)
+                    .font(.system(size: iconSize, weight: .medium))
+                    .foregroundStyle(isFolder ? AppTheme.accent : AppTheme.muted)
+                if loading {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .padding(4)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .task(id: entry.fileId ?? entry.relativePath) {
+            await loadIfNeeded()
+        }
+    }
+
+    private func loadIfNeeded() async {
+        guard isVisual, let fileId = entry.fileId, !fileId.isEmpty else { return }
+        if let size = entry.sizeBytes, size > 12_000_000 { return }
+        if let cached = await ImagePipeline.cached(cacheKey) {
+            image = cached
+            return
+        }
+        loading = true
+        defer { loading = false }
+        do {
+            let client = APIClient(baseURL: baseURL, token: token)
+            let dto = try await client.fetchFileContent(fileId: fileId)
+            guard dto.kind == "image", let data = dto.binary,
+                  let thumb = ImagePipeline.thumbnail(data: data, maxPixelSize: 220)
+            else { return }
+            await ImagePipeline.store(thumb, key: cacheKey)
+            image = thumb
+        } catch {
+            // Placeholder icône déjà affiché.
         }
     }
 }
