@@ -1578,6 +1578,8 @@ struct FileFolderView: View {
         do {
             let list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
             entries = Self.sorted(list.entries, by: sortMode)
+            let fileCount = entries.filter { !isFolder($0) }.count
+            WidgetSharedStore.publishFilesRecentCount(fileCount)
             nextCursor = list.nextCursor
             error = nil
             TabMemoryCache.saveFolder(

@@ -217,6 +217,8 @@ final class AppearanceStore: ObservableObject {
             secondaryId: secondaryId,
             backgroundId: backgroundId
         )
+        let primary = ThemePaletteCatalog.primary(id: primaryId)
+        WidgetSharedStore.publishAccent(light: primary.light, dark: primary.dark)
         if bumpRevision {
             themeRevision &+= 1
         }

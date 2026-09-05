@@ -15,6 +15,8 @@ enum WidgetSharedStore {
         static let updatedAt = "widget.updatedAt"
         static let mailUnread = "widget.mailUnread"
         static let filesRecentCount = "widget.filesRecentCount"
+        static let accentLight = "widget.accentLight"
+        static let accentDark = "widget.accentDark"
     }
 
     static func publishAssistant(status: String, modelName: String?) {
@@ -31,7 +33,7 @@ enum WidgetSharedStore {
             defaults.set(nextModel, forKey: Key.modelName)
         }
         defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
-        WidgetCenter.shared.reloadAllTimelines()
+        WidgetCenter.shared.reloadTimelines(ofKind: "AssistantStatusWidget")
     }
 
     static func publishMailUnread(_ count: Int) {
@@ -43,7 +45,7 @@ enum WidgetSharedStore {
         }
         defaults.set(next, forKey: Key.mailUnread)
         defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
-        WidgetCenter.shared.reloadAllTimelines()
+        WidgetCenter.shared.reloadTimelines(ofKind: "MailUnreadWidget")
     }
 
     static func publishFilesRecentCount(_ count: Int) {
@@ -54,6 +56,22 @@ enum WidgetSharedStore {
             return
         }
         defaults.set(next, forKey: Key.filesRecentCount)
+        defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
+        WidgetCenter.shared.reloadTimelines(ofKind: "FilesRecentWidget")
+    }
+
+    /// Accent thème (hex RRGGBB) — jamais de secrets.
+    static func publishAccent(light: UInt32, dark: UInt32) {
+        guard let defaults else { return }
+        let nextL = Int(light & 0x00FF_FFFF)
+        let nextD = Int(dark & 0x00FF_FFFF)
+        if defaults.object(forKey: Key.accentLight) != nil,
+           defaults.integer(forKey: Key.accentLight) == nextL,
+           defaults.integer(forKey: Key.accentDark) == nextD {
+            return
+        }
+        defaults.set(nextL, forKey: Key.accentLight)
+        defaults.set(nextD, forKey: Key.accentDark)
         defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
         WidgetCenter.shared.reloadAllTimelines()
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import WidgetKit
 
 /// Copie locale des clés App Group (évite de lier le target app).
@@ -15,15 +16,31 @@ enum WidgetSharedStore {
         static let updatedAt = "widget.updatedAt"
         static let mailUnread = "widget.mailUnread"
         static let filesRecentCount = "widget.filesRecentCount"
+        static let accentLight = "widget.accentLight"
+        static let accentDark = "widget.accentDark"
     }
 
     static func snapshot() -> WidgetSnapshot {
         let defaults = defaults
+        let accentLight: UInt32 = {
+            guard let defaults, defaults.object(forKey: Key.accentLight) != nil else {
+                return 0x3B82F6
+            }
+            return UInt32(truncatingIfNeeded: defaults.integer(forKey: Key.accentLight))
+        }()
+        let accentDark: UInt32 = {
+            guard let defaults, defaults.object(forKey: Key.accentDark) != nil else {
+                return 0x7DD3FC
+            }
+            return UInt32(truncatingIfNeeded: defaults.integer(forKey: Key.accentDark))
+        }()
         return WidgetSnapshot(
             runtimeStatus: defaults?.string(forKey: Key.runtimeStatus) ?? "",
             modelName: defaults?.string(forKey: Key.modelName) ?? "",
             mailUnread: defaults?.integer(forKey: Key.mailUnread) ?? 0,
             filesRecentCount: defaults?.integer(forKey: Key.filesRecentCount) ?? 0,
+            accentLight: accentLight,
+            accentDark: accentDark,
             updatedAt: {
                 let t = defaults?.double(forKey: Key.updatedAt) ?? 0
                 return t > 0 ? Date(timeIntervalSince1970: t) : nil
@@ -37,9 +54,12 @@ struct WidgetSnapshot: Equatable {
     var modelName: String
     var mailUnread: Int
     var filesRecentCount: Int
+    var accentLight: UInt32
+    var accentDark: UInt32
     var updatedAt: Date?
 
-    enum AssistantPhase {
+    /// Aligné sur ChatScreen / RuntimeStatusPill — jamais « prêt » si le runtime ne l’est pas.
+    enum AssistantPhase: Equatable {
         case ready, loading, unavailable, error, unknown
 
         var title: String {
@@ -64,12 +84,31 @@ struct WidgetSnapshot: Equatable {
 
     var phase: AssistantPhase {
         switch runtimeStatus.uppercased() {
-        case "READY", "OK", "IDLE": return .ready
-        case "LOADING", "LOADING_MODEL", "SWITCHING", "BUSY", "WARMING": return .loading
-        case "OFFLINE", "UNAVAILABLE": return .unavailable
-        case "ERROR", "FAILED": return .error
-        default: return .unknown
+        // BUSY = modèle prêt (génération en cours) — même règle que assistantReadyForSend.
+        case "READY", "OK", "IDLE", "BUSY":
+            return .ready
+        case "LOADING", "LOADING_MODEL", "SWITCHING", "WARMING", "WARMING_UP":
+            return .loading
+        case "OFFLINE", "UNAVAILABLE":
+            return .unavailable
+        case "ERROR", "FAILED":
+            return .error
+        default:
+            return .unknown
         }
+    }
+
+    func accentColor(scheme: ColorScheme) -> Color {
+        Color(widgetHex: scheme == .dark ? accentDark : accentLight)
+    }
+}
+
+extension Color {
+    init(widgetHex hex: UInt32, opacity: Double = 1) {
+        let r = Double((hex >> 16) & 0xFF) / 255
+        let g = Double((hex >> 8) & 0xFF) / 255
+        let b = Double(hex & 0xFF) / 255
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: opacity)
     }
 }
 
@@ -87,6 +126,8 @@ struct AssistantProvider: TimelineProvider {
                 modelName: "Modèle local",
                 mailUnread: 0,
                 filesRecentCount: 0,
+                accentLight: 0x3B82F6,
+                accentDark: 0x7DD3FC,
                 updatedAt: Date()
             )
         )
@@ -98,7 +139,8 @@ struct AssistantProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<AssistantEntry>) -> Void) {
         let entry = AssistantEntry(date: Date(), snapshot: WidgetSharedStore.snapshot())
-        let next = Calendar.current.date(byAdding: .minute, value: 30, to: Date()) ?? Date().addingTimeInterval(1800)
+        let next = Calendar.current.date(byAdding: .minute, value: 30, to: Date())
+            ?? Date().addingTimeInterval(1800)
         completion(Timeline(entries: [entry], policy: .after(next)))
     }
 }

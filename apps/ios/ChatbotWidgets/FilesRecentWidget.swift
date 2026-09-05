@@ -1,85 +1,85 @@
 import SwiftUI
 import WidgetKit
 
-struct MailEntry: TimelineEntry {
+/// Compteur générique uniquement — aucun nom / contenu de fichier.
+struct FilesEntry: TimelineEntry {
     let date: Date
-    let unread: Int
+    let count: Int
     let accentLight: UInt32
     let accentDark: UInt32
 }
 
-struct MailProvider: TimelineProvider {
-    func placeholder(in context: Context) -> MailEntry {
-        MailEntry(date: Date(), unread: 3, accentLight: 0x3B82F6, accentDark: 0x7DD3FC)
+struct FilesProvider: TimelineProvider {
+    func placeholder(in context: Context) -> FilesEntry {
+        FilesEntry(date: Date(), count: 5, accentLight: 0x0EA5E9, accentDark: 0x67E8F9)
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (MailEntry) -> Void) {
+    func getSnapshot(in context: Context, completion: @escaping (FilesEntry) -> Void) {
         let snap = WidgetSharedStore.snapshot()
         completion(
-            MailEntry(
+            FilesEntry(
                 date: Date(),
-                unread: snap.mailUnread,
+                count: snap.filesRecentCount,
                 accentLight: snap.accentLight,
                 accentDark: snap.accentDark
             )
         )
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<MailEntry>) -> Void) {
+    func getTimeline(in context: Context, completion: @escaping (Timeline<FilesEntry>) -> Void) {
         let snap = WidgetSharedStore.snapshot()
-        let entry = MailEntry(
+        let entry = FilesEntry(
             date: Date(),
-            unread: snap.mailUnread,
+            count: snap.filesRecentCount,
             accentLight: snap.accentLight,
             accentDark: snap.accentDark
         )
-        let next = Calendar.current.date(byAdding: .minute, value: 30, to: Date())
-            ?? Date().addingTimeInterval(1800)
+        let next = Calendar.current.date(byAdding: .minute, value: 45, to: Date())
+            ?? Date().addingTimeInterval(2700)
         completion(Timeline(entries: [entry], policy: .after(next)))
     }
 }
 
-struct MailUnreadWidget: Widget {
-    let kind = "MailUnreadWidget"
+struct FilesRecentWidget: Widget {
+    let kind = "FilesRecentWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: MailProvider()) { entry in
-            MailWidgetView(entry: entry)
+        StaticConfiguration(kind: kind, provider: FilesProvider()) { entry in
+            FilesWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("Mail")
-        .description("Nombre de mails non lus (sans contenu privé).")
+        .configurationDisplayName("Files")
+        .description("Nombre de fichiers du dossier courant (sans noms ni contenus).")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
-struct MailWidgetView: View {
+struct FilesWidgetView: View {
     @Environment(\.colorScheme) private var colorScheme
-    let entry: MailEntry
+    let entry: FilesEntry
 
     private var accent: Color {
         Color(widgetHex: colorScheme == .dark ? entry.accentDark : entry.accentLight)
     }
 
     var body: some View {
-        Link(destination: URL(string: "chatbot-native://tab/mail")!) {
+        Link(destination: URL(string: "chatbot-native://tab/files")!) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    Image(systemName: "envelope.fill")
+                    Image(systemName: "folder.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(accent)
-                    Text("Mail")
+                    Text("Files")
                         .font(.headline.weight(.semibold))
                 }
-                Text(entry.unread > 0 ? "\(entry.unread)" : "—")
+                Text(entry.count > 0 ? "\(entry.count)" : "—")
                     .font(.largeTitle.weight(.bold))
                     .monospacedDigit()
-                    .foregroundStyle(.primary)
-                Text(entry.unread == 1 ? "non lu" : "non lus")
+                Text(entry.count == 1 ? "fichier" : "fichiers")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Text("Ouvrir Mail")
+                Text("Ouvrir Files")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(accent)
             }
@@ -87,7 +87,7 @@ struct MailWidgetView: View {
             .padding(2)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Mail, \(entry.unread) non lus")
-        .accessibilityHint("Ouvre la boîte mail")
+        .accessibilityLabel("Files, \(entry.count) fichiers")
+        .accessibilityHint("Ouvre Files")
     }
 }
