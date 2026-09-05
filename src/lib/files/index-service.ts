@@ -38,8 +38,31 @@ export async function purgeIndexEntry(input: {
 /** Chemins relatifs indexés pour une root (badge UI / filtre). */
 export async function listIndexedRelativePaths(
   userId: string,
-  rootId: string
+  rootId: string,
+  relativePaths?: string[]
 ): Promise<Set<string>> {
+  const paths = relativePaths
+    ?.map((p) => p.replace(/\\/g, "/"))
+    .filter((p) => p.length > 0);
+  if (paths && paths.length === 0) return new Set();
+
+  // Page list: ne charge que les chemins visibles (évite de matérialiser tout l'index root).
+  if (paths && paths.length > 0 && paths.length <= 500) {
+    const sqlite = getSqlite();
+    const placeholders = paths.map(() => "?").join(",");
+    const rows = sqlite
+      .prepare(
+        `SELECT relative_path AS relativePath
+         FROM file_index_entries
+         WHERE user_id = ? AND root_id = ?
+           AND relative_path IN (${placeholders})`
+      )
+      .all(userId, rootId, ...paths) as Array<{ relativePath: string }>;
+    return new Set(
+      rows.map((r) => String(r.relativePath).replace(/\\/g, "/"))
+    );
+  }
+
   const db = getDb();
   const rows = await db.query.fileIndexEntries.findMany({
     where: and(
@@ -55,24 +78,24 @@ export async function purgeIndexForRoot(
   userId: string,
   rootId: string
 ): Promise<void> {
-  const db = getDb();
-  const entries = await db.query.fileIndexEntries.findMany({
-    where: and(
-      eq(fileIndexEntries.userId, userId),
-      eq(fileIndexEntries.rootId, rootId)
-    ),
-  });
-  for (const e of entries) {
-    await db.delete(fileIndexChunks).where(eq(fileIndexChunks.entryId, e.id));
-  }
-  await db
-    .delete(fileIndexEntries)
-    .where(
-      and(
-        eq(fileIndexEntries.userId, userId),
-        eq(fileIndexEntries.rootId, rootId)
+  const sqlite = getSqlite();
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare(
+        `DELETE FROM file_index_chunks
+         WHERE entry_id IN (
+           SELECT id FROM file_index_entries
+           WHERE user_id = ? AND root_id = ?
+         )`
       )
-    );
+      .run(userId, rootId);
+    sqlite
+      .prepare(
+        `DELETE FROM file_index_entries WHERE user_id = ? AND root_id = ?`
+      )
+      .run(userId, rootId);
+  });
+  tx();
 }
 
 export async function indexRootFiles(input: {
@@ -168,6 +191,24 @@ async function indexSingleFile(input: {
     return;
   }
 
+  const db = getDb();
+  const rel = input.relativePath.replace(/\\/g, "/");
+  const existing = await db.query.fileIndexEntries.findFirst({
+    where: and(
+      eq(fileIndexEntries.userId, input.userId),
+      eq(fileIndexEntries.rootId, input.root.id),
+      eq(fileIndexEntries.relativePath, rel)
+    ),
+    columns: { id: true, sizeBytes: true, mtimeMs: true },
+  });
+  if (
+    existing &&
+    existing.sizeBytes === input.sizeBytes &&
+    existing.mtimeMs === input.mtimeMs
+  ) {
+    return;
+  }
+
   const mime = guessMimeFromFilename(path.basename(input.relativePath));
   const text = await extractTextFromFile(
     input.absolutePath,
@@ -183,13 +224,12 @@ async function indexSingleFile(input: {
     relativePath: input.relativePath,
   });
 
-  const db = getDb();
   const entryId = nanoid(16);
   await db.insert(fileIndexEntries).values({
     id: entryId,
     userId: input.userId,
     rootId: input.root.id,
-    relativePath: input.relativePath.replace(/\\/g, "/"),
+    relativePath: rel,
     sizeBytes: input.sizeBytes,
     mtimeMs: input.mtimeMs,
     mime,

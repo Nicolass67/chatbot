@@ -34,11 +34,18 @@ enum TabMemoryCache {
         "\(rootId)|\(path)"
     }
 
+    private static let maxFolders = 24
+    private static let maxChats = 12
+
     static func saveFolder(rootId: String, path: String, entries: [FileEntryDTO], nextCursor: String?) {
         fileFolders[folderKey(rootId: rootId, path: path)] = .init(
             entries: entries,
             nextCursor: nextCursor
         )
+        if fileFolders.count > maxFolders {
+            let drop = Array(fileFolders.keys.prefix(fileFolders.count - maxFolders))
+            for k in drop { fileFolders.removeValue(forKey: k) }
+        }
     }
 
     static func folder(rootId: String, path: String) -> FileFolderSnapshot? {
@@ -52,6 +59,10 @@ enum TabMemoryCache {
     static func saveChat(conversationId: String, messages: [MessageDTO]) {
         guard !messages.isEmpty else { return }
         chatMessagesByConversation[conversationId] = messages
+        if chatMessagesByConversation.count > maxChats {
+            let drop = Array(chatMessagesByConversation.keys.prefix(chatMessagesByConversation.count - maxChats))
+            for k in drop { chatMessagesByConversation.removeValue(forKey: k) }
+        }
     }
 
     static func chat(conversationId: String) -> [MessageDTO]? {

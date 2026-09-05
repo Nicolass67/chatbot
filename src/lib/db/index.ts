@@ -19,101 +19,115 @@ function resolveDbPath(): string {
   return path.join(process.cwd(), envPath);
 }
 
+function tableExists(sqlite: Database.Database, name: string): boolean {
+  const row = sqlite
+    .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?`)
+    .get(name) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
 function initFts5(sqlite: Database.Database) {
-  sqlite.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-      content,
-      category,
-      content='memories',
-      content_rowid='rowid'
-    );
-  `);
+  // Ne jamais créer de triggers FTS si la table content manque (sinon HTTP 500 partout).
+  if (tableExists(sqlite, "memories")) {
+    sqlite.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        content,
+        category,
+        content='memories',
+        content_rowid='rowid'
+      );
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-      INSERT INTO memories_fts(rowid, content, category) VALUES (new.rowid, new.content, new.category);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+        INSERT INTO memories_fts(rowid, content, category) VALUES (new.rowid, new.content, new.category);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content, category) VALUES('delete', old.rowid, old.content, old.category);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content, category) VALUES('delete', old.rowid, old.content, old.category);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, content, category) VALUES('delete', old.rowid, old.content, old.category);
-      INSERT INTO memories_fts(rowid, content, category) VALUES (new.rowid, new.content, new.category);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, content, category) VALUES('delete', old.rowid, old.content, old.category);
+        INSERT INTO memories_fts(rowid, content, category) VALUES (new.rowid, new.content, new.category);
+      END;
+    `);
+  }
 
-  sqlite.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
-      content,
-      attachment_id UNINDEXED,
-      conversation_id UNINDEXED,
-      content='document_chunks',
-      content_rowid='rowid'
-    );
-  `);
+  if (tableExists(sqlite, "document_chunks")) {
+    sqlite.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+        content,
+        attachment_id UNINDEXED,
+        conversation_id UNINDEXED,
+        content='document_chunks',
+        content_rowid='rowid'
+      );
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS document_chunks_ai AFTER INSERT ON document_chunks BEGIN
-      INSERT INTO document_chunks_fts(rowid, content, attachment_id, conversation_id)
-      VALUES (new.rowid, new.content, new.attachment_id, new.conversation_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS document_chunks_ai AFTER INSERT ON document_chunks BEGIN
+        INSERT INTO document_chunks_fts(rowid, content, attachment_id, conversation_id)
+        VALUES (new.rowid, new.content, new.attachment_id, new.conversation_id);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS document_chunks_ad AFTER DELETE ON document_chunks BEGIN
-      INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, attachment_id, conversation_id)
-      VALUES('delete', old.rowid, old.content, old.attachment_id, old.conversation_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS document_chunks_ad AFTER DELETE ON document_chunks BEGIN
+        INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, attachment_id, conversation_id)
+        VALUES('delete', old.rowid, old.content, old.attachment_id, old.conversation_id);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS document_chunks_au AFTER UPDATE ON document_chunks BEGIN
-      INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, attachment_id, conversation_id)
-      VALUES('delete', old.rowid, old.content, old.attachment_id, old.conversation_id);
-      INSERT INTO document_chunks_fts(rowid, content, attachment_id, conversation_id)
-      VALUES (new.rowid, new.content, new.attachment_id, new.conversation_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS document_chunks_au AFTER UPDATE ON document_chunks BEGIN
+        INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content, attachment_id, conversation_id)
+        VALUES('delete', old.rowid, old.content, old.attachment_id, old.conversation_id);
+        INSERT INTO document_chunks_fts(rowid, content, attachment_id, conversation_id)
+        VALUES (new.rowid, new.content, new.attachment_id, new.conversation_id);
+      END;
+    `);
+  }
 
-  sqlite.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS file_index_chunks_fts USING fts5(
-      content,
-      entry_id UNINDEXED,
-      user_id UNINDEXED,
-      root_id UNINDEXED,
-      content='file_index_chunks',
-      content_rowid='rowid'
-    );
-  `);
+  if (tableExists(sqlite, "file_index_chunks")) {
+    sqlite.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS file_index_chunks_fts USING fts5(
+        content,
+        entry_id UNINDEXED,
+        user_id UNINDEXED,
+        root_id UNINDEXED,
+        content='file_index_chunks',
+        content_rowid='rowid'
+      );
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS file_index_chunks_ai AFTER INSERT ON file_index_chunks BEGIN
-      INSERT INTO file_index_chunks_fts(rowid, content, entry_id, user_id, root_id)
-      VALUES (new.rowid, new.content, new.entry_id, new.user_id, new.root_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS file_index_chunks_ai AFTER INSERT ON file_index_chunks BEGIN
+        INSERT INTO file_index_chunks_fts(rowid, content, entry_id, user_id, root_id)
+        VALUES (new.rowid, new.content, new.entry_id, new.user_id, new.root_id);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS file_index_chunks_ad AFTER DELETE ON file_index_chunks BEGIN
-      INSERT INTO file_index_chunks_fts(file_index_chunks_fts, rowid, content, entry_id, user_id, root_id)
-      VALUES('delete', old.rowid, old.content, old.entry_id, old.user_id, old.root_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS file_index_chunks_ad AFTER DELETE ON file_index_chunks BEGIN
+        INSERT INTO file_index_chunks_fts(file_index_chunks_fts, rowid, content, entry_id, user_id, root_id)
+        VALUES('delete', old.rowid, old.content, old.entry_id, old.user_id, old.root_id);
+      END;
+    `);
 
-  sqlite.exec(`
-    CREATE TRIGGER IF NOT EXISTS file_index_chunks_au AFTER UPDATE ON file_index_chunks BEGIN
-      INSERT INTO file_index_chunks_fts(file_index_chunks_fts, rowid, content, entry_id, user_id, root_id)
-      VALUES('delete', old.rowid, old.content, old.entry_id, old.user_id, old.root_id);
-      INSERT INTO file_index_chunks_fts(rowid, content, entry_id, user_id, root_id)
-      VALUES (new.rowid, new.content, new.entry_id, new.user_id, new.root_id);
-    END;
-  `);
+    sqlite.exec(`
+      CREATE TRIGGER IF NOT EXISTS file_index_chunks_au AFTER UPDATE ON file_index_chunks BEGIN
+        INSERT INTO file_index_chunks_fts(file_index_chunks_fts, rowid, content, entry_id, user_id, root_id)
+        VALUES('delete', old.rowid, old.content, old.entry_id, old.user_id, old.root_id);
+        INSERT INTO file_index_chunks_fts(rowid, content, entry_id, user_id, root_id)
+        VALUES (new.rowid, new.content, new.entry_id, new.user_id, new.root_id);
+      END;
+    `);
+  }
 }
 
 function migrateSchema(sqlite: Database.Database) {
@@ -419,6 +433,77 @@ function migrateSchema(sqlite: Database.Database) {
   sqlite.exec(`
     CREATE INDEX IF NOT EXISTS file_index_chunks_user_idx ON file_index_chunks (user_id);
   `);
+
+  // Hot-path indexes (perf) — IF NOT EXISTS, safe on existing DBs.
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS messages_conversation_id_idx
+    ON messages (conversation_id, created_at);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS attachments_conversation_id_idx
+    ON attachments (conversation_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS attachments_message_id_idx
+    ON attachments (message_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS tool_calls_conversation_id_idx
+    ON tool_calls (conversation_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS tool_calls_message_id_idx
+    ON tool_calls (message_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS document_chunks_attachment_id_idx
+    ON document_chunks (attachment_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS document_chunks_conversation_id_idx
+    ON document_chunks (conversation_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS message_sources_message_id_idx
+    ON message_sources (message_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS agent_runs_conversation_id_idx
+    ON agent_runs (conversation_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS email_drafts_user_id_idx
+    ON email_drafts (user_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS email_drafts_conversation_id_idx
+    ON email_drafts (conversation_id);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS conversations_scope_updated_idx
+    ON conversations (scope, updated_at);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS file_references_user_root_path_idx
+    ON file_references (user_id, root_id, relative_path);
+  `);
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS file_index_entries_user_root_idx
+    ON file_index_entries (user_id, root_id);
+  `);
+
+  // Requis avant initFts5 (triggers content=memories) — sinon HTTP 500 partout.
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      category TEXT NOT NULL,
+      importance REAL NOT NULL DEFAULT 0.5,
+      embedding TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 function createDb(): AppDatabase {
@@ -436,6 +521,8 @@ function createDb(): AppDatabase {
   const sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
+  sqlite.pragma("busy_timeout = 5000");
+  sqlite.pragma("temp_store = MEMORY");
 
   migrateSchema(sqlite);
   initFts5(sqlite);

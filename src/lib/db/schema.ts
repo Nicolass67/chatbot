@@ -37,17 +37,23 @@ export const conversations = sqliteTable("conversations", {
     .default(sql`(datetime('now'))`),
 });
 
-export const messages = sqliteTable("messages", {
-  id: text("id").primaryKey(),
-  conversationId: text("conversation_id")
-    .notNull()
-    .references(() => conversations.id, { onDelete: "cascade" }),
-  role: text("role", { enum: ["user", "assistant", "system", "tool"] }).notNull(),
-  content: text("content").notNull(),
-  createdAt: text("created_at")
-    .notNull()
-    .default(sql`(datetime('now'))`),
-});
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["user", "assistant", "system", "tool"] }).notNull(),
+    content: text("content").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [
+    index("messages_conversation_id_idx").on(table.conversationId, table.createdAt),
+  ]
+);
 
 export const attachments = sqliteTable("attachments", {
   id: text("id").primaryKey(),
@@ -395,6 +401,11 @@ export const fileReferences = sqliteTable(
   (table) => [
     index("file_references_user_idx").on(table.userId),
     index("file_references_expires_idx").on(table.expiresAt),
+    index("file_references_user_root_path_idx").on(
+      table.userId,
+      table.rootId,
+      table.relativePath
+    ),
   ]
 );
 
@@ -421,6 +432,7 @@ export const fileIndexEntries = sqliteTable(
       table.relativePath
     ),
     index("file_index_entries_user_idx").on(table.userId),
+    index("file_index_entries_user_root_idx").on(table.userId, table.rootId),
   ]
 );
 

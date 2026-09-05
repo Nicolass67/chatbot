@@ -1976,7 +1976,7 @@ private struct FilesEntryThumbnail: View {
 
     private func loadIfNeeded() async {
         guard isVisual, let fileId = entry.fileId, !fileId.isEmpty else { return }
-        if let size = entry.sizeBytes, size > 12_000_000 { return }
+        if let size = entry.sizeBytes, size > 2_500_000 { return }
         if let cached = await ImagePipeline.cached(cacheKey) {
             image = cached
             return

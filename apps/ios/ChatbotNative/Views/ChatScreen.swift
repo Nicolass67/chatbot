@@ -84,6 +84,10 @@ struct ChatScreen: View {
     @State private var confirmingFileAction = false
     @State private var chromeById: [String: MessageChromeMeta] = [:]
     @State private var streamingAssistantId: String?
+    @State private var tokenCoalesceBuffer = ""
+    @State private var tokenFlushTask: Task<Void, Never>?
+    @State private var lastStreamScrollAt = Date.distantPast
+    @State private var runtimePollNs: UInt64 = 1_500_000_000
     @State private var contextSnapshot: ContextSnapshotDTO?
     @State private var streamingService = ChatStreamingService()
     /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
@@ -241,8 +245,15 @@ struct ChatScreen: View {
                 let chatVisible = forcedScope != nil || nav.selectedTab == .chat
                 if chatVisible {
                     await refreshRuntimeStatus()
+                    let busy = runtimeStatus.uppercased().contains("BUSY")
+                        || runtimeStatus.uppercased().contains("LOAD")
+                        || runtimeStatus.uppercased().contains("SWITCH")
+                        || isSending
+                    runtimePollNs = busy ? 1_500_000_000 : min(runtimePollNs * 2, 8_000_000_000)
+                } else {
+                    runtimePollNs = 8_000_000_000
                 }
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: runtimePollNs)
             }
         }
         .onChange(of: messages) { _, msgs in
@@ -356,6 +367,7 @@ struct ChatScreen: View {
                                 mailHandoff: chrome.mailHandoff,
                                 filesHandoff: chrome.filesHandoff,
                                 filesFound: chrome.filesFound,
+                                isLiveStreaming: streamingAssistantId == msg.id && isSending,
                                 onCopy: {
                                     UIPasteboard.general.string = msg.content
                                     AppHaptics.light()
@@ -544,6 +556,9 @@ struct ChatScreen: View {
                 }
                 .onChange(of: streamingText) { _, text in
                     guard isPinnedToBottom, !text.isEmpty else { return }
+                    let now = Date()
+                    guard now.timeIntervalSince(lastStreamScrollAt) >= 0.08 else { return }
+                    lastStreamScrollAt = now
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.4)
                     withAnimation(.easeOut(duration: 0.12)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
@@ -1991,6 +2006,7 @@ struct ChatScreen: View {
             }
             // ID serveur déjà stable (assistant_start) : sync soft sans remplacer l’identité ForEach.
             if streamingAssistantId != nil {
+                flushTokenCoalesce()
                 streamingAssistantId = nil
                 scrollToken += 1
                 Task {
@@ -2023,6 +2039,7 @@ struct ChatScreen: View {
                 }
                 scrollToken += 1
             } else {
+                flushTokenCoalesce()
                 streamingAssistantId = nil
                 scrollToken += 1
             }
@@ -2200,6 +2217,23 @@ struct ChatScreen: View {
         AppHaptics.light()
     }
 
+    private func flushTokenCoalesce() {
+        tokenFlushTask?.cancel()
+        tokenFlushTask = nil
+        let chunk = tokenCoalesceBuffer
+        tokenCoalesceBuffer = ""
+        guard !chunk.isEmpty, let id = streamingAssistantId,
+              let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        let prev = messages[idx]
+        messages[idx] = MessageDTO(
+            id: id,
+            role: "assistant",
+            content: prev.content + chunk,
+            createdAt: prev.createdAt,
+            attachments: prev.attachments
+        )
+    }
+
     private func handleSSE(type: String, obj: [String: Any]) {
         switch type {
         case "token":
@@ -2210,16 +2244,27 @@ struct ChatScreen: View {
                     thinkingKind = nil
                     break
                 }
-                if let id = streamingAssistantId,
-                   let idx = messages.firstIndex(where: { $0.id == id }) {
-                    let prev = messages[idx]
-                    messages[idx] = MessageDTO(
-                        id: id,
-                        role: "assistant",
-                        content: prev.content + c,
-                        createdAt: prev.createdAt,
-                        attachments: prev.attachments
-                    )
+                // Coalesce ~50ms : moins de mutations messages[] / re-renders.
+                tokenCoalesceBuffer += c
+                if tokenFlushTask == nil {
+                    tokenFlushTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        let chunk = tokenCoalesceBuffer
+                        tokenCoalesceBuffer = ""
+                        tokenFlushTask = nil
+                        guard !chunk.isEmpty else { return }
+                        if let id = streamingAssistantId,
+                           let idx = messages.firstIndex(where: { $0.id == id }) {
+                            let prev = messages[idx]
+                            messages[idx] = MessageDTO(
+                                id: id,
+                                role: "assistant",
+                                content: prev.content + chunk,
+                                createdAt: prev.createdAt,
+                                attachments: prev.attachments
+                            )
+                        }
+                    }
                 }
             }
             thinkingKind = nil
@@ -2377,6 +2422,7 @@ struct ChatScreen: View {
         case "assistant_discard":
             if let id = obj["messageId"] as? String, streamingAssistantId == id {
                 streamingText = ""
+                flushTokenCoalesce()
                 streamingAssistantId = nil
                 if let idx = messages.firstIndex(where: { $0.id == id }) {
                     messages.remove(at: idx)

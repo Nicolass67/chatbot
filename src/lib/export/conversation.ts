@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { conversations, messages, toolCalls } from "@/lib/db/schema";
 
@@ -61,6 +61,10 @@ export async function listConversations(opts?: {
   const scope = opts?.scope ?? "general";
   const db = getDb();
   const all = await db.query.conversations.findMany({
+    where:
+      scope === "general"
+        ? or(eq(conversations.scope, "general"), isNull(conversations.scope))
+        : eq(conversations.scope, scope),
     orderBy: [desc(conversations.updatedAt)],
     with: {
       messages: {
@@ -71,7 +75,6 @@ export async function listConversations(opts?: {
   });
 
   return all
-    .filter((c) => (c.scope ?? "general") === scope)
     .filter((c) => scope !== "general" || c.messages.length > 0)
     .map(
       ({

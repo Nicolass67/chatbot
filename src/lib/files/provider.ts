@@ -9,7 +9,7 @@ import {
   WALK_TIMEOUT_MS,
 } from "./constants";
 import { resolveUnderRoot, toPosixRelative } from "./path-guard";
-import { mintFileReference } from "./references";
+import { mintFileReference, mintFileReferencesBatch } from "./references";
 import type {
   FileListEntry,
   FileRootRecord,
@@ -157,7 +157,13 @@ export async function listDirectory(input: {
   }
 
   const slice = names.slice(start, start + limit);
-  const out: FileListEntry[] = [];
+  const prepared: Array<{
+    name: string;
+    relativePath: string;
+    isDirectory: boolean;
+    sizeBytes: number;
+    mtimeMs: number;
+  }> = [];
 
   for (const name of slice) {
     const childAbs = path.join(abs, name);
@@ -169,17 +175,7 @@ export async function listDirectory(input: {
     }
 
     const rel = toPosixRelative(input.root.absolutePath, childAbs);
-    const ref = await mintFileReference({
-      userId: input.userId,
-      rootId: input.root.id,
-      relativePath: rel,
-      displayName: name,
-      sizeBytes: childStat.isDirectory() ? 0 : childStat.size,
-      mtimeMs: Math.floor(childStat.mtimeMs),
-    });
-
-    out.push({
-      fileId: ref.id,
+    prepared.push({
       name,
       relativePath: rel,
       isDirectory: childStat.isDirectory(),
@@ -187,6 +183,26 @@ export async function listDirectory(input: {
       mtimeMs: Math.floor(childStat.mtimeMs),
     });
   }
+
+  const refs = await mintFileReferencesBatch(
+    input.userId,
+    input.root.id,
+    prepared.map((p) => ({
+      relativePath: p.relativePath,
+      displayName: p.name,
+      sizeBytes: p.sizeBytes,
+      mtimeMs: p.mtimeMs,
+    }))
+  );
+
+  const out: FileListEntry[] = prepared.map((p, i) => ({
+    fileId: refs[i]!.id,
+    name: p.name,
+    relativePath: p.relativePath,
+    isDirectory: p.isDirectory,
+    sizeBytes: p.sizeBytes,
+    mtimeMs: p.mtimeMs,
+  }));
 
   const last = slice[slice.length - 1] ?? null;
   const nextCursor =

@@ -5,7 +5,12 @@ import ImageIO
 actor ImageThumbCache {
     static let shared = ImageThumbCache()
 
-    private let memory = NSCache<NSString, UIImage>()
+    private let memory: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 120
+        c.totalCostLimit = 32 * 1024 * 1024
+        return c
+    }()
 
     func image(forKey key: String) -> UIImage? {
         if let mem = memory.object(forKey: key as NSString) { return mem }

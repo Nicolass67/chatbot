@@ -15,7 +15,12 @@ async function enrichIndexed(
   rootId: string,
   entries: Array<{ relativePath: string; indexed?: boolean }>
 ) {
-  const indexed = await listIndexedRelativePaths(userId, rootId);
+  if (entries.length === 0) return;
+  const indexed = await listIndexedRelativePaths(
+    userId,
+    rootId,
+    entries.map((e) => e.relativePath)
+  );
   for (const e of entries) {
     e.indexed = indexed.has(e.relativePath.replace(/\\/g, "/"));
   }

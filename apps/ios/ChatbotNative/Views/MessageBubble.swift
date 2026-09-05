@@ -21,10 +21,12 @@ struct MessageBubble: View {
     var onDownloadFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
     var onRevealFoundFile: ((FilesFoundFileDTO) -> Void)? = nil
     var onSendFoundFileByMail: ((FilesFoundFileDTO) -> Void)? = nil
+    /// True pendant le stream serveur (id stable) — évite le reparse Markdown à chaque token.
+    var isLiveStreaming: Bool = false
 
     private var isUser: Bool { message.role == "user" }
     private var isStreaming: Bool {
-        message.id == "streaming" || message.id.hasPrefix("streaming")
+        isLiveStreaming || message.id == "streaming" || message.id.hasPrefix("streaming")
     }
 
     private var hasUserText: Bool {
@@ -167,8 +169,16 @@ struct MessageBubble: View {
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
-                    MarkdownMessageView(markdown: message.content)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isStreaming {
+                        Text(message.content)
+                            .font(.body)
+                            .foregroundStyle(AppTheme.foreground)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        MarkdownMessageView(markdown: message.content)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
         }
