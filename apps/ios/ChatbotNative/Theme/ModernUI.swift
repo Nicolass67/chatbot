@@ -3,11 +3,13 @@ import UIKit
 
 /// Retours haptiques centralisés — actions utilisateur significatives uniquement.
 /// Respecte le toggle app (`enabledKey`) et les Réglages système iOS (générateurs no-op si désactivés).
+/// `@MainActor` : les UIFeedbackGenerator sont isolés au main thread (Swift 6).
+@MainActor
 enum AppHaptics {
-    static let enabledKey = "hapticsEnabled"
+    nonisolated static let enabledKey = "hapticsEnabled"
 
     /// Défaut ON. `nil` dans UserDefaults = activé.
-    static var isEnabled: Bool {
+    nonisolated static var isEnabled: Bool {
         get {
             if UserDefaults.standard.object(forKey: enabledKey) == nil { return true }
             return UserDefaults.standard.bool(forKey: enabledKey)
@@ -15,7 +17,7 @@ enum AppHaptics {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
-    // Générateurs réutilisés (évite alloc à chaque tap). Toujours appeler depuis le main thread UI.
+    // Générateurs réutilisés (évite alloc à chaque tap).
     private static let lightImpact = UIImpactFeedbackGenerator(style: .light)
     private static let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
     private static let selectionGenerator = UISelectionFeedbackGenerator()
