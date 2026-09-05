@@ -287,12 +287,10 @@ struct RuntimeStatusPill: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
         }
+        // Même emplacement / padding qu’avant — sans fond ni contour de pastille.
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 7)
-        .background(color.opacity(0.14))
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(color.opacity(0.35), lineWidth: 1))
         .accessibilityLabel(label)
         .accessibilityIdentifier("chat.assistantStatus")
     }
