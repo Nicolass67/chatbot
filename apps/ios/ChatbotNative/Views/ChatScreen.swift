@@ -1201,7 +1201,8 @@ struct ChatScreen: View {
         }
         WidgetSharedStore.publishAssistant(
             status: runtimeStatus,
-            modelName: selectedModel.isEmpty ? snap.loadedModel : selectedModel
+            modelName: selectedModel.isEmpty ? snap.loadedModel : selectedModel,
+            conversationTitle: conversationTitle.isEmpty ? conversation.title : conversationTitle
         )
     }
 

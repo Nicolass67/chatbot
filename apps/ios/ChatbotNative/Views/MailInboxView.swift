@@ -820,29 +820,34 @@ struct MailInboxView: View {
         bumpWidgetUnread(by: -1)
     }
 
-    /// Estimate Gmail `is:unread` pour le widget (sans contenu privé).
+    /// Estimate Gmail `is:unread` + aperçus (expéditeur / sujet) pour le widget.
     private func refreshWidgetUnreadEstimate() async {
         do {
             let page = try await client.listMailMessages(
-                maxResults: 1,
+                maxResults: 5,
                 category: "inbox",
                 query: "is:unread",
                 pageToken: nil
             )
             let count = page.resultSizeEstimate ?? page.messages.count
-            WidgetSharedStore.publishMailUnread(count)
+            WidgetSharedStore.publishMailUnread(count, previews: Self.widgetMailPreviews(from: page.messages))
         } catch {
             // Conserve la dernière valeur widget.
         }
     }
 
     private func publishMailUnreadFromInbox(estimate: Int?, page: [MailMessageSummary]) {
+        let previews = Self.widgetMailPreviews(from: page)
         if unreadOnly {
-            WidgetSharedStore.publishMailUnread(estimate ?? page.count)
+            WidgetSharedStore.publishMailUnread(estimate ?? page.count, previews: previews)
             return
         }
-        // Hors filtre non-lu : ne met à jour que si on a une estimate fiable via query dédiée.
-        // (évite d’afficher le count d’une seule page comme total)
+        // Hors filtre non-lu : rafraîchit seulement les aperçus si on a déjà un compteur.
+        if let defaults = UserDefaults(suiteName: WidgetSharedStore.appGroupId),
+           defaults.object(forKey: WidgetSharedStore.Key.mailUnread) != nil {
+            let current = defaults.integer(forKey: WidgetSharedStore.Key.mailUnread)
+            WidgetSharedStore.publishMailUnread(current, previews: previews)
+        }
     }
 
     private func bumpWidgetUnread(by delta: Int) {
@@ -850,6 +855,38 @@ struct MailInboxView: View {
         let key = WidgetSharedStore.Key.mailUnread
         let current = defaults.object(forKey: key) == nil ? 0 : defaults.integer(forKey: key)
         WidgetSharedStore.publishMailUnread(max(0, current + delta))
+    }
+
+    private static func widgetMailPreviews(from messages: [MailMessageSummary]) -> [WidgetSharedStore.MailPreviewItem] {
+        messages.prefix(5).map { msg in
+            let from = msg.from?.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let email = msg.from?.email ?? ""
+            let fromLabel = (from?.isEmpty == false ? from! : email).isEmpty ? "Inconnu" : (from?.isEmpty == false ? from! : email)
+            let subject = (msg.subject ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet = (msg.snippet ?? "")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return WidgetSharedStore.MailPreviewItem(
+                id: msg.id,
+                from: fromLabel,
+                subject: subject.isEmpty ? "(Sans objet)" : subject,
+                snippet: String(snippet.prefix(120)),
+                dateLabel: widgetMailDateLabel(msg.date),
+                unread: msg.isUnread == true
+            )
+        }
+    }
+
+    private static func widgetMailDateLabel(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else { return "" }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = iso.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+        guard let date else { return String(raw.prefix(10)) }
+        let rel = RelativeDateTimeFormatter()
+        rel.locale = Locale(identifier: "fr_FR")
+        rel.unitsStyle = .abbreviated
+        return rel.localizedString(for: date, relativeTo: Date())
     }
 
     private func trashMessage(_ msg: MailMessageSummary) async {

@@ -1669,7 +1669,21 @@ struct FileFolderView: View {
             let list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
             entries = Self.sorted(list.entries, by: sortMode)
             let fileCount = entries.filter { !isFolder($0) }.count
-            WidgetSharedStore.publishFilesRecentCount(fileCount)
+            let previews: [WidgetSharedStore.FilePreviewItem] = entries.prefix(6).map { entry in
+                let name = entry.name ?? entry.relativePath
+                let folder = isFolder(entry)
+                return WidgetSharedStore.FilePreviewItem(
+                    id: entry.relativePath,
+                    name: name,
+                    detail: Self.widgetFileDetail(name: name, isDirectory: folder, sizeBytes: entry.sizeBytes),
+                    isDirectory: folder
+                )
+            }
+            WidgetSharedStore.publishFilesRecent(
+                count: fileCount,
+                folderName: title,
+                previews: previews
+            )
             nextCursor = list.nextCursor
             error = nil
             TabMemoryCache.saveFolder(
@@ -1701,6 +1715,15 @@ struct FileFolderView: View {
         } catch {
             // silent — user still has first page
         }
+    }
+
+    private static func widgetFileDetail(name: String, isDirectory: Bool, sizeBytes: Int?) -> String {
+        if isDirectory { return "Dossier" }
+        let ext = (name as NSString).pathExtension.uppercased()
+        let typeLabel = ext.isEmpty ? "Fichier" : ext
+        guard let sizeBytes, sizeBytes > 0 else { return typeLabel }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+        return "\(typeLabel) · \(size)"
     }
 
     private static func sorted(_ items: [FileEntryDTO], by mode: FilesSortMode = .name) -> [FileEntryDTO] {

@@ -3,38 +3,22 @@ import WidgetKit
 
 struct MailEntry: TimelineEntry {
     let date: Date
-    let unread: Int
-    let accentLight: UInt32
-    let accentDark: UInt32
+    let snapshot: WidgetSnapshot
 }
 
 struct MailProvider: TimelineProvider {
     func placeholder(in context: Context) -> MailEntry {
-        MailEntry(date: Date(), unread: 3, accentLight: 0x3B82F6, accentDark: 0x7DD3FC)
+        MailEntry(date: Date(), snapshot: .placeholder)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (MailEntry) -> Void) {
-        let snap = WidgetSharedStore.snapshot()
-        completion(
-            MailEntry(
-                date: Date(),
-                unread: snap.mailUnread,
-                accentLight: snap.accentLight,
-                accentDark: snap.accentDark
-            )
-        )
+        completion(MailEntry(date: Date(), snapshot: WidgetSharedStore.snapshot()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<MailEntry>) -> Void) {
-        let snap = WidgetSharedStore.snapshot()
-        let entry = MailEntry(
-            date: Date(),
-            unread: snap.mailUnread,
-            accentLight: snap.accentLight,
-            accentDark: snap.accentDark
-        )
-        let next = Calendar.current.date(byAdding: .minute, value: 30, to: Date())
-            ?? Date().addingTimeInterval(1800)
+        let entry = MailEntry(date: Date(), snapshot: WidgetSharedStore.snapshot())
+        let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date())
+            ?? Date().addingTimeInterval(900)
         completion(Timeline(entries: [entry], policy: .after(next)))
     }
 }
@@ -45,49 +29,128 @@ struct MailUnreadWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: MailProvider()) { entry in
             MailWidgetView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Mail")
-        .description("Nombre de mails non lus (sans contenu privé).")
+        .description("Non lus, expéditeurs, sujets et aperçus.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct MailWidgetView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.widgetFamily) private var family
     let entry: MailEntry
 
-    private var accent: Color {
-        Color(widgetHex: colorScheme == .dark ? entry.accentDark : entry.accentLight)
-    }
+    private var snap: WidgetSnapshot { entry.snapshot }
+    private var accent: Color { snap.accent(colorScheme) }
+    private var secondary: Color { snap.secondary(colorScheme) }
+    private var canvas: Color { snap.canvas(colorScheme) }
 
     var body: some View {
         Link(destination: URL(string: "chatbot-native://tab/mail")!) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "envelope.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(accent)
-                    Text("Mail")
-                        .font(.headline.weight(.semibold))
-                }
-                Text(entry.unread > 0 ? "\(entry.unread)" : "—")
-                    .font(.largeTitle.weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-                Text(entry.unread == 1 ? "non lu" : "non lus")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Text("Ouvrir Mail")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(accent)
+            Group {
+                if family == .systemMedium { mediumBody } else { smallBody }
             }
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(2)
+        }
+        .containerBackground(for: .widget) {
+            WidgetAccentBackground(
+                accent: accent,
+                secondary: secondary,
+                canvas: canvas,
+                colorScheme: colorScheme
+            )
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Mail, \(entry.unread) non lus")
-        .accessibilityHint("Ouvre la boîte mail")
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Ouvre Mail")
+    }
+
+    private var smallBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            WidgetHeader(title: "Mail", systemImage: "envelope.fill", accent: accent)
+            WidgetMetricHero(
+                value: "\(snap.mailUnread)",
+                caption: snap.mailUnread == 1 ? "non lu" : "non lus",
+                accent: accent
+            )
+            Spacer(minLength: 0)
+            if let first = snap.mailPreviews.first {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(first.from)
+                        .font(.caption.weight(.bold))
+                        .lineLimit(1)
+                    Text(first.subject)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if !first.snippet.isEmpty {
+                        Text(first.snippet)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
+                }
+            } else {
+                Text(snap.mailUnread == 0 ? "Boîte à jour" : "Ouvre Mail pour synchroniser")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var mediumBody: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                WidgetHeader(title: "Mail", systemImage: "envelope.fill", accent: accent)
+                WidgetMetricHero(
+                    value: "\(snap.mailUnread)",
+                    caption: snap.mailUnread == 1 ? "non lu" : "non lus",
+                    accent: accent
+                )
+                Spacer(minLength: 0)
+                Text("Ouvrir la boîte")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(accent)
+            }
+            .frame(maxWidth: 118, alignment: .leading)
+
+            VStack(spacing: 6) {
+                if snap.mailPreviews.isEmpty {
+                    WidgetRowCard(
+                        title: "Aucun aperçu",
+                        subtitle: "Ouvre Mail pour synchroniser",
+                        trailing: nil,
+                        symbol: "tray",
+                        accent: accent
+                    )
+                    Spacer(minLength: 0)
+                } else {
+                    ForEach(snap.mailPreviews.prefix(3)) { item in
+                        let line: String = {
+                            if !item.snippet.isEmpty {
+                                return "\(item.subject) · \(item.snippet)"
+                            }
+                            return item.subject
+                        }()
+                        WidgetRowCard(
+                            title: item.from,
+                            subtitle: line,
+                            trailing: item.dateLabel,
+                            symbol: item.unread ? "envelope.badge.fill" : "envelope",
+                            accent: accent,
+                            emphasized: item.unread
+                        )
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private var accessibilityText: String {
+        let preview = snap.mailPreviews.first.map { "\($0.from), \($0.subject)" } ?? "aucun aperçu"
+        return "Mail, \(snap.mailUnread) non lus, \(preview)"
     }
 }

@@ -1,41 +1,24 @@
 import SwiftUI
 import WidgetKit
 
-/// Compteur générique uniquement — aucun nom / contenu de fichier.
 struct FilesEntry: TimelineEntry {
     let date: Date
-    let count: Int
-    let accentLight: UInt32
-    let accentDark: UInt32
+    let snapshot: WidgetSnapshot
 }
 
 struct FilesProvider: TimelineProvider {
     func placeholder(in context: Context) -> FilesEntry {
-        FilesEntry(date: Date(), count: 5, accentLight: 0x0EA5E9, accentDark: 0x67E8F9)
+        FilesEntry(date: Date(), snapshot: .placeholder)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (FilesEntry) -> Void) {
-        let snap = WidgetSharedStore.snapshot()
-        completion(
-            FilesEntry(
-                date: Date(),
-                count: snap.filesRecentCount,
-                accentLight: snap.accentLight,
-                accentDark: snap.accentDark
-            )
-        )
+        completion(FilesEntry(date: Date(), snapshot: WidgetSharedStore.snapshot()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<FilesEntry>) -> Void) {
-        let snap = WidgetSharedStore.snapshot()
-        let entry = FilesEntry(
-            date: Date(),
-            count: snap.filesRecentCount,
-            accentLight: snap.accentLight,
-            accentDark: snap.accentDark
-        )
-        let next = Calendar.current.date(byAdding: .minute, value: 45, to: Date())
-            ?? Date().addingTimeInterval(2700)
+        let entry = FilesEntry(date: Date(), snapshot: WidgetSharedStore.snapshot())
+        let next = Calendar.current.date(byAdding: .minute, value: 20, to: Date())
+            ?? Date().addingTimeInterval(1200)
         completion(Timeline(entries: [entry], policy: .after(next)))
     }
 }
@@ -46,48 +29,123 @@ struct FilesRecentWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: FilesProvider()) { entry in
             FilesWidgetView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Files")
-        .description("Nombre de fichiers du dossier courant (sans noms ni contenus).")
+        .description("Dossier courant, compteur et fichiers récents.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
 struct FilesWidgetView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.widgetFamily) private var family
     let entry: FilesEntry
 
-    private var accent: Color {
-        Color(widgetHex: colorScheme == .dark ? entry.accentDark : entry.accentLight)
+    private var snap: WidgetSnapshot { entry.snapshot }
+    private var accent: Color { snap.accent(colorScheme) }
+    private var secondary: Color { snap.secondary(colorScheme) }
+    private var canvas: Color { snap.canvas(colorScheme) }
+
+    private var folderLabel: String {
+        let n = snap.filesFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return n.isEmpty ? "Dossier" : n
     }
 
     var body: some View {
         Link(destination: URL(string: "chatbot-native://tab/files")!) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(accent)
-                    Text("Files")
-                        .font(.headline.weight(.semibold))
-                }
-                Text(entry.count > 0 ? "\(entry.count)" : "—")
-                    .font(.largeTitle.weight(.bold))
-                    .monospacedDigit()
-                Text(entry.count == 1 ? "fichier" : "fichiers")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Text("Ouvrir Files")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(accent)
+            Group {
+                if family == .systemMedium { mediumBody } else { smallBody }
             }
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(2)
+        }
+        .containerBackground(for: .widget) {
+            WidgetAccentBackground(
+                accent: accent,
+                secondary: secondary,
+                canvas: canvas,
+                colorScheme: colorScheme
+            )
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Files, \(entry.count) fichiers")
+        .accessibilityLabel("Files, \(folderLabel), \(snap.filesRecentCount) éléments")
         .accessibilityHint("Ouvre Files")
+    }
+
+    private var smallBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            WidgetHeader(title: "Files", systemImage: "folder.fill", accent: accent)
+            Text(folderLabel)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(accent)
+                .lineLimit(1)
+            WidgetMetricHero(
+                value: "\(snap.filesRecentCount)",
+                caption: snap.filesRecentCount == 1 ? "fichier" : "fichiers",
+                accent: accent
+            )
+            Spacer(minLength: 0)
+            if let first = snap.filesPreviews.first {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(first.name, systemImage: first.isDirectory ? "folder.fill" : "doc.fill")
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                    if !first.detail.isEmpty {
+                        Text(first.detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    private var mediumBody: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                WidgetHeader(title: "Files", systemImage: "folder.fill", accent: accent)
+                Text(folderLabel)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(accent)
+                    .lineLimit(2)
+                WidgetMetricHero(
+                    value: "\(snap.filesRecentCount)",
+                    caption: snap.filesRecentCount == 1 ? "fichier" : "fichiers",
+                    accent: accent
+                )
+                Spacer(minLength: 0)
+                Text("Parcourir")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(accent)
+            }
+            .frame(maxWidth: 120, alignment: .leading)
+
+            VStack(spacing: 6) {
+                if snap.filesPreviews.isEmpty {
+                    WidgetRowCard(
+                        title: "Aucun fichier",
+                        subtitle: "Ouvre Files pour synchroniser",
+                        trailing: nil,
+                        symbol: "folder.badge.questionmark",
+                        accent: accent
+                    )
+                    Spacer(minLength: 0)
+                } else {
+                    ForEach(snap.filesPreviews.prefix(4)) { item in
+                        WidgetRowCard(
+                            title: item.name,
+                            subtitle: item.detail.isEmpty
+                                ? (item.isDirectory ? "Dossier" : "Fichier")
+                                : item.detail,
+                            trailing: nil,
+                            symbol: item.isDirectory ? "folder.fill" : "doc.fill",
+                            accent: accent
+                        )
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
     }
 }
