@@ -312,6 +312,7 @@ struct MailInboxView: View {
                 if messages.isEmpty {
                     scheduleLoad()
                 }
+                await refreshWidgetUnreadEstimate()
             }
             .onChange(of: messages) { _, _ in
                 persistMailCache()
@@ -663,6 +664,7 @@ struct MailInboxView: View {
                 }
                 sortedWindow = []
                 error = nil
+                publishMailUnreadFromInbox(estimate: resultSizeEstimate, page: filtered)
             } else {
                 var collected: [MailMessageSummary] = []
                 var token: String? = nil
@@ -697,6 +699,7 @@ struct MailInboxView: View {
                 localPageIndex = 0
                 applyLocalPage()
                 error = nil
+                publishMailUnreadFromInbox(estimate: estimate, page: unique)
             }
         } catch is CancellationError {
             return
@@ -804,6 +807,7 @@ struct MailInboxView: View {
     private func applyLocalRead(_ id: String) {
         if unreadOnly {
             _ = removeMessageLocally(id)
+            bumpWidgetUnread(by: -1)
             return
         }
         if let i = messages.firstIndex(where: { $0.id == id }) {
@@ -813,11 +817,46 @@ struct MailInboxView: View {
             sortedWindow[i] = sortedWindow[i].withUnread(false)
         }
         persistMailCache()
+        bumpWidgetUnread(by: -1)
+    }
+
+    /// Estimate Gmail `is:unread` pour le widget (sans contenu privé).
+    private func refreshWidgetUnreadEstimate() async {
+        do {
+            let page = try await client.listMailMessages(
+                maxResults: 1,
+                category: "inbox",
+                query: "is:unread",
+                pageToken: nil
+            )
+            let count = page.resultSizeEstimate ?? page.messages.count
+            WidgetSharedStore.publishMailUnread(count)
+        } catch {
+            // Conserve la dernière valeur widget.
+        }
+    }
+
+    private func publishMailUnreadFromInbox(estimate: Int?, page: [MailMessageSummary]) {
+        if unreadOnly {
+            WidgetSharedStore.publishMailUnread(estimate ?? page.count)
+            return
+        }
+        // Hors filtre non-lu : ne met à jour que si on a une estimate fiable via query dédiée.
+        // (évite d’afficher le count d’une seule page comme total)
+    }
+
+    private func bumpWidgetUnread(by delta: Int) {
+        guard let defaults = UserDefaults(suiteName: WidgetSharedStore.appGroupId) else { return }
+        let key = WidgetSharedStore.Key.mailUnread
+        let current = defaults.object(forKey: key) == nil ? 0 : defaults.integer(forKey: key)
+        WidgetSharedStore.publishMailUnread(max(0, current + delta))
     }
 
     private func trashMessage(_ msg: MailMessageSummary) async {
         // UX : disparition immédiate ; propose+confirm serveur en arrière-plan.
+        let wasUnread = msg.isUnread == true
         let indices = removeMessageLocally(msg.id)
+        if wasUnread { bumpWidgetUnread(by: -1) }
         AppHaptics.warning()
         do {
             let proposal = try await client.proposeMailTrash(messageId: msg.id)
@@ -827,6 +866,7 @@ struct MailInboxView: View {
             )
         } catch {
             restoreMessageLocally(msg, messageIndex: indices.messageIndex, windowIndex: indices.windowIndex)
+            if wasUnread { bumpWidgetUnread(by: 1) }
             self.error = error.localizedDescription
             AppHaptics.warning()
         }
@@ -850,6 +890,7 @@ struct MailInboxView: View {
                 }
                 persistMailCache()
             }
+            bumpWidgetUnread(by: 1)
             self.error = error.localizedDescription
         }
     }

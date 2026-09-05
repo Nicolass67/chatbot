@@ -30,6 +30,9 @@ targets:
       - path: ChatbotNative
         excludes:
           - "**/*.md"
+    dependencies:
+      - target: ChatbotWidgets
+        embed: true
     settings:
       base:
         PRODUCT_NAME: ChatbotNative
@@ -37,6 +40,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_TESTABILITY: "YES"
+        CODE_SIGN_ENTITLEMENTS: ChatbotNative/ChatbotNative.entitlements
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"
           - "@executable_path/Frameworks"
@@ -61,6 +65,28 @@ targets:
           NSAllowsArbitraryLoads: false
         # Origin publique — surchargée par Local.xcconfig / Flash.xcconfig / CI.
         ChatbotPublicBaseURL: "$(CHATBOT_PUBLIC_BASE_URL)"
+  ChatbotWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ChatbotWidgets
+    settings:
+      base:
+        PRODUCT_NAME: ChatbotWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native.widgets
+        INFOPLIST_FILE: ChatbotWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_ENTITLEMENTS: ChatbotWidgets/ChatbotWidgets.entitlements
+        MARKETING_VERSION: "3.0.0"
+        CURRENT_PROJECT_VERSION: "30"
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: "NO"
   ChatbotNativeTests:
     type: bundle.unit-test
     platform: iOS
@@ -95,6 +121,7 @@ schemes:
     build:
       targets:
         ChatbotNative: all
+        ChatbotWidgets: all
         ChatbotNativeTests: [test]
         ChatbotNativeUITests: [test]
     run:

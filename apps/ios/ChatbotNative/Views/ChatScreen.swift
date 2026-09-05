@@ -1199,6 +1199,10 @@ struct ChatScreen: View {
         } else {
             runtimeStatus = snap.status.isEmpty ? "UNKNOWN" : snap.status
         }
+        WidgetSharedStore.publishAssistant(
+            status: runtimeStatus,
+            modelName: selectedModel.isEmpty ? snap.loadedModel : selectedModel
+        )
     }
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
