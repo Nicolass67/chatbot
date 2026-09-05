@@ -204,33 +204,124 @@ public enum MarkdownBlockParser {
     }
 }
 
+/// Cache inline markdown — évite AttributedString(markdown:) à chaque body pass.
+private final class InlineMarkdownCache {
+    private var map: [String: AttributedString] = [:]
+    private let options = AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .inlineOnlyPreservingWhitespace
+    )
+
+    func attributed(_ text: String) -> AttributedString {
+        if let hit = map[text] { return hit }
+        let value = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        if map.count > 256 {
+            map.removeAll(keepingCapacity: true)
+        }
+        map[text] = value
+        return value
+    }
+}
+
+private struct RenderedMarkdownBlock: Identifiable, Equatable {
+    let id: String
+    let block: MarkdownBlock
+}
+
+/// Split stable pour stream : préfixe figé (blocs complets hors fence) + queue live.
+private enum StreamingMarkdownSplit {
+    static func split(_ source: String) -> (prefix: String, tail: String) {
+        guard !source.isEmpty else { return ("", "") }
+        var inFence = false
+        var lastStable = source.startIndex
+        var i = source.startIndex
+        while i < source.endIndex {
+            if source[i] == "`" {
+                let rest = source[i...]
+                if rest.hasPrefix("```") {
+                    inFence.toggle()
+                    i = source.index(i, offsetBy: 3, limitedBy: source.endIndex) ?? source.endIndex
+                    continue
+                }
+            }
+            if !inFence, source[i] == "\n" {
+                let next = source.index(after: i)
+                if next < source.endIndex, source[next] == "\n" {
+                    lastStable = source.index(after: next)
+                }
+            }
+            i = source.index(after: i)
+        }
+        if lastStable == source.startIndex {
+            return ("", source)
+        }
+        return (String(source[..<lastStable]), String(source[lastStable...]))
+    }
+
+    static func renderBlocks(prefix: String, tail: String) -> [RenderedMarkdownBlock] {
+        var out: [RenderedMarkdownBlock] = []
+        let frozen = prefix.isEmpty ? [] : MarkdownBlockParser.parse(prefix)
+        for (idx, block) in frozen.enumerated() {
+            out.append(RenderedMarkdownBlock(id: "f-\(idx)-\(blockStableKey(block))", block: block))
+        }
+        let live = tail.isEmpty ? [] : MarkdownBlockParser.parse(tail)
+        for (idx, block) in live.enumerated() {
+            out.append(RenderedMarkdownBlock(id: "l-\(idx)", block: block))
+        }
+        return out
+    }
+
+    private static func blockStableKey(_ block: MarkdownBlock) -> String {
+        switch block {
+        case .heading(let level, let text):
+            return "h\(level)-\(text.count)-\(text.prefix(24).hashValue)"
+        case .paragraph(let text):
+            return "p-\(text.count)-\(text.prefix(24).hashValue)"
+        case .code(let language, let code):
+            return "c-\(language ?? "")-\(code.count)"
+        case .bullet(let items):
+            return "ul-\(items.count)-\(items.first?.prefix(16).hashValue ?? 0)"
+        case .numbered(let items):
+            return "ol-\(items.count)-\(items.first?.prefix(16).hashValue ?? 0)"
+        case .quote(let text):
+            return "q-\(text.count)"
+        case .table(let headers, let rows):
+            return "t-\(headers.count)x\(rows.count)"
+        case .thematicBreak:
+            return "hr"
+        }
+    }
+}
+
 struct MarkdownMessageView: View {
     let markdown: String
-    /// Pendant le stream SSE : reparse en cadence (~30 fps), pas un debounce trailing
-    /// qui reste cancelé tant que les tokens arrivent (surtout 4B/9B).
+    /// Pendant le stream SSE : markdown live, reparse cadencé (~30 fps) + préfixe figé.
     var isStreaming: Bool = false
 
-    @State private var blocks: [MarkdownBlock]
+    @State private var rendered: [RenderedMarkdownBlock]
     @State private var parseTask: Task<Void, Never>?
     @State private var lastParseAt = Date.distantPast
     @State private var pendingParse = false
+    @State private var frozenPrefix = ""
+    @State private var inlineCache = InlineMarkdownCache()
 
     init(markdown: String, isStreaming: Bool = false) {
         self.markdown = markdown
         self.isStreaming = isStreaming
-        _blocks = State(initialValue: MarkdownBlockParser.parse(markdown))
+        let initial = MarkdownBlockParser.parse(markdown).enumerated().map {
+            RenderedMarkdownBlock(id: "i-\($0.offset)", block: $0.element)
+        }
+        _rendered = State(initialValue: initial)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(rendered) { item in
+                blockView(item.block)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
-            // Resync si le parent a changé le markdown avant l’apparition.
-            if blocks.isEmpty, !markdown.isEmpty {
+            if rendered.isEmpty, !markdown.isEmpty {
                 scheduleParse(immediate: true)
             }
         }
@@ -239,6 +330,7 @@ struct MarkdownMessageView: View {
         }
         .onChange(of: isStreaming) { _, streaming in
             if !streaming {
+                frozenPrefix = ""
                 scheduleParse(immediate: true)
             }
         }
@@ -249,13 +341,12 @@ struct MarkdownMessageView: View {
     }
 
     private func scheduleParse(immediate: Bool) {
-        let source = markdown
         if immediate {
             parseTask?.cancel()
             parseTask = nil
             pendingParse = false
             lastParseAt = Date()
-            blocks = MarkdownBlockParser.parse(source)
+            applyParse(markdown, streaming: false)
             return
         }
 
@@ -264,7 +355,7 @@ struct MarkdownMessageView: View {
         if elapsed >= minInterval {
             lastParseAt = Date()
             pendingParse = false
-            blocks = MarkdownBlockParser.parse(source)
+            applyParse(markdown, streaming: true)
             return
         }
 
@@ -278,8 +369,28 @@ struct MarkdownMessageView: View {
             guard pendingParse else { return }
             pendingParse = false
             lastParseAt = Date()
-            blocks = MarkdownBlockParser.parse(markdown)
+            applyParse(markdown, streaming: true)
         }
+    }
+
+    private func applyParse(_ source: String, streaming: Bool) {
+        if !streaming {
+            frozenPrefix = ""
+            rendered = MarkdownBlockParser.parse(source).enumerated().map {
+                RenderedMarkdownBlock(id: "i-\($0.offset)", block: $0.element)
+            }
+            return
+        }
+
+        let parts = StreamingMarkdownSplit.split(source)
+        if parts.prefix.count >= frozenPrefix.count,
+           parts.prefix.hasPrefix(frozenPrefix) || frozenPrefix.isEmpty {
+            frozenPrefix = parts.prefix
+        } else if parts.prefix != frozenPrefix {
+            frozenPrefix = parts.prefix
+        }
+        let tail = String(source.dropFirst(frozenPrefix.count))
+        rendered = StreamingMarkdownSplit.renderBlocks(prefix: frozenPrefix, tail: tail)
     }
 
     @ViewBuilder
@@ -383,10 +494,7 @@ struct MarkdownMessageView: View {
     }
 
     private func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
-            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
+        inlineCache.attributed(text)
     }
 }
 

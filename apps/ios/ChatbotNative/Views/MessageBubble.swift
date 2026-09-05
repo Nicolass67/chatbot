@@ -183,17 +183,9 @@ struct MessageBubble: View {
             let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
-                    // Stream : texte brut (fluide). Markdown complet seulement à la fin.
-                    if isStreaming {
-                        Text(message.content)
-                            .font(CNFont.body)
-                            .foregroundStyle(AppTheme.foreground)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        MarkdownMessageView(markdown: message.content, isStreaming: false)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // Markdown live pendant le stream (parse incrémental + cache inline).
+                    MarkdownMessageView(markdown: message.content, isStreaming: isStreaming)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
