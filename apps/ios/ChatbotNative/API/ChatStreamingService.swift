@@ -36,7 +36,7 @@ actor ChatStreamingService {
         var lastTransient: Error?
         // 502/503 = tunnel Cloudflare / PC momentanément injoignable après une grosse requête.
         for attempt in 0..<3 {
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
             do {
                 try await streamOnce(
                     baseURL: baseURL,
@@ -133,7 +133,7 @@ actor ChatStreamingService {
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
             if let event = ChatSSEParser.parseLine(line) {
                 onEvent(event)
             }
@@ -152,7 +152,7 @@ actor ChatStreamingService {
         if useAgent {
             onEvent(ChatSSEParser.Event(type: "agent_start", payload: ["type": "agent_start"]))
             try await Task.sleep(nanoseconds: 120_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
 
             onEvent(ChatSSEParser.Event(type: "agent_plan", payload: [
                 "type": "agent_plan",
@@ -164,7 +164,7 @@ actor ChatStreamingService {
                 ],
             ] as [String: Any]))
             try await Task.sleep(nanoseconds: 200_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
 
             onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
                 "type": "agent_step",
@@ -176,7 +176,7 @@ actor ChatStreamingService {
             ]))
             // Hold agent strip visible for XCUITest screenshot / Stop tap.
             try await Task.sleep(nanoseconds: 2_000_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
 
             if scenario == "agent-error" {
                 onEvent(ChatSSEParser.Event(type: "agent_step", payload: [
@@ -186,7 +186,7 @@ actor ChatStreamingService {
                     "message": "Permission denied accessing file",
                 ]))
                 try await Task.sleep(nanoseconds: 400_000_000)
-                guard myGeneration == generation else { return }
+                guard myGeneration == generation else { throw CancellationError() }
                 onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
                 return
             }
@@ -205,7 +205,7 @@ actor ChatStreamingService {
                 "message": "Préparer la réponse",
             ]))
             try await Task.sleep(nanoseconds: 200_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
 
             onEvent(ChatSSEParser.Event(type: "token", payload: [
                 "type": "token",
@@ -225,7 +225,7 @@ actor ChatStreamingService {
             : (scenario == "chat") ? 1_600_000_000
             : 400_000_000
         try await Task.sleep(nanoseconds: holdNs)
-        guard myGeneration == generation else { return }
+        guard myGeneration == generation else { throw CancellationError() }
 
         onEvent(ChatSSEParser.Event(type: "token", payload: [
             "type": "token",
@@ -240,7 +240,7 @@ actor ChatStreamingService {
                 "reason": "Ouvrir le fil Free",
             ] as [String: Any]))
             try await Task.sleep(nanoseconds: 400_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
             onEvent(ChatSSEParser.Event(type: "files_handoff", payload: [
                 "type": "files_handoff",
                 "rootId": "uitest-root-documents",
@@ -248,7 +248,7 @@ actor ChatStreamingService {
                 "reason": "Ouvrir Documents",
             ] as [String: Any]))
             try await Task.sleep(nanoseconds: 600_000_000)
-            guard myGeneration == generation else { return }
+            guard myGeneration == generation else { throw CancellationError() }
         }
         onEvent(ChatSSEParser.Event(type: "done", payload: ["type": "done"]))
     }

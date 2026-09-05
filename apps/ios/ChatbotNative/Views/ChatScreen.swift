@@ -25,6 +25,7 @@ struct ChatScreen: View {
     @State private var streamingText = ""
     @State private var thinkingKind: ThinkingKind?
     @State private var isSending = false
+    @State private var sendGeneration: UInt64 = 0
     @State private var error: String?
     @State private var sendTask: Task<Void, Never>?
     @State private var pendingAttachments: [UploadedAttachment] = []
@@ -281,6 +282,16 @@ struct ChatScreen: View {
                 chromeById = ConversationSessionStore.chrome(for: conversation.id)
                 Task { await loadMessages() }
             }
+        }
+        // Annuler le stream quand on quitte cette conversation.
+        // Prefer onChange(id) over onDisappear: tab switches may remount ChatScreen.
+        .onChange(of: conversation.id) { _, _ in
+            sendTask?.cancel()
+            sendTask = nil
+            sendGeneration &+= 1
+            isSending = false
+            thinkingKind = nil
+            Task { await streamingService.cancel() }
         }
         // Ne pas annuler le stream sur changement d’onglet / preview fichier —
         // seul le background (scenePhase) ou Stop explicite interrompt.
@@ -1264,7 +1275,7 @@ struct ChatScreen: View {
         preserveAssistantId: String?
     ) -> [MessageDTO] {
         if server.isEmpty { return local }
-        var byId = Dictionary(uniqueKeysWithValues: server.map { ($0.id, $0) })
+        var byId = Dictionary(server.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
         // Conserver le contenu local plus long si le serveur est encore en retard
         for msg in local where msg.role == "assistant" {
             if let existing = byId[msg.id], existing.content.count < msg.content.count {
@@ -1794,10 +1805,16 @@ struct ChatScreen: View {
     }
 
     private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false, rewriteDraftCard: Bool = false) async {
+        guard !isSending else { return }
         let rawText = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
         guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
+
+        // Lock early (before optimistic UI / network) — double-tap & overlapping sends.
+        isSending = true
+        sendGeneration &+= 1
+        let gen = sendGeneration
 
         // Texte API : enrichi si un brouillon est ouvert (contexte pour peaufiner / réécrire).
         var text = rawText
@@ -1912,7 +1929,6 @@ struct ChatScreen: View {
             editingMessageId = nil
         }
 
-        isSending = true
         Keyboard.dismiss()
         scrollToken += 1
         streamingText = ""
@@ -1941,7 +1957,15 @@ struct ChatScreen: View {
                 options: opts,
                 streaming: streamingService
             ) { event in
-                Task { @MainActor in handleSSE(type: event.type, obj: event.payload) }
+                Task { @MainActor in
+                    guard gen == sendGeneration else { return }
+                    handleSSE(type: event.type, obj: event.payload)
+                }
+            }
+            guard gen == sendGeneration else {
+                isSending = false
+                sendTask = nil
+                return
             }
             if Task.isCancelled {
                 // Stop / arrière-plan : finalizeStoppedStream (ou scenePhase) a déjà géré le partial.
@@ -1999,6 +2023,11 @@ struct ChatScreen: View {
             streamMailHandoff = nil
             streamFilesHandoff = nil
             await finishDraftRewriteIfNeeded(appliedViaPreview: rewriteHadPreview, fallbackText: rewriteFallback)
+            guard gen == sendGeneration else {
+                isSending = false
+                sendTask = nil
+                return
+            }
             suppressAssistantNarration = false
             // Toujours dédupliquer les cartes fichiers (asst-* + id serveur).
             if !finalFound.isEmpty {
@@ -2020,6 +2049,11 @@ struct ChatScreen: View {
                 }
             } else if !skipPromoteNarration {
                 await loadMessages(preserveAssistantId: promoteId)
+                guard gen == sendGeneration else {
+                    isSending = false
+                    sendTask = nil
+                    return
+                }
                 if !finalFound.isEmpty {
                     dedupeAssistantMessagesSharing(
                         fileIds: Set(finalFound.map(\.id)),
@@ -2080,8 +2114,10 @@ struct ChatScreen: View {
                 await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
             }
         }
-        isSending = false
-        sendTask = nil
+        if gen == sendGeneration {
+            isSending = false
+            sendTask = nil
+        }
     }
 
     private func friendlyChatSendError(_ error: Error) -> String {

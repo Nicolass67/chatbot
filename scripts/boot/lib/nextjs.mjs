@@ -36,6 +36,40 @@ export async function isNextJsListening() {
  * @param {string} healthUrl
  * @param {number} timeoutMs
  */
+function healthFetchHeaders() {
+  /** @type {Record<string, string>} */
+  const headers = {};
+  const token = process.env.HEALTH_CHECK_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * @param {Response} response
+ * @param {unknown} body
+ */
+function isHealthAcceptable(response, body) {
+  if (response.status === 200) return true;
+  if (response.status !== 200 && response.status !== 503) return false;
+  const status =
+    body && typeof body === "object" && "status" in body
+      ? String(/** @type {{ status?: unknown }} */ (body).status)
+      : "";
+  if (status !== "ok" && status !== "degraded") return false;
+  const sqliteOk =
+    body &&
+    typeof body === "object" &&
+    "ready" in body &&
+    /** @type {{ ready?: unknown }} */ (body).ready === true;
+  const checksSqlite =
+    body &&
+    typeof body === "object" &&
+    "checks" in body &&
+    /** @type {{ checks?: { sqlite?: { status?: string } } }} */ (body).checks
+      ?.sqlite?.status === "ok";
+  return Boolean(sqliteOk || checksSqlite);
+}
+
 export async function waitForNextHealth(
   healthUrl,
   timeoutMs = 300_000,
@@ -46,9 +80,10 @@ export async function waitForNextHealth(
     try {
       const response = await fetch(healthUrl, {
         signal: AbortSignal.timeout(8000),
+        headers: healthFetchHeaders(),
       });
-      if (response.ok) {
-        const body = await response.json();
+      const body = await response.json().catch(() => null);
+      if (isHealthAcceptable(response, body)) {
         return { ok: true, health: body };
       }
     } catch {
@@ -65,6 +100,7 @@ export async function waitForNextHealth(
 export async function fetchNextHealth(healthUrl) {
   const response = await fetch(healthUrl, {
     signal: AbortSignal.timeout(10_000),
+    headers: healthFetchHeaders(),
   });
   const health = await response.json();
   return { status: response.status, health };

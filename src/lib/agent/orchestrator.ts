@@ -74,6 +74,7 @@ import {
 import type { ChatOrchestratorInput } from "./events";
 import { runAgentLoop } from "./loop";
 import type { ChatMode } from "./types";
+import { isAbortLikeError } from "./abort";
 
 export type { OrchestratorEvent, ChatOrchestratorInput } from "./events";
 
@@ -321,6 +322,15 @@ async function finalizeStreamedAssistant(params: {
   let { fullContent } = params;
 
   if (!fullContent.trim()) {
+    // Annulation : pas de placeholder inventé, pas de `done`.
+    if (input.signal?.aborted) {
+      input.onEvent({
+        type: "error",
+        message: "Requête annulée",
+        code: "ABORTED",
+      });
+      return;
+    }
     fullContent = "Je n'ai pas pu générer de réponse.";
   }
 
@@ -339,17 +349,17 @@ async function finalizeStreamedAssistant(params: {
     });
   }
 
-  input.onEvent({ type: "done", messageId: assistantId });
-
-  void persistAssistantMessage({
-    input,
-    settings,
-    assistantId,
-    fullContent,
-    collectedSources: dedupeAndCapSources(collectedSources, 20),
-    pendingAttachments,
-    memoryIntent,
-  }).catch((error) => {
+  try {
+    await persistAssistantMessage({
+      input,
+      settings,
+      assistantId,
+      fullContent,
+      collectedSources: dedupeAndCapSources(collectedSources, 20),
+      pendingAttachments,
+      memoryIntent,
+    });
+  } catch (error) {
     input.onEvent({
       type: "error",
       message:
@@ -357,7 +367,10 @@ async function finalizeStreamedAssistant(params: {
           ? `Erreur de sauvegarde: ${error.message}`
           : "Erreur de sauvegarde",
     });
-  });
+    return;
+  }
+
+  input.onEvent({ type: "done", messageId: assistantId });
 }
 
 export async function runChatOrchestrator(
@@ -412,17 +425,24 @@ export async function runChatOrchestrator(
       message: status.message,
     });
 
-    const statusPoll = setInterval(async () => {
-      try {
-        const s = await runtime.status();
-        input.onEvent({
-          type: "runtime_status",
-          status: s.status,
-          message: s.message,
-        });
-      } catch {
-        // ignore poll errors
-      }
+    let statusPollInFlight = false;
+    const statusPoll = setInterval(() => {
+      if (statusPollInFlight) return;
+      statusPollInFlight = true;
+      void (async () => {
+        try {
+          const s = await runtime.status();
+          input.onEvent({
+            type: "runtime_status",
+            status: s.status,
+            message: s.message,
+          });
+        } catch {
+          // ignore poll errors
+        } finally {
+          statusPollInFlight = false;
+        }
+      })();
     }, STATUS_POLL_MS);
 
     try {
@@ -860,7 +880,12 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       ),
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (isAbortLikeError(error) || input.signal?.aborted) {
+      input.onEvent({
+        type: "error",
+        message: "Requête annulée",
+        code: "ABORTED",
+      });
       return;
     }
     input.onEvent({
@@ -1341,6 +1366,14 @@ async function streamFinalResponse(params: {
   );
 
   if (!fullContent) {
+    if (input.signal?.aborted) {
+      input.onEvent({
+        type: "error",
+        message: "Requête annulée",
+        code: "ABORTED",
+      });
+      return;
+    }
     fullContent = "Je n'ai pas pu générer de réponse.";
     input.onEvent({ type: "token", content: fullContent });
   }
@@ -1350,17 +1383,17 @@ async function streamFinalResponse(params: {
     input.onEvent({ type: "sources", sources: capped });
   }
 
-  input.onEvent({ type: "done", messageId: assistantId });
-
-  void persistAssistantMessage({
-    input,
-    settings,
-    assistantId,
-    fullContent,
-    collectedSources: dedupeAndCapSources(collectedSources, 20),
-    pendingAttachments,
-    memoryIntent,
-  }).catch((error) => {
+  try {
+    await persistAssistantMessage({
+      input,
+      settings,
+      assistantId,
+      fullContent,
+      collectedSources: dedupeAndCapSources(collectedSources, 20),
+      pendingAttachments,
+      memoryIntent,
+    });
+  } catch (error) {
     input.onEvent({
       type: "error",
       message:
@@ -1368,7 +1401,10 @@ async function streamFinalResponse(params: {
           ? `Erreur de sauvegarde: ${error.message}`
           : "Erreur de sauvegarde",
     });
-  });
+    return;
+  }
+
+  input.onEvent({ type: "done", messageId: assistantId });
 }
 
 /**

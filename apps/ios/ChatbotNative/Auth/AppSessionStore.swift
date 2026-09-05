@@ -205,6 +205,7 @@ final class AppSessionStore: NSObject, ObservableObject {
             _ = try? await URLSession.shared.data(for: req)
         }
         KeychainStore.clear()
+        TabMemoryCache.clearAll()
         token = nil
         userId = nil
         expiresAt = nil

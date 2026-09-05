@@ -435,62 +435,83 @@ function migrateSchema(sqlite: Database.Database) {
   `);
 
   // Hot-path indexes (perf) — IF NOT EXISTS, safe on existing DBs.
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS messages_conversation_id_idx
-    ON messages (conversation_id, created_at);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS attachments_conversation_id_idx
-    ON attachments (conversation_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS attachments_message_id_idx
-    ON attachments (message_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS tool_calls_conversation_id_idx
-    ON tool_calls (conversation_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS tool_calls_message_id_idx
-    ON tool_calls (message_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS document_chunks_attachment_id_idx
-    ON document_chunks (attachment_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS document_chunks_conversation_id_idx
-    ON document_chunks (conversation_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS message_sources_message_id_idx
-    ON message_sources (message_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS agent_runs_conversation_id_idx
-    ON agent_runs (conversation_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS email_drafts_user_id_idx
-    ON email_drafts (user_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS email_drafts_conversation_id_idx
-    ON email_drafts (conversation_id);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS conversations_scope_updated_idx
-    ON conversations (scope, updated_at);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS file_references_user_root_path_idx
-    ON file_references (user_id, root_id, relative_path);
-  `);
-  sqlite.exec(`
-    CREATE INDEX IF NOT EXISTS file_index_entries_user_root_idx
-    ON file_index_entries (user_id, root_id);
-  `);
+  // Guard with tableExists so a partial/migrating DB does not crash boot.
+  if (tableExists(sqlite, "messages")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS messages_conversation_id_idx
+      ON messages (conversation_id, created_at);
+    `);
+  }
+  if (tableExists(sqlite, "attachments")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS attachments_conversation_id_idx
+      ON attachments (conversation_id);
+    `);
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS attachments_message_id_idx
+      ON attachments (message_id);
+    `);
+  }
+  if (tableExists(sqlite, "tool_calls")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS tool_calls_conversation_id_idx
+      ON tool_calls (conversation_id);
+    `);
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS tool_calls_message_id_idx
+      ON tool_calls (message_id);
+    `);
+  }
+  if (tableExists(sqlite, "document_chunks")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS document_chunks_attachment_id_idx
+      ON document_chunks (attachment_id);
+    `);
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS document_chunks_conversation_id_idx
+      ON document_chunks (conversation_id);
+    `);
+  }
+  if (tableExists(sqlite, "message_sources")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS message_sources_message_id_idx
+      ON message_sources (message_id);
+    `);
+  }
+  if (tableExists(sqlite, "agent_runs")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS agent_runs_conversation_id_idx
+      ON agent_runs (conversation_id);
+    `);
+  }
+  if (tableExists(sqlite, "email_drafts")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS email_drafts_user_id_idx
+      ON email_drafts (user_id);
+    `);
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS email_drafts_conversation_id_idx
+      ON email_drafts (conversation_id);
+    `);
+  }
+  if (tableExists(sqlite, "conversations")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS conversations_scope_updated_idx
+      ON conversations (scope, updated_at);
+    `);
+  }
+  if (tableExists(sqlite, "file_references")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS file_references_user_root_path_idx
+      ON file_references (user_id, root_id, relative_path);
+    `);
+  }
+  if (tableExists(sqlite, "file_index_entries")) {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS file_index_entries_user_root_idx
+      ON file_index_entries (user_id, root_id);
+    `);
+  }
 
   // Requis avant initFts5 (triggers content=memories) — sinon HTTP 500 partout.
   sqlite.exec(`

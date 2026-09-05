@@ -159,8 +159,7 @@ struct MailInboxView: View {
             sortedWindow = []
             windowExhausted = false
             resultSizeEstimate = nil
-            // Clear stale rows immediately so a failed refresh can't show the wrong filter.
-            messages = []
+            // Keep previous messages until new data arrives (avoid empty flash / wrong wipe).
         }
         loadTask = Task { await load(pageToken: nil) }
     }

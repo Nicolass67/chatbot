@@ -19,6 +19,13 @@ import type {
 
 const abortControllers = new Map<string, AbortController>();
 
+/** True when fetch/stream was cancelled via AbortSignal. */
+export function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  if (error instanceof Error && error.name === "AbortError") return true;
+  return false;
+}
+
 function mergeSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
   const controller = new AbortController();
   for (const signal of signals) {
@@ -312,8 +319,9 @@ export async function lmStudioStream(
       usage: lastUsage,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      callbacks.onDone({ content: "" });
+    // Abort ≠ succès vide : sinon l’orchestrateur finalise un faux message assistant.
+    if (isAbortError(error)) {
+      callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     callbacks.onError(error instanceof Error ? error : new Error(String(error)));

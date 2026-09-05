@@ -48,7 +48,16 @@ const SSE_HEADERS = {
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export async function POST(request: Request) {
-  const body = chatSchema.parse(await request.json());
+  let body: z.infer<typeof chatSchema>;
+  try {
+    body = chatSchema.parse(await request.json());
+  } catch (e) {
+    const message =
+      e instanceof z.ZodError
+        ? e.issues[0]?.message || "Requête invalide"
+        : "JSON invalide";
+    return apiErrorResponse("VALIDATION_ERROR", message);
+  }
   const abortSignal = request.signal;
   const auth = await authenticateRequest(request);
   if (!auth.authenticated || !auth.userId) {

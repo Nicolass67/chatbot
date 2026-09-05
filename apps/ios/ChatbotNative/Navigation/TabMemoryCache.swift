@@ -68,4 +68,13 @@ enum TabMemoryCache {
     static func chat(conversationId: String) -> [MessageDTO]? {
         chatMessagesByConversation[conversationId]
     }
+
+    /// Logout / session reset — purge tous les caches d’onglets.
+    static func clearAll() {
+        mail = nil
+        fileRoots = nil
+        fileFolders = [:]
+        filesPath = nil
+        chatMessagesByConversation = [:]
+    }
 }
