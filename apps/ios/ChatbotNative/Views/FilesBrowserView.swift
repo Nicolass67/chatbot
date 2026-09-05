@@ -21,6 +21,24 @@ enum FilesViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Messages d’erreur Files lisibles (évite le DecodingError anglais opaque).
+private enum FilesErrorMessaging {
+    static func message(for error: Error) -> String {
+        if let api = error as? APIClientError {
+            return api.errorDescription ?? "Impossible de charger les fichiers."
+        }
+        if error is DecodingError {
+            return "Impossible de lire ce dossier. Réessaie."
+        }
+        let msg = error.localizedDescription
+        let lower = msg.lowercased()
+        if lower.contains("couldn't be read") || lower.contains("correct format") || lower.contains("data corru") {
+            return "Impossible de lire ce dossier. Réessaie."
+        }
+        return msg
+    }
+}
+
 enum FilesSortMode: String, CaseIterable, Identifiable {
     case name, date, size, type
     var id: String { rawValue }
@@ -797,7 +815,7 @@ struct FilesBrowserView: View {
             error = nil
             consumePendingFilesDeepLink()
         } catch {
-            self.error = Self.friendlyFilesError(error)
+            self.error = FilesErrorMessaging.message(for: error)
         }
     }
 
@@ -1695,23 +1713,8 @@ struct FileFolderView: View {
                 nextCursor: nextCursor
             )
         } catch {
-            self.error = Self.friendlyFilesError(error)
+            self.error = FilesErrorMessaging.message(for: error)
         }
-    }
-
-    private static func friendlyFilesError(_ error: Error) -> String {
-        if let api = error as? APIClientError {
-            return api.errorDescription ?? "Impossible de charger le dossier."
-        }
-        if error is DecodingError {
-            return "Impossible de lire ce dossier. Réessaie."
-        }
-        let msg = error.localizedDescription
-        let lower = msg.lowercased()
-        if lower.contains("couldn't be read") || lower.contains("correct format") || lower.contains("data corru") {
-            return "Impossible de lire ce dossier. Réessaie."
-        }
-        return msg
     }
 
     private func loadMoreIfNeeded() async {
