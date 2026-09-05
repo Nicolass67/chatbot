@@ -1508,12 +1508,6 @@ struct FileFolderView: View {
                             .foregroundStyle(AppTheme.mutedForeground)
                             .lineLimit(1)
                     }
-                    if entry.indexed == true, !isFolder(entry) {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.filesAccent)
-                            .accessibilityLabel("Indexé")
-                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1536,42 +1530,27 @@ struct FileFolderView: View {
 
     @ViewBuilder
     private func detailFileIconActions(_ entry: FileEntryDTO) -> some View {
-        HStack(spacing: 2) {
-            if entry.fileId != nil {
-                Button {
-                    Task { await downloadEntry(entry) }
-                } label: {
-                    Group {
-                        if downloadingFileId == entry.fileId {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .tint(AppTheme.accent)
-                        } else {
-                            Image(systemName: "arrow.down.circle")
-                                .font(.body.weight(.medium))
-                        }
-                    }
-                    .frame(width: 36, height: 36)
-                    .foregroundStyle(AppTheme.accent)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(downloadingFileId != nil)
-                .accessibilityLabel("Télécharger")
-            }
-
+        if entry.fileId != nil {
             Button {
-                onRevealDestination(entry)
-                AppHaptics.light()
+                Task { await downloadEntry(entry) }
             } label: {
-                Image(systemName: "folder")
-                    .font(.body.weight(.medium))
-                    .frame(width: 36, height: 36)
-                    .foregroundStyle(AppTheme.filesAccent)
-                    .contentShape(Rectangle())
+                Group {
+                    if downloadingFileId == entry.fileId {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(AppTheme.accent)
+                    } else {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.body.weight(.medium))
+                    }
+                }
+                .frame(width: 36, height: 36)
+                .foregroundStyle(AppTheme.accent)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Aller à la destination")
+            .disabled(downloadingFileId != nil)
+            .accessibilityLabel("Télécharger")
         }
     }
 
