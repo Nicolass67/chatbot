@@ -1355,10 +1355,12 @@ struct FileFolderView: View {
                                     baseURL: session.baseURL,
                                     token: session.token
                                 )
-                                .frame(height: 72)
                                 .frame(maxWidth: .infinity)
+                                .aspectRatio(1, contentMode: .fit)
                                 .background(AppTheme.surfaceElevated.opacity(0.55))
+                                .compositingGroup()
                                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
 
                                 Text(entry.name ?? entry.relativePath)
                                     .font(.caption2.weight(.medium))
@@ -1366,17 +1368,17 @@ struct FileFolderView: View {
                                     .lineLimit(2)
                                     .truncationMode(.middle)
                                     .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity)
+                                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .top)
 
-                                if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
-                                    Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                                        .font(.caption2)
-                                        .foregroundStyle(AppTheme.mutedForeground)
-                                        .lineLimit(1)
-                                }
+                                Text(gridMetaLabel(for: entry))
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.mutedForeground)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity)
+                                    .opacity(gridMetaLabel(for: entry).isEmpty ? 0 : 1)
                             }
                             .padding(8)
-                            .frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, alignment: .top)
                             .background(
                                 selection.contains(entry.fileId ?? "")
                                     ? AppTheme.accent.opacity(0.14)
@@ -1418,6 +1420,11 @@ struct FileFolderView: View {
         }
     }
 
+    private func gridMetaLabel(for entry: FileEntryDTO) -> String {
+        guard !isFolder(entry), let size = entry.sizeBytes, size > 0 else { return " " }
+        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+    }
+
     private var details: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
@@ -1435,7 +1442,9 @@ struct FileFolderView: View {
                                 )
                                 .frame(width: 52, height: 52)
                                 .background(AppTheme.surfaceElevated.opacity(0.55))
+                                .compositingGroup()
                                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(entry.name ?? entry.relativePath)
@@ -1950,28 +1959,38 @@ private struct FilesEntryThumbnail: View {
     }
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: systemIcon)
-                    .font(.system(size: iconSize, weight: .medium))
-                    .foregroundStyle(isFolder ? AppTheme.accent : AppTheme.muted)
-                if loading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .padding(4)
-                        .background(.ultraThinMaterial, in: Circle())
+        // Overlay + clip : scaledToFill ne sort jamais de la tile (grille).
+        Color.clear
+            .overlay {
+                Group {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    } else {
+                        ZStack {
+                            Image(systemName: systemIcon)
+                                .font(.system(size: iconSize, weight: .medium))
+                                .foregroundStyle(isFolder ? AppTheme.accent : AppTheme.muted)
+                            if loading {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .padding(4)
+                                    .background(.ultraThinMaterial, in: Circle())
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .task(id: entry.fileId ?? entry.relativePath) {
-            await loadIfNeeded()
-        }
+            .clipped()
+            .compositingGroup()
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+            .contentShape(Rectangle())
+            .task(id: entry.fileId ?? entry.relativePath) {
+                await loadIfNeeded()
+            }
     }
 
     private func loadIfNeeded() async {
