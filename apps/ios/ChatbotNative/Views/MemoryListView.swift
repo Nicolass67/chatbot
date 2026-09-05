@@ -383,10 +383,6 @@ struct MemoryDetailSheet: View {
                     Button("Oublier", role: .destructive, action: onForget)
                         .disabled(editing)
                 }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    KeyboardDismissButton()
-                }
             }
         }
     }
