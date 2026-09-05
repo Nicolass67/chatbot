@@ -592,7 +592,6 @@ struct ChatScreen: View {
             mailHandoff: chrome.mailHandoff,
             filesHandoff: chrome.filesHandoff,
             filesFound: chrome.filesFound,
-            isLiveStreaming: liveStreaming,
             onCopy: {
                 UIPasteboard.general.string = msg.content
                 AppHaptics.light()
@@ -627,11 +626,13 @@ struct ChatScreen: View {
             },
             onSendFoundFileByMail: { file in
                 sendFoundFileByMail(file)
-            }
+            },
+            isLiveStreaming: liveStreaming
         )
         .id(msg.id)
     }
 
+    @ViewBuilder
     private var emptyThread: some View {
         if let scope = forcedScope {
             ContextualQuickActions(
