@@ -100,6 +100,8 @@ enum APIClientError: LocalizedError {
     case unauthorized
     case http(Int, String)
     case decode
+    /// HTTP 2xx avec corps vide / non-JSON (souvent Next.js zombie ou tunnel).
+    case emptyResponse
 
     var errorDescription: String? {
         switch self {
@@ -113,8 +115,16 @@ enum APIClientError: LocalizedError {
             if body.isEmpty || body == "SSE failed" {
                 return "HTTP \(code)"
             }
+            // API files renvoie souvent `{ "error": "..." }` — surface le message métier.
+            if let data = body.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let msg = obj["error"] as? String,
+               !msg.isEmpty {
+                return msg
+            }
             return body.hasPrefix("HTTP") ? body : "HTTP \(code): \(body)"
-        case .decode: return "Réponse invalide"
+        case .decode: return "Impossible de lire la réponse du serveur. Réessaie."
+        case .emptyResponse: return "Le serveur n’a pas renvoyé de données. Réessaie dans un instant."
         }
     }
 }
@@ -1126,7 +1136,7 @@ final class APIClient: @unchecked Sendable {
         let request = authorizedURLRequest(components.url!)
         let (data, resp) = try await URLSession.shared.data(for: request)
         try throwIfNeeded(resp, data)
-        return try JSONDecoder().decode(FileListDTO.self, from: data)
+        return try decodeFileList(from: data)
     }
 
     func searchFiles(query: String, rootId: String? = nil, mode: String = "name") async throws -> [FileSearchHitDTO] {
@@ -1224,6 +1234,35 @@ final class APIClient: @unchecked Sendable {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw APIClientError.http(http.statusCode, body)
         }
+        // Un 200 vide n’est jamais une réponse API valide → évite le DecodingError opaque.
+        if data.isEmpty {
+            throw APIClientError.emptyResponse
+        }
+    }
+
+    /// Décode une liste fichiers de façon tolérante (entrées invalides ignorées).
+    private func decodeFileList(from data: Data) throws -> FileListDTO {
+        let decoder = JSONDecoder()
+        if let list = try? decoder.decode(FileListDTO.self, from: data) {
+            return list
+        }
+        // Fallback : parser le JSON brut et garder les entrées valides une par une.
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIClientError.decode
+        }
+        let fileId = root["fileId"] as? String
+        let nextCursor = root["nextCursor"] as? String
+        let rawEntries = root["entries"] as? [[String: Any]] ?? []
+        // Si la clé entries est absente et qu’on a une erreur métier dans un 200 (anormal).
+        if root["entries"] == nil, let err = root["error"] as? String, !err.isEmpty {
+            throw APIClientError.http(200, err)
+        }
+        let entries: [FileEntryDTO] = rawEntries.compactMap { FileEntryDTO(jsonObject: $0) }
+        // Aucune entrée décodable alors que le payload en contenait → vrai problème de format.
+        if entries.isEmpty, !rawEntries.isEmpty {
+            throw APIClientError.decode
+        }
+        return FileListDTO(fileId: fileId, entries: entries, nextCursor: nextCursor)
     }
 }
 
@@ -1322,6 +1361,47 @@ struct FileEntryDTO: Identifiable, Codable, Hashable {
     /// Epoch ms — déjà fourni par `/api/files/list`.
     let mtimeMs: Int?
     let indexed: Bool?
+
+    /// Parse souple depuis un objet JSON (Int/Double/String pour les tailles).
+    init?(jsonObject obj: [String: Any]) {
+        guard let relativePath = obj["relativePath"] as? String, !relativePath.isEmpty else { return nil }
+        self.relativePath = relativePath
+        self.fileId = obj["fileId"] as? String
+        self.name = obj["name"] as? String
+        self.isDirectory = obj["isDirectory"] as? Bool
+        self.sizeBytes = Self.flexibleInt(obj["sizeBytes"])
+        self.mtimeMs = Self.flexibleInt(obj["mtimeMs"])
+        self.indexed = obj["indexed"] as? Bool
+    }
+
+    init(
+        fileId: String? = nil,
+        name: String? = nil,
+        relativePath: String,
+        isDirectory: Bool? = nil,
+        sizeBytes: Int? = nil,
+        mtimeMs: Int? = nil,
+        indexed: Bool? = nil
+    ) {
+        self.fileId = fileId
+        self.name = name
+        self.relativePath = relativePath
+        self.isDirectory = isDirectory
+        self.sizeBytes = sizeBytes
+        self.mtimeMs = mtimeMs
+        self.indexed = indexed
+    }
+
+    private static func flexibleInt(_ any: Any?) -> Int? {
+        switch any {
+        case let v as Int: return v
+        case let v as Int64: return Int(v)
+        case let v as Double: return Int(v)
+        case let v as NSNumber: return v.intValue
+        case let v as String: return Int(v)
+        default: return nil
+        }
+    }
 }
 
 struct FileListDTO: Codable, Hashable {

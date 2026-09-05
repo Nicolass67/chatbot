@@ -797,7 +797,7 @@ struct FilesBrowserView: View {
             error = nil
             consumePendingFilesDeepLink()
         } catch {
-            self.error = error.localizedDescription
+            self.error = Self.friendlyFilesError(error)
         }
     }
 
@@ -1695,8 +1695,23 @@ struct FileFolderView: View {
                 nextCursor: nextCursor
             )
         } catch {
-            self.error = error.localizedDescription
+            self.error = Self.friendlyFilesError(error)
         }
+    }
+
+    private static func friendlyFilesError(_ error: Error) -> String {
+        if let api = error as? APIClientError {
+            return api.errorDescription ?? "Impossible de charger le dossier."
+        }
+        if error is DecodingError {
+            return "Impossible de lire ce dossier. Réessaie."
+        }
+        let msg = error.localizedDescription
+        let lower = msg.lowercased()
+        if lower.contains("couldn't be read") || lower.contains("correct format") || lower.contains("data corru") {
+            return "Impossible de lire ce dossier. Réessaie."
+        }
+        return msg
     }
 
     private func loadMoreIfNeeded() async {
