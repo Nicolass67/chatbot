@@ -92,9 +92,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["a.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
+        let errs = failure.errors
         XCTAssertTrue(errs.contains(.emptyPlan) || errs.contains { if case .emptyPlan = $0 { return true }; return false })
         XCTAssertEqual(OrganizationValidationError.unknownOperation("delete").errorDescription,
                        "Opération non autorisée : delete.")
@@ -108,10 +109,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["docs/a.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .sourceOutsideRoot = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .sourceOutsideRoot = $0 { return true }; return false })
     }
 
     func testDestinationOutsideRoot() {
@@ -122,10 +123,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["docs/a.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .destinationOutsideRoot = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .destinationOutsideRoot = $0 { return true }; return false })
     }
 
     func testPathTraversal() {
@@ -136,10 +137,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["a.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .pathTraversal = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .pathTraversal = $0 { return true }; return false })
     }
 
     func testProtectedSource() {
@@ -175,10 +176,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: Set(inv.items.map(\.relativePath))
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .protectedSource = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .protectedSource = $0 { return true }; return false })
     }
 
     func testCollision() {
@@ -192,10 +193,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: Set(inv.items.map(\.relativePath))
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .collision = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .collision = $0 { return true }; return false })
     }
 
     func testDuplicateSource() {
@@ -209,10 +210,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["a.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .duplicateSource = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .duplicateSource = $0 { return true }; return false })
     }
 
     func testContradictoryMoves() {
@@ -229,10 +230,10 @@ final class OrganizationPlanValidatorTests: XCTestCase {
             inventory: inv,
             existingRelativePaths: ["a.pdf", "b.pdf"]
         )
-        guard case .failure(let errs) = result else {
+        guard case .failure(let failure) = result else {
             return XCTFail("expected failure")
         }
-        XCTAssertTrue(errs.contains { if case .contradictoryMoves = $0 { return true }; return false })
+        XCTAssertTrue(failure.errors.contains { if case .contradictoryMoves = $0 { return true }; return false })
     }
 
     func testEmptyFolderHeuristic() {

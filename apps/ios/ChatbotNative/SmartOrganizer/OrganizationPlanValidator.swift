@@ -5,7 +5,7 @@ enum OrganizationPlanValidator {
         plan: OrganizationPlan,
         inventory: OrganizationInventory,
         existingRelativePaths: Set<String>
-    ) -> Result<OrganizationPlan, [OrganizationValidationError]> {
+    ) -> Result<OrganizationPlan, OrganizationValidationFailure> {
         var errors: [OrganizationValidationError] = []
         let root = OrganizationPathUtils.normalize(plan.rootRelativePath)
         let protected = Set(
@@ -95,12 +95,12 @@ enum OrganizationPlanValidator {
             errors.append(.contradictoryMoves(m.sourceRelativePath))
         }
 
-        guard errors.isEmpty else { return .failure(errors) }
+        guard errors.isEmpty else { return .failure(OrganizationValidationFailure(errors: errors)) }
 
         var next = plan
         next.moves = normalizedMoves
         if next.executableMoves.isEmpty && next.reviewMoves.isEmpty {
-            return .failure([.emptyPlan])
+            return .failure(OrganizationValidationFailure(errors: [.emptyPlan]))
         }
         return .success(next)
     }

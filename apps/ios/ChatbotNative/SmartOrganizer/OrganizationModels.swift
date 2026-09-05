@@ -220,6 +220,15 @@ enum OrganizationValidationError: Error, LocalizedError, Equatable, Hashable {
     }
 }
 
+/// Wrapper `Error` pour `Result` — `[OrganizationValidationError]` seul ne conforme pas à `Error`.
+struct OrganizationValidationFailure: Error, Equatable, Hashable, LocalizedError {
+    let errors: [OrganizationValidationError]
+
+    var errorDescription: String? {
+        errors.first?.errorDescription ?? "Plan rejeté par le validateur."
+    }
+}
+
 enum OrganizationEngineError: Error, LocalizedError {
     case emptyFolder
     case alreadyOrganized

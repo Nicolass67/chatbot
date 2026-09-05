@@ -320,7 +320,7 @@ final class SmartFileOrganizerEngine {
                 phase = .readyForApproval
                 progressText = "Prêt pour validation"
                 progressValue = 1
-            case .failure(let errors):
+            case .failure(let failure):
                 // Si l’IA a produit un plan invalide, retenter l’heuristique une fois.
                 if instruction == nil || plan == nil {
                     let heuristic = try OrganizationHeuristicPlanner.propose(
@@ -338,11 +338,11 @@ final class SmartFileOrganizerEngine {
                         phase = .readyForApproval
                         progressText = "Prêt pour validation (heuristique)"
                         progressValue = 1
-                    case .failure(let errs2):
-                        throw OrganizationEngineError.validationFailed(errs2)
+                    case .failure(let failure2):
+                        throw OrganizationEngineError.validationFailed(failure2.errors)
                     }
                 } else {
-                    throw OrganizationEngineError.validationFailed(errors)
+                    throw OrganizationEngineError.validationFailed(failure.errors)
                 }
             }
         } catch let error as OrganizationEngineError {
