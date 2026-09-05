@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import UIKit
 
 struct ChatScreen: View {
+    @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
     @Environment(\.scenePhase) private var scenePhase
@@ -111,6 +112,7 @@ struct ChatScreen: View {
     }
 
     var body: some View {
+        let _ = themeRevision
         ZStack {
             AmbientBackground()
             VStack(spacing: 0) {

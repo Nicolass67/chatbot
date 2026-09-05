@@ -18,6 +18,7 @@ enum MailSortOption: String, CaseIterable, Identifiable {
 }
 
 struct MailInboxView: View {
+    @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
     @State private var messages: [MailMessageSummary] = []
@@ -257,6 +258,7 @@ struct MailInboxView: View {
     }
 
     var body: some View {
+        let _ = themeRevision
         NavigationStack(path: $path) {
             ZStack {
                 AmbientBackground()
@@ -943,9 +945,11 @@ struct MailInboxView: View {
 }
 
 struct MailRow: View {
+    @Environment(\.themeRevision) private var themeRevision
     let message: MailMessageSummary
 
     var body: some View {
+        let _ = themeRevision
         HStack(alignment: .top, spacing: AppTheme.space12) {
             ZStack {
                 Circle()

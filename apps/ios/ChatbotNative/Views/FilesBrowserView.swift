@@ -68,6 +68,7 @@ enum FilesIndexStatus: Equatable {
 }
 
 struct FilesBrowserView: View {
+    @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
     @Environment(AppNavigation.self) private var nav
     /// Pile typée (pas `NavigationPath`) pour pouvoir la cacher entre onglets.
@@ -126,6 +127,7 @@ struct FilesBrowserView: View {
     }
 
     var body: some View {
+        let _ = themeRevision
         NavigationStack(path: $path) {
             ZStack {
                 AmbientBackground()
@@ -136,7 +138,7 @@ struct FilesBrowserView: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 if !selection.isSelecting {
-                    ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                    ContextualAssistantButton {
                         openFilesAssistant(.global)
                     }
                 }
@@ -955,7 +957,7 @@ struct FileFolderView: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if !selection.isSelecting {
-                ContextualAssistantButton(tint: AppTheme.filesAccent) {
+                ContextualAssistantButton {
                     assistantDetent = .large
                     showAssistant = true
                 }

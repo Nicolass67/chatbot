@@ -151,11 +151,13 @@ struct LoginView: View {
 }
 
 struct MainTabView: View {
+    @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var appearance: AppearanceStore
     @Environment(AppNavigation.self) private var nav
 
     var body: some View {
+        let _ = themeRevision
         @Bindable var nav = nav
         // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
         TabView(selection: $nav.selectedTab) {
@@ -175,6 +177,7 @@ struct MainTabView: View {
             .accessibilityIdentifier(A11yID.Navigation.tabFiles)
         }
         .tint(AppTheme.accent)
+        .animation(.easeInOut(duration: 0.2), value: themeRevision)
         .tabBarMinimizeBehavior(.onScrollDown)
         .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {

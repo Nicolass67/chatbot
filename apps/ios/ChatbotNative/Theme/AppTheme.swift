@@ -6,43 +6,42 @@ import UIKit
 enum AppTheme {
     // MARK: - Semantic colors (Light + Dark) — dynamiques
 
-    private static var p: ResolvedThemePalette { ThemePaletteBridge.current }
+    /// Couleurs palette : résolution live (suit ThemePaletteBridge sans hex figé).
+    static var background: Color { Color.cnLive(light: \.bgLight, dark: \.bgDark) }
+    static var sidebar: Color { Color.cnLive(light: \.sidebarLight, dark: \.sidebarDark) }
+    static var foreground: Color { Color.cnLive(light: \.fgLight, dark: \.fgDark) }
+    static var surface: Color { Color.cnLive(light: \.surfaceLight, dark: \.surfaceDark) }
+    static var surfaceElevated: Color { Color.cnLive(light: \.surfaceElevatedLight, dark: \.surfaceElevatedDark) }
+    static var surfaceHover: Color { Color.cnLive(light: \.surfaceHoverLight, dark: \.surfaceHoverDark) }
+    static var surfaceActive: Color { Color.cnLive(light: \.surfaceActiveLight, dark: \.surfaceActiveDark) }
 
-    static var background: Color { Color.cn(light: p.bgLight, dark: p.bgDark) }
-    static var sidebar: Color { Color.cn(light: p.sidebarLight, dark: p.sidebarDark) }
-    static var foreground: Color { Color.cn(light: p.fgLight, dark: p.fgDark) }
-    static var surface: Color { Color.cn(light: p.surfaceLight, dark: p.surfaceDark) }
-    static var surfaceElevated: Color { Color.cn(light: p.surfaceElevatedLight, dark: p.surfaceElevatedDark) }
-    static var surfaceHover: Color { Color.cn(light: p.surfaceHoverLight, dark: p.surfaceHoverDark) }
-    static var surfaceActive: Color { Color.cn(light: p.surfaceActiveLight, dark: p.surfaceActiveDark) }
-
-    static var accent: Color { Color.cn(light: p.primaryLight, dark: p.primaryDark) }
-    static var accentHover: Color { Color.cn(light: p.primaryHoverLight, dark: p.primaryHoverDark) }
-    static var accentForeground: Color { Color.cn(light: p.primaryInkLight, dark: p.primaryInkDark) }
+    static var accent: Color { Color.cnLive(light: \.primaryLight, dark: \.primaryDark) }
+    static var accentHover: Color { Color.cnLive(light: \.primaryHoverLight, dark: \.primaryHoverDark) }
+    static var accentForeground: Color { Color.cnLive(light: \.primaryInkLight, dark: \.primaryInkDark) }
     static var accentSubtle: Color { accent.opacity(0.14) }
 
-    static var muted: Color { Color.cn(light: p.mutedLight, dark: p.mutedDark) }
-    static var mutedForeground: Color { Color.cn(light: p.mutedFgLight, dark: p.mutedFgDark) }
+    static var muted: Color { Color.cnLive(light: \.mutedLight, dark: \.mutedDark) }
+    static var mutedForeground: Color { Color.cnLive(light: \.mutedFgLight, dark: \.mutedFgDark) }
 
-    static var userMessage: Color { Color.cn(light: p.userMessageLight, dark: p.userMessageDark) }
+    static var userMessage: Color { Color.cnLive(light: \.userMessageLight, dark: \.userMessageDark) }
     static let danger = Color.cn(light: 0xB85C58, dark: 0xC97D79)
     static let success = Color.cn(light: 0x4F7A72, dark: 0x7FA89E)
     static let warning = Color.cn(light: 0x64748B, dark: 0x94A3B8)
 
-    static var border: Color { Color.cn(light: p.borderLight, dark: p.borderDark) }
+    static var border: Color { Color.cnLive(light: \.borderLight, dark: \.borderDark) }
     static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF14)
     static var glassBorder: Color {
         Color.cn(light: 0x00000018, dark: 0xFFFFFF22)
     }
-    static var codeBg: Color { Color.cn(light: p.codeBgLight, dark: p.codeBgDark) }
+    static var codeBg: Color { Color.cnLive(light: \.codeBgLight, dark: \.codeBgDark) }
     static var assistantBar: Color { accent }
-    static var ambientCool: Color { Color.cn(light: p.ambientCoolLight, dark: p.ambientCoolDark) }
+    static var ambientCool: Color { Color.cnLive(light: \.ambientCoolLight, dark: \.ambientCoolDark) }
     static let ambientWarm = Color.cn(light: 0xA8B0BC, dark: 0x1A222C)
 
     /// Principale (mail / actions).
     static var mailAccent: Color { accent }
     /// Secondaire (files / accents annexes).
-    static var filesAccent: Color { Color.cn(light: p.secondaryLight, dark: p.secondaryDark) }
+    static var filesAccent: Color { Color.cnLive(light: \.secondaryLight, dark: \.secondaryDark) }
 
     // MARK: - Spacing (4-pt)
 
@@ -104,6 +103,20 @@ extension Color {
     static func cn(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { traits in
             let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor.cnHex(hex)
+        })
+    }
+
+    /// Lit ThemePaletteBridge.current au moment du rendu (suit le thème app).
+    static func cnLive(
+        light: KeyPath<ResolvedThemePalette, UInt32>,
+        dark: KeyPath<ResolvedThemePalette, UInt32>
+    ) -> Color {
+        Color(UIColor { traits in
+            let palette = ThemePaletteBridge.current
+            let hex = traits.userInterfaceStyle == .dark
+                ? palette[keyPath: dark]
+                : palette[keyPath: light]
             return UIColor.cnHex(hex)
         })
     }
@@ -221,10 +234,30 @@ extension View {
     }
 }
 
+
+/// Force le recalcul des vues qui peignent AppTheme.* après un changement de palette.
+private struct AppThemeSyncModifier: ViewModifier {
+    @Environment(\.themeRevision) private var themeRevision
+
+    func body(content: Content) -> some View {
+        let _ = themeRevision
+        content
+    }
+}
+
+extension View {
+    /// À appliquer sur les écrans / composants qui affichent l'accent.
+    func syncsAppTheme() -> some View {
+        modifier(AppThemeSyncModifier())
+    }
+}
+
 struct RuntimeStatusPill: View {
     let status: String
+    @Environment(\.themeRevision) private var themeRevision
 
     private var color: Color {
+        let _ = themeRevision
         switch status.uppercased() {
         case "READY": return AppTheme.accent
         case "BUSY", "LOADING", "LOADING_MODEL", "SWITCHING": return AppTheme.accent.opacity(0.85)
@@ -246,20 +279,22 @@ struct RuntimeStatusPill: View {
     }
 
     var body: some View {
+        let _ = themeRevision
         HStack(spacing: AppTheme.space8) {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label)
                 .font(CNFont.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.muted)
+                .foregroundStyle(color)
                 .lineLimit(1)
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 7)
-        .background(AppTheme.surfaceElevated.opacity(0.92))
+        .background(color.opacity(0.14))
         .clipShape(Capsule())
-        .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 0.5))
+        .overlay(Capsule().stroke(color.opacity(0.35), lineWidth: 1))
         .accessibilityLabel(label)
         .accessibilityIdentifier("chat.assistantStatus")
     }
 }
+

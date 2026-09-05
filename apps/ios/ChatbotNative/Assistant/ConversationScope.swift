@@ -132,27 +132,33 @@ enum MailAssistantContext: Equatable {
 struct ContextualAssistantButton: View {
     var accessibilityId: String = A11yID.Assistant.open
     var accessibilityLabelText: String = "Ouvrir l’assistant"
+    /// Conservé pour compat API ; le FAB utilise l’accent principal rempli.
     var tint: Color = AppTheme.accent
     var action: () -> Void
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeRevision) private var themeRevision
 
     var body: some View {
+        let _ = themeRevision
+        let _ = tint
         Button {
             AppHaptics.light()
             action()
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(tint)
+                .foregroundStyle(AppTheme.accentForeground)
                 .frame(width: 54, height: 54)
                 .background {
-                    if reduceTransparency {
-                        Circle().fill(AppTheme.surfaceElevated)
-                    } else {
-                        Circle().fill(.ultraThinMaterial)
-                    }
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [AppTheme.accent, AppTheme.accentHover],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
                 }
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                .shadow(color: AppTheme.accent.opacity(0.38), radius: 10, y: 4)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabelText)
@@ -162,3 +168,4 @@ struct ContextualAssistantButton: View {
         .padding(.bottom, 18)
     }
 }
+
