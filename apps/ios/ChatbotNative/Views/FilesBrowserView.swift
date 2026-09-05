@@ -392,6 +392,13 @@ struct FilesBrowserView: View {
         } message: {
             Text(selectionError ?? "")
         }
+        .overlay {
+            if mutatingSelection {
+                FilesBlockingBusyOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: mutatingSelection)
         .environment(selection)
     }
 
@@ -993,6 +1000,13 @@ struct FileFolderView: View {
                 }
             }
         }
+        .overlay {
+            if deletingSingle || uploading || confirming {
+                FilesBlockingBusyOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: deletingSingle || uploading || confirming)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -2237,64 +2251,74 @@ private struct FilesMultiSelectBar: View {
             Divider().overlay(AppTheme.borderSubtle)
 
             HStack(alignment: .center, spacing: AppTheme.space12) {
-                Button(action: onClear) {
-                    HStack(spacing: 6) {
-                        Text("\(max(count, 0))")
-                            .font(CNFont.callout.weight(.bold))
-                            .monospacedDigit()
-                            .foregroundStyle(AppTheme.accentForeground)
-                            .frame(minWidth: 22)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(AppTheme.filesAccent)
-                            )
-                        Text(count <= 1 ? "sélectionné" : "sélectionnés")
-                            .font(CNFont.caption.weight(.medium))
-                            .foregroundStyle(AppTheme.muted)
+                if busy {
+                    Spacer(minLength: 0)
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(AppTheme.filesAccent)
+                        .accessibilityLabel("Suppression en cours")
+                    Spacer(minLength: 0)
+                } else {
+                    Button(action: onClear) {
+                        HStack(spacing: 6) {
+                            Text("\(max(count, 0))")
+                                .font(CNFont.callout.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(AppTheme.accentForeground)
+                                .frame(minWidth: 22)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(AppTheme.filesAccent)
+                                )
+                            Text(count <= 1 ? "sélectionné" : "sélectionnés")
+                                .font(CNFont.caption.weight(.medium))
+                                .foregroundStyle(AppTheme.muted)
+                        }
                     }
-                }
-                .buttonStyle(.plain)
-                .disabled(busy || count == 0)
-                .accessibilityLabel(
-                    count == 0
-                        ? "Aucun fichier sélectionné"
-                        : "\(count) sélectionnés, tout désélectionner"
-                )
+                    .buttonStyle(.plain)
+                    .disabled(count == 0)
+                    .accessibilityLabel(
+                        count == 0
+                            ? "Aucun fichier sélectionné"
+                            : "\(count) sélectionnés, tout désélectionner"
+                    )
 
-                Spacer(minLength: 8)
+                    Spacer(minLength: 8)
 
-                HStack(spacing: 8) {
-                    multiSelectAction(
-                        title: "Déplacer",
-                        systemImage: "folder",
-                        tint: AppTheme.filesAccent,
-                        emphasized: true,
-                        action: onMove
-                    )
-                    multiSelectAction(
-                        title: "Mail",
-                        systemImage: "envelope",
-                        tint: AppTheme.mailAccent,
-                        emphasized: true,
-                        action: onMail
-                    )
-                    multiSelectAction(
-                        title: "Supprimer",
-                        systemImage: "trash",
-                        tint: AppTheme.danger,
-                        emphasized: false,
-                        action: onDelete
-                    )
+                    HStack(spacing: 8) {
+                        multiSelectAction(
+                            title: "Déplacer",
+                            systemImage: "folder",
+                            tint: AppTheme.filesAccent,
+                            emphasized: true,
+                            action: onMove
+                        )
+                        multiSelectAction(
+                            title: "Mail",
+                            systemImage: "envelope",
+                            tint: AppTheme.mailAccent,
+                            emphasized: true,
+                            action: onMail
+                        )
+                        multiSelectAction(
+                            title: "Supprimer",
+                            systemImage: "trash",
+                            tint: AppTheme.danger,
+                            emphasized: false,
+                            action: onDelete
+                        )
+                    }
+                    .disabled(count == 0)
                 }
-                .disabled(busy || count == 0)
             }
             .padding(.horizontal, AppTheme.space14)
             .padding(.vertical, AppTheme.space10)
-            .opacity(busy ? 0.55 : 1)
+            .frame(minHeight: 52)
         }
         .background(.ultraThinMaterial)
+        .allowsHitTesting(!busy)
     }
 
     private func multiSelectAction(

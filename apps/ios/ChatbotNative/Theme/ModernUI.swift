@@ -184,6 +184,37 @@ struct SoftLoadingBlock: View {
     }
 }
 
+/// Overlay plein écran : bloque les interactions pendant une mutation Files
+/// (suppression / déplacement). Spinner uniquement — pas de texte visible.
+struct FilesBlockingBusyOverlay: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.42)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white)
+                .padding(28)
+                .background(
+                    RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                )
+                .scaleEffect(reduceMotion ? 1 : 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Opération en cours")
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
 /// Barre horizontale indéterminée — entre chrome (filtres) et liste, sans overlay.
 /// Hauteur fixe (2pt) pour éviter tout saut de layout.
 struct MailListLoadingIndicator: View {
