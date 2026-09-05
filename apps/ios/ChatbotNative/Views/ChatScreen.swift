@@ -2714,6 +2714,10 @@ struct PendingAttachmentCard: View {
     let attachment: UploadedAttachment
     let onRemove: () -> Void
 
+    private let cardWidth: CGFloat = 120
+    private let previewHeight: CGFloat = 64
+    private var previewWidth: CGFloat { cardWidth - 16 } // padding horizontal 8+8
+
     private var sizeLabel: String {
         let kind = attachment.isImage ? "Image" : "Document"
         return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(attachment.sizeBytes), countStyle: .file))"
@@ -2722,47 +2726,23 @@ struct PendingAttachmentCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .topTrailing) {
-                Group {
-                    if let data = attachment.previewData, let ui = UIImage(data: data) {
-                        Image(uiImage: ui)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        ZStack {
-                            AppTheme.surfaceHover.opacity(0.7)
-                            Image(systemName: attachment.isImage ? "photo" : "doc.fill")
-                                .foregroundStyle(AppTheme.accent)
-                        }
-                    }
-                }
-                .frame(height: 64)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                .overlay {
-                    if attachment.isUploading {
-                        ZStack {
-                            Color.black.opacity(0.45)
-                            ProgressView().tint(.white)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                    }
-                }
+                attachmentPreview
+                    .frame(width: previewWidth, height: previewHeight)
 
-                // Croix inset (pas d’offset hors bounds) — sinon clipShape du parent la coupe,
-                // surtout sur les previews image (Files → Mail).
+                // Croix inset dans la preview (jamais en offset hors tile).
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, Color.black.opacity(0.72))
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                 }
                 .buttonStyle(.plain)
-                .padding(6)
-                .zIndex(2)
+                .padding(5)
                 .accessibilityLabel("Retirer \(attachment.filename)")
             }
+            .frame(width: previewWidth, height: previewHeight)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
 
             Text(attachment.filename)
                 .font(.caption2.weight(.medium))
@@ -2774,7 +2754,7 @@ struct PendingAttachmentCard: View {
                 .lineLimit(1)
         }
         .padding(8)
-        .frame(width: 120, alignment: .leading)
+        .frame(width: cardWidth, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
                 .fill(AppTheme.surface)
@@ -2783,6 +2763,41 @@ struct PendingAttachmentCard: View {
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
         )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+    }
+
+    /// Preview image/doc — même pattern que Files grille : overlay dans un
+    /// frame fixe + compositingGroup + clip. Empêche scaledToFill de sortir
+    /// de la tile (bug Files → Mail).
+    @ViewBuilder
+    private var attachmentPreview: some View {
+        Color.clear
+            .overlay {
+                Group {
+                    if let data = attachment.previewData, let ui = UIImage(data: data) {
+                        Image(uiImage: ui)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    } else {
+                        ZStack {
+                            AppTheme.surfaceHover.opacity(0.7)
+                            Image(systemName: attachment.isImage ? "photo" : "doc.fill")
+                                .foregroundStyle(AppTheme.accent)
+                        }
+                    }
+                }
+            }
+            .overlay {
+                if attachment.isUploading {
+                    ZStack {
+                        Color.black.opacity(0.45)
+                        ProgressView().tint(.white)
+                    }
+                }
+            }
+            .compositingGroup()
+            .clipped()
     }
 }
 
