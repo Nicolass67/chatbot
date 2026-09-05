@@ -3,6 +3,11 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 
+/// Buffer mutable hors invalidation SwiftUI (tokens SSE à haute cadence).
+private final class ChatStreamAccum {
+    var text = ""
+}
+
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -92,6 +97,10 @@ struct ChatScreen: View {
     @State private var tokenCoalesceBuffer = ""
     @State private var tokenFlushTask: Task<Void, Never>?
     @State private var lastStreamScrollAt = Date.distantPast
+    /// Tick de scroll stream (~30 fps) — évite un onChange(streamingText) à chaque token.
+    @State private var streamScrollTick = 0
+    /// Accumulation tokens hors @Published : le texte affiché est poussé seulement au flush.
+    @State private var streamAccum = ChatStreamAccum()
     @State private var runtimePollNs: UInt64 = 1_500_000_000
     @State private var contextSnapshot: ContextSnapshotDTO?
     @State private var streamingService = ChatStreamingService()
@@ -323,16 +332,19 @@ struct ChatScreen: View {
                 isSending = false
                 thinkingKind = nil
                 agentActivity = AgentActivityState()
-                if !streamingText.isEmpty {
+                if !streamAccum.text.isEmpty || !streamingText.isEmpty {
+                    let partial = (streamAccum.text.isEmpty ? streamingText : streamAccum.text)
+                        + "\n\n_(Interrompu — app en arrière-plan)_"
                     messages.append(
                         MessageDTO(
                             id: "partial-\(UUID().uuidString)",
                             role: "assistant",
-                            content: streamingText + "\n\n_(Interrompu — app en arrière-plan)_",
+                            content: partial,
                             createdAt: nil
                         )
                     )
                     streamingText = ""
+                    streamAccum.text = ""
                 }
             } else if phase == .active, streamInterrupted {
                 streamInterrupted = false
@@ -555,13 +567,11 @@ struct ChatScreen: View {
                 }
                 .onChange(of: streamingText) { _, text in
                     guard isPinnedToBottom, !text.isEmpty else { return }
-                    let now = Date()
-                    guard now.timeIntervalSince(lastStreamScrollAt) >= 0.08 else { return }
-                    lastStreamScrollAt = now
-                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.4)
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
+                    scheduleStreamScroll(proxy: proxy)
+                }
+                .onChange(of: streamScrollTick) { _, _ in
+                    guard isPinnedToBottom else { return }
+                    scheduleStreamScroll(proxy: proxy)
                 }
                 .onChange(of: messages.count) { _, _ in
                     guard isPinnedToBottom else { return }
@@ -2136,6 +2146,11 @@ struct ChatScreen: View {
         Keyboard.dismiss()
         scrollToken += 1
         streamingText = ""
+        streamAccum.text = ""
+        streamScrollTick = 0
+        tokenCoalesceBuffer = ""
+        tokenFlushTask?.cancel()
+        tokenFlushTask = nil
         // Ne pas écraser un statut Mail déjà posé (brouillon / destinataire / résumé).
         if case .custom = thinkingKind {
             // conserver
@@ -2185,7 +2200,8 @@ struct ChatScreen: View {
             let finalFound = streamFilesFound
             // Garder le texte streamé : MessageBubble masque la narration fichier redondante.
             // Vider ici provoquait un flash (vide ~1s pendant loadMessages, puis réapparition).
-            let finalText = streamingText
+            flushTokenCoalesce()
+            let finalText = streamAccum.text.isEmpty ? streamingText : streamAccum.text
             let finalSources = streamSources
             let finalMail = streamMailHandoff
             let finalFiles = streamFilesHandoff
@@ -2222,6 +2238,7 @@ struct ChatScreen: View {
             let rewriteFallback = finalText
             let rewriteHadPreview = draftPreviewReceivedThisTurn
             streamingText = ""
+            streamAccum.text = ""
             streamFilesFound = []
             streamSources = []
             streamMailHandoff = nil
@@ -2445,16 +2462,18 @@ struct ChatScreen: View {
         } else {
             agentActivity = AgentActivityState()
         }
-        if !streamingText.isEmpty {
+        if !streamAccum.text.isEmpty || !streamingText.isEmpty {
+            let partial = streamAccum.text.isEmpty ? streamingText : streamAccum.text
             messages.append(
                 MessageDTO(
                     id: "partial-\(UUID().uuidString)",
                     role: "assistant",
-                    content: streamingText,
+                    content: partial,
                     createdAt: nil
                 )
             )
             streamingText = ""
+            streamAccum.text = ""
             scrollToken += 1
         }
         Task { @MainActor in
@@ -2463,11 +2482,24 @@ struct ChatScreen: View {
         AppHaptics.light()
     }
 
+    private func scheduleStreamScroll(proxy: ScrollViewProxy) {
+        let now = Date()
+        guard now.timeIntervalSince(lastStreamScrollAt) >= 0.05 else { return }
+        lastStreamScrollAt = now
+        suppressScrollGeometryUntil = Date().addingTimeInterval(0.25)
+        var t = Transaction()
+        t.animation = nil
+        withTransaction(t) {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
+
     private func flushTokenCoalesce() {
         tokenFlushTask?.cancel()
         tokenFlushTask = nil
         let chunk = tokenCoalesceBuffer
         tokenCoalesceBuffer = ""
+        streamingText = streamAccum.text
         guard !chunk.isEmpty, let id = streamingAssistantId,
               let idx = messages.firstIndex(where: { $0.id == id }) else { return }
         let prev = messages[idx]
@@ -2478,28 +2510,30 @@ struct ChatScreen: View {
             createdAt: prev.createdAt,
             attachments: prev.attachments
         )
+        streamScrollTick &+= 1
     }
 
     private func handleSSE(type: String, obj: [String: Any]) {
         switch type {
         case "token":
             if let c = obj["content"] as? String {
-                streamingText += c
+                streamAccum.text += c
                 // Réécriture brouillon : accumuler pour fallback, ne pas afficher dans le fil.
                 if awaitingDraftRewrite || suppressAssistantNarration {
+                    streamingText = streamAccum.text
                     thinkingKind = nil
                     break
                 }
-                // Coalesce ~50ms : moins de mutations messages[] / re-renders.
+                // Coalesce ~33ms (~30 fps) : UI fluide sans re-render à chaque token.
                 tokenCoalesceBuffer += c
                 if tokenFlushTask == nil {
                     tokenFlushTask = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        try? await Task.sleep(nanoseconds: 33_000_000)
                         let chunk = tokenCoalesceBuffer
                         tokenCoalesceBuffer = ""
                         tokenFlushTask = nil
-                        guard !chunk.isEmpty else { return }
-                        if let id = streamingAssistantId,
+                        streamingText = streamAccum.text
+                        if !chunk.isEmpty, let id = streamingAssistantId,
                            let idx = messages.firstIndex(where: { $0.id == id }) {
                             let prev = messages[idx]
                             messages[idx] = MessageDTO(
@@ -2510,6 +2544,7 @@ struct ChatScreen: View {
                                 attachments: prev.attachments
                             )
                         }
+                        streamScrollTick &+= 1
                     }
                 }
             }
@@ -2668,6 +2703,7 @@ struct ChatScreen: View {
         case "assistant_discard":
             if let id = obj["messageId"] as? String, streamingAssistantId == id {
                 streamingText = ""
+                streamAccum.text = ""
                 flushTokenCoalesce()
                 streamingAssistantId = nil
                 if let idx = messages.firstIndex(where: { $0.id == id }) {
@@ -2834,6 +2870,7 @@ struct ChatScreen: View {
                     draftPreviewReceivedThisTurn = true
                     suppressAssistantNarration = true
                     streamingText = ""
+                    streamAccum.text = ""
                     draftCardEditing = false
                     thinkingKind = nil
                     persistDraftCardSnapshot()

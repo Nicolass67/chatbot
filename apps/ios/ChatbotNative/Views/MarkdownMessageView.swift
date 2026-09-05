@@ -206,12 +206,14 @@ public enum MarkdownBlockParser {
 
 struct MarkdownMessageView: View {
     let markdown: String
-    /// Pendant le stream SSE : reparse throttlé pour garder titres/gras/tableaux lisibles
-    /// sans payer un parse complet à chaque token.
+    /// Pendant le stream SSE : reparse en cadence (~30 fps), pas un debounce trailing
+    /// qui reste cancelé tant que les tokens arrivent (surtout 4B/9B).
     var isStreaming: Bool = false
 
     @State private var blocks: [MarkdownBlock]
     @State private var parseTask: Task<Void, Never>?
+    @State private var lastParseAt = Date.distantPast
+    @State private var pendingParse = false
 
     init(markdown: String, isStreaming: Bool = false) {
         self.markdown = markdown
@@ -247,16 +249,36 @@ struct MarkdownMessageView: View {
     }
 
     private func scheduleParse(immediate: Bool) {
-        parseTask?.cancel()
         let source = markdown
         if immediate {
+            parseTask?.cancel()
+            parseTask = nil
+            pendingParse = false
+            lastParseAt = Date()
             blocks = MarkdownBlockParser.parse(source)
             return
         }
-        parseTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
+
+        let minInterval: TimeInterval = 0.033
+        let elapsed = Date().timeIntervalSince(lastParseAt)
+        if elapsed >= minInterval {
+            lastParseAt = Date()
+            pendingParse = false
             blocks = MarkdownBlockParser.parse(source)
+            return
+        }
+
+        pendingParse = true
+        guard parseTask == nil else { return }
+        let wait = UInt64((minInterval - elapsed) * 1_000_000_000)
+        parseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: wait)
+            parseTask = nil
+            guard !Task.isCancelled else { return }
+            guard pendingParse else { return }
+            pendingParse = false
+            lastParseAt = Date()
+            blocks = MarkdownBlockParser.parse(markdown)
         }
     }
 
