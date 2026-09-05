@@ -145,6 +145,24 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
+                    .overlay(alignment: .bottomLeading) {
+                        // Texte au-dessus du fil (pas de bandeau opaque entre scroll et composer).
+                        if !isSending {
+                            HStack(spacing: 8) {
+                                RuntimeStatusPill(status: displayRuntimeStatus)
+                                if !assistantReadyForSend {
+                                    Text(sendBlockedHint)
+                                        .font(CNFont.caption2)
+                                        .foregroundStyle(AppTheme.mutedForeground)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, AppTheme.space16)
+                            .padding(.bottom, 2)
+                            .allowsHitTesting(false)
+                        }
+                    }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,
@@ -177,22 +195,6 @@ struct ChatScreen: View {
                     }
                     .padding(.horizontal, AppTheme.space16)
                     .padding(.vertical, AppTheme.space8)
-                }
-                // Pastille runtime uniquement hors génération — le feedback « travail » est dans le fil.
-                if !isSending {
-                    HStack {
-                        RuntimeStatusPill(status: displayRuntimeStatus)
-                        Spacer(minLength: 0)
-                        if !assistantReadyForSend {
-                            Text(sendBlockedHint)
-                                .font(CNFont.caption2)
-                                .foregroundStyle(AppTheme.mutedForeground)
-                                .lineLimit(1)
-                        }
-                    }
-                    .padding(.horizontal, AppTheme.space16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 6)
                 }
                 if let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
                     Task { await infra.repairService(id: serviceId) }
@@ -519,7 +521,7 @@ struct ChatScreen: View {
                             )
                             .id("conversation-draft")
                         }
-                        Color.clear.frame(height: 8).id("bottom")
+                        Color.clear.frame(height: 28).id("bottom")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)

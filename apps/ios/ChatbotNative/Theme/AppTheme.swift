@@ -280,17 +280,13 @@ struct RuntimeStatusPill: View {
 
     var body: some View {
         let _ = themeRevision
-        HStack(spacing: AppTheme.space8) {
+        HStack(spacing: 6) {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label)
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(color)
                 .lineLimit(1)
         }
-        // Même emplacement / padding qu’avant — sans fond ni contour de pastille.
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 7)
         .accessibilityLabel(label)
         .accessibilityIdentifier("chat.assistantStatus")
     }
