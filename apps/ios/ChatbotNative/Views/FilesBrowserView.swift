@@ -2,8 +2,23 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-enum FilesViewMode: String {
-    case list, grid
+enum FilesViewMode: String, CaseIterable, Identifiable {
+    case list, grid, details
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .list: return "Liste"
+        case .grid: return "Grille"
+        case .details: return "Détails"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .list: return "list.bullet"
+        case .grid: return "square.grid.2x2"
+        case .details: return "list.bullet.rectangle"
+        }
+    }
 }
 
 enum FilesTypeFilter: String, CaseIterable, Identifiable {
@@ -750,8 +765,23 @@ struct FileFolderView: View {
     @State private var nextCursor: String?
     @State private var error: String?
     @State private var openError: String?
-    @State private var viewMode: FilesViewMode = .list
+    @AppStorage("files.viewMode") private var viewModeRaw: String = FilesViewMode.list.rawValue
     @State private var typeFilter: FilesTypeFilter = .all
+
+    private var viewModeBinding: Binding<FilesViewMode> {
+        Binding(
+            get: { FilesViewMode(rawValue: viewModeRaw) ?? .list },
+            set: { next in
+                guard next.rawValue != viewModeRaw else { return }
+                viewModeRaw = next.rawValue
+                AppHaptics.selection()
+            }
+        )
+    }
+
+    private var viewMode: FilesViewMode {
+        FilesViewMode(rawValue: viewModeRaw) ?? .list
+    }
     @State private var showMkdir = false
     @State private var mkdirName = ""
     @State private var mkdirConfirm: FilesProposeResult?
@@ -822,6 +852,8 @@ struct FileFolderView: View {
                     ) { showMkdir = true }
                 } else if viewMode == .grid {
                     grid
+                } else if viewMode == .details {
+                    details
                 } else {
                     list
                 }
@@ -872,11 +904,11 @@ struct FileFolderView: View {
                         Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
                             .disabled(uploading)
                         Divider()
-                        Picker("Vue", selection: $viewMode) {
-                            Label("Liste", systemImage: "list.bullet").tag(FilesViewMode.list)
-                            Label("Grille", systemImage: "square.grid.2x2").tag(FilesViewMode.grid)
+                        Picker("Vue", selection: viewModeBinding) {
+                            ForEach(FilesViewMode.allCases) { mode in
+                                Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                            }
                         }
-                        .onChange(of: viewMode) { _, _ in AppHaptics.selection() }
                         Divider()
                         Picker("Filtrer", selection: $typeFilter) {
                             ForEach(FilesTypeFilter.allCases) { f in Text(f.label).tag(f) }
@@ -1177,6 +1209,109 @@ struct FileFolderView: View {
         }
     }
 
+    private var details: some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                ForEach(filtered) { entry in
+                    Button {
+                        handleEntryTap(entry)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
+                                    .font(.title2)
+                                    .foregroundStyle(isFolder(entry) ? AppTheme.accent : AppTheme.muted)
+                                    .frame(width: 36, height: 36)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry.name ?? entry.relativePath)
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(AppTheme.foreground)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                    Text(detailTypeLabel(for: entry))
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(AppTheme.accent)
+                                    Text(detailMetaLine(for: entry))
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.mutedForeground)
+                                        .lineLimit(2)
+                                }
+                                Spacer(minLength: 0)
+                                if selection.isSelecting, !isFolder(entry) {
+                                    Image(systemName: selection.contains(entry.fileId ?? "") ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(
+                                            selection.contains(entry.fileId ?? "") ? AppTheme.accent : AppTheme.muted
+                                        )
+                                }
+                            }
+                            if !selection.isSelecting {
+                                HStack(spacing: 10) {
+                                    Label(isFolder(entry) ? "Ouvrir" : "Aperçu", systemImage: isFolder(entry) ? "folder" : "eye")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.accent)
+                                    if !isFolder(entry) {
+                                        Label("Télécharger", systemImage: "arrow.down.circle")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(AppTheme.mutedForeground)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            selection.contains(entry.fileId ?? "")
+                                ? AppTheme.accent.opacity(0.12)
+                                : AppTheme.surface.opacity(0.9)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
+                                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { entryContextMenu(entry) }
+                    .onAppear {
+                        if entry.id == filtered.last?.id {
+                            Task { await loadMoreIfNeeded() }
+                        }
+                    }
+                }
+                if loadingMore {
+                    ProgressView().controlSize(.small).padding()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, AppTheme.space24)
+        }
+    }
+
+    private func detailTypeLabel(for entry: FileEntryDTO) -> String {
+        if isFolder(entry) { return "Dossier" }
+        let name = (entry.name ?? "").lowercased()
+        if name.hasSuffix(".pdf") { return "PDF" }
+        if [".png", ".jpg", ".jpeg", ".webp", ".gif"].contains(where: { name.hasSuffix($0) }) { return "Image" }
+        if [".txt", ".md"].contains(where: { name.hasSuffix($0) }) { return "Texte" }
+        if let ext = name.split(separator: ".").last, ext.count <= 5 {
+            return String(ext).uppercased()
+        }
+        return "Fichier"
+    }
+
+    private func detailMetaLine(for entry: FileEntryDTO) -> String {
+        var parts: [String] = []
+        if !isFolder(entry), let size = entry.sizeBytes, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        let folder = path.isEmpty ? (root.label ?? "Documents") : path
+        if !folder.isEmpty { parts.append(folder) }
+        if entry.indexed == true { parts.append("Indexé") }
+        return parts.isEmpty ? (isFolder(entry) ? "Dossier" : "Fichier") : parts.joined(separator: " · ")
+    }
+
     private func fileRow(_ entry: FileEntryDTO) -> some View {
         HStack(spacing: 12) {
             Image(systemName: isFolder(entry) ? "folder.fill" : iconName(for: entry.name ?? ""))
@@ -1186,15 +1321,10 @@ struct FileFolderView: View {
                 Text(entry.name ?? entry.relativePath)
                     .foregroundStyle(AppTheme.foreground)
                     .lineLimit(1)
-                if !isFolder(entry), let size = entry.sizeBytes {
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                } else if isFolder(entry) {
-                    Text("Dossier")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                }
+                Text(detailMetaLine(for: entry))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .lineLimit(1)
             }
             Spacer()
             Image(systemName: "chevron.right")
