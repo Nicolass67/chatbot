@@ -957,6 +957,31 @@ final class APIClient: @unchecked Sendable {
         ])
     }
 
+    /// Proposition de plan d’organisation intelligente (JSON brut pour parsing côté SmartOrganizer).
+    func proposeOrganizationPlan(
+        rootId: String,
+        rootRelativePath: String,
+        items: [[String: Any]],
+        protectedPaths: [String],
+        instruction: String?
+    ) async throws -> Data {
+        var body: [String: Any] = [
+            "rootId": rootId,
+            "rootRelativePath": rootRelativePath,
+            "items": items,
+            "protectedPaths": protectedPaths,
+        ]
+        if let instruction, !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["instruction"] = instruction
+        }
+        var req = authorizedRequest(path: "api/files/organize/plan", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        return data
+    }
+
     func proposeDeleteFile(sourceFileId: String) async throws -> FilesProposeResult {
         try await proposeFilesMutation([
             "op": "delete_file",

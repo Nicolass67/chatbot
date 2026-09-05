@@ -13,6 +13,8 @@ struct ContextualAssistantSheet: View {
     let contextRef: ActiveContextHint
     /// Clé de persistance explicite (Mail thread / Files folder|file|global).
     var persistenceKey: String? = nil
+    /// Action rapide Files : ouvrir le Smart File Organizer pour le dossier courant.
+    var onRequestOrganize: (() -> Void)? = nil
 
     @State private var conversation: ConversationDTO?
     @State private var error: String?
@@ -30,11 +32,18 @@ struct ContextualAssistantSheet: View {
             ?? ConversationSessionStore.globalContextKey
     }
 
+    private var canOfferOrganize: Bool {
+        scope == .files && onRequestOrganize != nil
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 contextChip
                     .accessibilityIdentifier(A11yID.Assistant.contextChip)
+                if canOfferOrganize {
+                    organizeQuickAction
+                }
                 ZStack {
                     AmbientBackground()
                     if booting {
@@ -104,6 +113,28 @@ struct ContextualAssistantSheet: View {
             .task { await boot() }
         }
         .accessibilityIdentifier(A11yID.Assistant.root)
+    }
+
+    private var organizeQuickAction: some View {
+        Button {
+            AppHaptics.light()
+            onRequestOrganize?()
+            dismiss()
+        } label: {
+            Label("Réorganiser ce dossier", systemImage: "folder.badge.gearshape")
+                .font(CNFont.callout.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(AppTheme.filesAccent)
+        .background(AppTheme.filesAccent.opacity(0.12))
+        .overlay(alignment: .bottom) {
+            Divider().overlay(AppTheme.borderSubtle)
+        }
+        .accessibilityLabel("Réorganiser ce dossier")
+        .accessibilityHint("Ouvre le Smart File Organizer pour ce dossier")
     }
 
     private var contextChip: some View {

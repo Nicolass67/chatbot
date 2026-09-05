@@ -89,6 +89,7 @@ struct FilesBrowserView: View {
     @State private var showMovePicker = false
     @State private var mutatingSelection = false
     @State private var selectionError: String?
+    @State private var organizerScope: OrganizationScope?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -98,6 +99,30 @@ struct FilesBrowserView: View {
         sheetContext = context
         assistantDetent = .large
         showAssistant = true
+    }
+
+    private func openOrganizerFromAssistantContext() {
+        showAssistant = false
+        switch sheetContext {
+        case .folder(let rootId, let path, let title):
+            organizerScope = .root(rootId: rootId, relativePath: path, displayName: title)
+        case .file(_, let name, let rootId, let path):
+            let parent = AppNavigation.parentFolder(of: path)
+            let title = parent.isEmpty ? name : AppNavigation.lastSegment(of: parent)
+            organizerScope = .root(
+                rootId: rootId,
+                relativePath: parent,
+                displayName: title.isEmpty ? "Dossier" : title
+            )
+        case .global:
+            if let root = roots.first {
+                organizerScope = .root(
+                    rootId: root.id,
+                    relativePath: "",
+                    displayName: root.label ?? "Root"
+                )
+            }
+        }
     }
 
     var body: some View {
@@ -250,13 +275,32 @@ struct FilesBrowserView: View {
                     title: sheetContext.sheetTitle,
                     contextLabel: sheetContext.label,
                     contextRef: sheetContext.ref,
-                    persistenceKey: sheetContext.persistenceKey
+                    persistenceKey: sheetContext.persistenceKey,
+                    onRequestOrganize: openOrganizerFromAssistantContext
                 )
                 .environmentObject(session)
                 .environment(nav)
                 .presentationDetents([.medium, .large], selection: $assistantDetent)
                 .presentationDragIndicator(.visible)
                 .onAppear { assistantDetent = .large }
+            }
+            .sheet(item: $organizerScope) { scope in
+                SmartOrganizerSheet(
+                    scope: scope,
+                    onFinished: {
+                        selection.bumpContent()
+                    }
+                )
+                .environmentObject(session)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .smartOrganizerRequest)) { note in
+                guard let rootId = note.userInfo?[SmartOrganizerRequestKeys.rootId] as? String,
+                      !rootId.isEmpty
+                else { return }
+                let folderPath = (note.userInfo?[SmartOrganizerRequestKeys.path] as? String) ?? ""
+                let title = (note.userInfo?[SmartOrganizerRequestKeys.title] as? String) ?? "Dossier"
+                showAssistant = false
+                organizerScope = .root(rootId: rootId, relativePath: folderPath, displayName: title)
             }
             .onChange(of: showAssistant) { _, presented in
                 if presented { assistantDetent = .large }
@@ -840,6 +884,7 @@ struct FileFolderView: View {
     @State private var uploading = false
     @State private var showAssistant = false
     @State private var assistantDetent: PresentationDetent = .large
+    @State private var showOrganizer = false
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -979,6 +1024,12 @@ struct FileFolderView: View {
                         Button { showMkdir = true } label: { Label("Nouveau dossier", systemImage: "folder.badge.plus") }
                         Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
                             .disabled(uploading)
+                        Button {
+                            showOrganizer = true
+                            AppHaptics.light()
+                        } label: {
+                            Label("Réorganiser", systemImage: "folder.badge.gearshape")
+                        }
                         Divider()
                         Picker("Vue", selection: viewModeBinding) {
                             ForEach(FilesViewMode.allCases) { mode in
@@ -1007,13 +1058,24 @@ struct FileFolderView: View {
                 title: folderAssistantContext.sheetTitle,
                 contextLabel: folderAssistantContext.label,
                 contextRef: folderAssistantContext.ref,
-                persistenceKey: folderAssistantContext.persistenceKey
+                persistenceKey: folderAssistantContext.persistenceKey,
+                onRequestOrganize: {
+                    showAssistant = false
+                    showOrganizer = true
+                }
             )
             .environmentObject(session)
             .environment(nav)
             .presentationDetents([.medium, .large], selection: $assistantDetent)
             .presentationDragIndicator(.visible)
             .onAppear { assistantDetent = .large }
+        }
+        .sheet(isPresented: $showOrganizer) {
+            SmartOrganizerSheet(
+                scope: .root(rootId: root.id, relativePath: path, displayName: title),
+                onFinished: { await load(reset: true) }
+            )
+            .environmentObject(session)
         }
         .alert("Nouveau dossier", isPresented: $showMkdir) {
             TextField("Nom", text: $mkdirName)
@@ -1151,6 +1213,34 @@ struct FileFolderView: View {
                 Label("Supprimer", systemImage: "trash")
             }
             .disabled(deletingSingle)
+        } else if isFolder(entry) {
+            Button {
+                renameTarget = entry
+                renameText = entry.name ?? ""
+            } label: {
+                Label("Renommer", systemImage: "pencil")
+            }
+            Divider()
+            Button {
+                OrganizationProtectionStore.shared.protect(
+                    rootId: root.id,
+                    path: entry.relativePath,
+                    always: false
+                )
+                AppHaptics.light()
+            } label: {
+                Label("Protéger ce dossier", systemImage: "lock")
+            }
+            Button {
+                OrganizationProtectionStore.shared.protect(
+                    rootId: root.id,
+                    path: entry.relativePath,
+                    always: true
+                )
+                AppHaptics.success()
+            } label: {
+                Label("Toujours protéger", systemImage: "lock.shield")
+            }
         } else if entry.fileId != nil {
             Button {
                 renameTarget = entry
