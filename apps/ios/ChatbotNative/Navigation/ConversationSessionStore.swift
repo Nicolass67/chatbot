@@ -76,6 +76,9 @@ enum ConversationSessionStore {
         if patch.filesHandoff != nil { existing.filesHandoff = patch.filesHandoff }
         if !patch.filesFound.isEmpty { existing.filesFound = patch.filesFound }
         if patch.agentRun != nil { existing.agentRun = patch.agentRun }
+        if !patch.savedMemories.isEmpty {
+            existing.savedMemories = Self.mergeSavedMemories(existing.savedMemories, patch.savedMemories)
+        }
         setChrome(existing, conversationId: conversationId, messageId: messageId)
     }
 
@@ -95,6 +98,9 @@ enum ConversationSessionStore {
             if temp.filesHandoff != nil { merged.filesHandoff = temp.filesHandoff }
             if !temp.filesFound.isEmpty { merged.filesFound = temp.filesFound }
             if temp.agentRun != nil { merged.agentRun = temp.agentRun }
+            if !temp.savedMemories.isEmpty {
+                merged.savedMemories = Self.mergeSavedMemories(merged.savedMemories, temp.savedMemories)
+            }
             map[last.id] = merged
             if last.id != temporaryId {
                 map.removeValue(forKey: temporaryId)
@@ -128,5 +134,18 @@ enum ConversationSessionStore {
 
     static func clearDraftCard(conversationId: String) {
         draftCardMemory.removeValue(forKey: conversationId)
+    }
+}
+
+extension ConversationSessionStore {
+    static func mergeSavedMemories(
+        _ existing: [SavedMemoryChipDTO],
+        _ incoming: [SavedMemoryChipDTO]
+    ) -> [SavedMemoryChipDTO] {
+        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for item in incoming {
+            byId[item.id] = item
+        }
+        return Array(byId.values)
     }
 }

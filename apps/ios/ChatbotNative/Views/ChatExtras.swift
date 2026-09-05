@@ -203,6 +203,94 @@ struct MemorySavedNotice: View {
     }
 }
 
+/// Chip discret au-dessus d'une réponse assistant (style ChatGPT).
+struct MemoryUpdatedChip: View {
+    let memory: SavedMemoryChipDTO
+    var onOpen: (() -> Void)? = nil
+    var onForget: (() -> Void)? = nil
+
+    @State private var confirmingForget = false
+
+    var body: some View {
+        Group {
+            if confirmingForget {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Oublier ce souvenir ?")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                    Text(memory.content)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .lineLimit(3)
+                    HStack(spacing: 10) {
+                        Button("Oublier") {
+                            confirmingForget = false
+                            onForget?()
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        Button("Garder") {
+                            confirmingForget = false
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.mutedForeground)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(AppTheme.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                        .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                )
+            } else {
+                Button {
+                    onOpen?()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "brain.head.profile")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.accent)
+                        Text("Mémoire mise à jour")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.foreground)
+                        Text("·")
+                            .foregroundStyle(AppTheme.mutedForeground)
+                        Text(memory.categoryLabel)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                        Text(memory.content)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.foreground.opacity(0.9))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.accentSubtle.opacity(0.85))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                            .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Voir le souvenir", systemImage: "brain.head.profile") {
+                        onOpen?()
+                    }
+                    if onForget != nil {
+                        Button("Oublier…", systemImage: "trash", role: .destructive) {
+                            confirmingForget = true
+                        }
+                    }
+                }
+            }
+        }
+        .accessibilityLabel("Mémoire mise à jour: \(memory.content)")
+    }
+}
+
 struct FileActionPendingCard: View {
     let op: String
     let detail: String

@@ -170,6 +170,7 @@ async function persistAssistantMessage(params: {
   collectedSources: SearchResult[];
   pendingAttachments: Awaited<ReturnType<typeof getConversationAttachments>>;
   memoryIntent?: MemoryIntentDecision;
+  alreadySavedCount?: number;
 }): Promise<void> {
   const {
     input,
@@ -211,12 +212,13 @@ async function persistAssistantMessage(params: {
     },
   });
 
-  if (params.memoryIntent?.shouldRemember && params.settings.memoryEnabled) {
+  if (params.settings.memoryEnabled && params.memoryIntent) {
     const saved = await applyMemoryAfterResponse({
       intent: params.memoryIntent,
       userMessage: input.userContent,
       assistantMessage: fullContent,
       memoryEnabled: params.settings.memoryEnabled,
+      alreadySavedCount: params.alreadySavedCount ?? 0,
     });
     emitMemorySaved(input.onEvent, assistantId, saved);
   }
@@ -307,6 +309,7 @@ async function finalizeStreamedAssistant(params: {
   collectedSources: SearchResult[];
   pendingAttachments: Awaited<ReturnType<typeof getConversationAttachments>>;
   memoryIntent?: MemoryIntentDecision;
+  alreadySavedCount?: number;
   flushInitialMemorySaves?: (messageId: string) => void;
 }): Promise<void> {
   const {
@@ -317,6 +320,7 @@ async function finalizeStreamedAssistant(params: {
     collectedSources,
     pendingAttachments,
     memoryIntent,
+    alreadySavedCount,
     flushInitialMemorySaves,
   } = params;
   let { fullContent } = params;
@@ -358,6 +362,7 @@ async function finalizeStreamedAssistant(params: {
       collectedSources: dedupeAndCapSources(collectedSources, 20),
       pendingAttachments,
       memoryIntent,
+      alreadySavedCount,
     });
   } catch (error) {
     input.onEvent({
@@ -834,6 +839,7 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         pendingAttachmentNames: pendingAttachments.map((a) => a.filename),
         routeDecision: route,
         memoryIntent: analysis.memory,
+        alreadySavedCount: initialMemorySaves.length,
         flushInitialMemorySaves,
         userId,
         toolCtxBase,
@@ -1023,6 +1029,7 @@ async function runChatMode(params: {
           collectedSources,
           pendingAttachments,
           memoryIntent,
+          alreadySavedCount: initialMemorySaves.length,
           flushInitialMemorySaves,
         });
         return;
@@ -1318,6 +1325,7 @@ async function streamFinalResponse(params: {
   reasoningEffort: string | null;
   requestId?: string;
   memoryIntent?: MemoryIntentDecision;
+  alreadySavedCount?: number;
   flushInitialMemorySaves?: (messageId: string) => void;
 }) {
   const {
@@ -1330,6 +1338,7 @@ async function streamFinalResponse(params: {
     reasoningEffort,
     requestId,
     memoryIntent,
+    alreadySavedCount = 0,
     flushInitialMemorySaves,
   } = params;
 
@@ -1392,6 +1401,7 @@ async function streamFinalResponse(params: {
       collectedSources: dedupeAndCapSources(collectedSources, 20),
       pendingAttachments,
       memoryIntent,
+      alreadySavedCount,
     });
   } catch (error) {
     input.onEvent({

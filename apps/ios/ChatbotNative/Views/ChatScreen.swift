@@ -617,6 +617,13 @@ struct ChatScreen: View {
             mailHandoff: chrome.mailHandoff,
             filesHandoff: chrome.filesHandoff,
             filesFound: chrome.filesFound,
+            savedMemories: chrome.savedMemories,
+            onOpenMemory: { memory in
+                nav.openMemory(memoryId: memory.id)
+            },
+            onForgetMemory: { memory in
+                Task { await forgetSavedMemory(memory, messageId: msg.id) }
+            },
             onCopy: {
                 UIPasteboard.general.string = msg.content
                 AppHaptics.light()
@@ -1392,6 +1399,12 @@ struct ChatScreen: View {
             if merged.mailHandoff == nil { merged.mailHandoff = oldChrome.mailHandoff }
             if merged.filesHandoff == nil { merged.filesHandoff = oldChrome.filesHandoff }
             if merged.agentRun == nil { merged.agentRun = oldChrome.agentRun }
+            if merged.savedMemories.isEmpty { merged.savedMemories = oldChrome.savedMemories }
+            else if !oldChrome.savedMemories.isEmpty {
+                var byId = Dictionary(uniqueKeysWithValues: merged.savedMemories.map { ($0.id, $0) })
+                for item in oldChrome.savedMemories where byId[item.id] == nil { byId[item.id] = item }
+                merged.savedMemories = Array(byId.values)
+            }
             if merged.filesFound.isEmpty { merged.filesFound = oldChrome.filesFound }
             else if !oldChrome.filesFound.isEmpty {
                 merged.filesFound = mergeFilesFound(merged.filesFound, oldChrome.filesFound)
@@ -1805,6 +1818,24 @@ struct ChatScreen: View {
         pendingAttachments.removeAll { $0.id == att.id }
         if !att.id.hasPrefix("local-") {
             try? await client.deleteAttachment(id: att.id)
+        }
+    }
+
+    private func forgetSavedMemory(_ memory: SavedMemoryChipDTO, messageId: String) async {
+        do {
+            let client = APIClient(baseURL: session.baseURL, token: session.token)
+            try await client.deleteMemory(id: memory.id)
+            var chrome = chromeById[messageId] ?? MessageChromeMeta()
+            chrome.savedMemories.removeAll { $0.id == memory.id }
+            chromeById[messageId] = chrome
+            ConversationSessionStore.setChrome(
+                chrome,
+                conversationId: conversation.id,
+                messageId: messageId
+            )
+            AppHaptics.light()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -2546,12 +2577,34 @@ struct ChatScreen: View {
             )
             thinkingKind = nil
         case "memory_saved":
-            if let memories = obj["memories"] as? [[String: Any]], let first = memories.first {
-                let cat = (first["category"] as? String) ?? "mémoire"
-                let content = (first["content"] as? String) ?? (first["text"] as? String) ?? "Souvenir enregistré"
-                memoryNotice = "\(cat) · \(content)"
-            } else {
-                memoryNotice = "Mémoire enregistrée"
+            let parsed: [SavedMemoryChipDTO] = ((obj["memories"] as? [[String: Any]]) ?? []).compactMap { item in
+                guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+                let content = (item["content"] as? String) ?? (item["text"] as? String) ?? ""
+                guard !content.isEmpty else { return nil }
+                return SavedMemoryChipDTO(
+                    id: id,
+                    content: content,
+                    category: (item["category"] as? String) ?? "other"
+                )
+            }
+            guard !parsed.isEmpty else { break }
+            let targetId = (obj["messageId"] as? String)
+                ?? streamingAssistantId
+                ?? messages.last(where: { $0.role == "assistant" })?.id
+            if let targetId {
+                var chrome = chromeById[targetId] ?? MessageChromeMeta()
+                var byId = Dictionary(uniqueKeysWithValues: chrome.savedMemories.map { ($0.id, $0) })
+                for item in parsed { byId[item.id] = item }
+                chrome.savedMemories = Array(byId.values)
+                chromeById[targetId] = chrome
+                ConversationSessionStore.mergeChrome(
+                    MessageChromeMeta(savedMemories: chrome.savedMemories),
+                    conversationId: conversation.id,
+                    messageId: targetId
+                )
+            }
+            if let first = parsed.first {
+                memoryNotice = "\(first.categoryLabel) · \(first.content)"
             }
         case "mail_handoff":
             streamMailHandoff = MailHandoffDTO(

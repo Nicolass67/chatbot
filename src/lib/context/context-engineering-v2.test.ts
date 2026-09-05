@@ -66,7 +66,7 @@ function mem(
 }
 
 describe("ContextPlan", () => {
-  it("STATIC factuel → memoryBudget 0", () => {
+  it("STATIC factuel → memoryBudget ≥ 2", () => {
     const plan = buildContextPlan({
       route: baseRoute({ knowledge: "static" }),
       message: "Pourquoi le ciel est bleu ?",
@@ -74,7 +74,7 @@ describe("ContextPlan", () => {
       hasActiveFile: false,
       hasActiveMail: false,
     });
-    expect(plan.memoryBudget).toBe(0);
+    expect(plan.memoryBudget).toBeGreaterThanOrEqual(2);
     expect(plan.historyMode).toBe("minimal");
   });
 

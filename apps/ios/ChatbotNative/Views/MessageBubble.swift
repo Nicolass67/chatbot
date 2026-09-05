@@ -10,6 +10,9 @@ struct MessageBubble: View {
     var mailHandoff: MailHandoffDTO? = nil
     var filesHandoff: FilesHandoffDTO? = nil
     var filesFound: [FilesFoundFileDTO] = []
+    var savedMemories: [SavedMemoryChipDTO] = []
+    var onOpenMemory: ((SavedMemoryChipDTO) -> Void)? = nil
+    var onForgetMemory: ((SavedMemoryChipDTO) -> Void)? = nil
     let onCopy: () -> Void
     let onEdit: () -> Void
     let onRegenerate: () -> Void
@@ -71,6 +74,18 @@ struct MessageBubble: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
+                if !savedMemories.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(savedMemories) { memory in
+                            MemoryUpdatedChip(
+                                memory: memory,
+                                onOpen: { onOpenMemory?(memory) },
+                                onForget: onForgetMemory.map { cb in { cb(memory) } }
+                            )
+                        }
+                    }
+                }
+
                 assistantCanvas
 
                 if let attachments = message.attachments, !attachments.isEmpty {

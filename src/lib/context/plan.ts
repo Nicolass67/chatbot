@@ -61,21 +61,23 @@ export function buildContextPlan(input: BuildContextPlanInput): ContextPlan {
   const filesIntent = input.route.files.intent !== "none";
   const emailIntent = input.route.email.intent !== "none";
 
+  // Toujours un budget ≥ 2 : les souvenirs stables (âge, préférences…) doivent
+  // influencer chaque réponse, même sur une question factuelle « froide ».
   let memoryBudget: MemoryBudget = 4;
   if (staticKnowledge && personalRelevance === "none" && !followUp) {
-    memoryBudget = 0;
-  } else if (staticKnowledge && personalRelevance === "light") {
-    memoryBudget = 1;
-  } else if (staticKnowledge && personalRelevance === "needed") {
     memoryBudget = 2;
+  } else if (staticKnowledge && personalRelevance === "light") {
+    memoryBudget = 2;
+  } else if (staticKnowledge && personalRelevance === "needed") {
+    memoryBudget = 4;
   } else if (webRequired && personalRelevance === "none") {
     memoryBudget = 2;
   } else if (personalRelevance === "needed") {
     memoryBudget = 4;
   }
 
-  if (followUp && memoryBudget === 0 && personalRelevance !== "none") {
-    memoryBudget = 1;
+  if (followUp && memoryBudget < 2) {
+    memoryBudget = 2;
   }
 
   memoryBudget = clampMemoryBudget(memoryBudget);
@@ -101,7 +103,7 @@ export function buildContextPlan(input: BuildContextPlanInput): ContextPlan {
   if (followUp && memoryBudget < 2) {
     memoryBudget = 2;
   }
-  if (hasPrior && memoryBudget === 0) {
+  if (memoryBudget < 2) {
     memoryBudget = 2;
   }
 

@@ -58,9 +58,10 @@ export function buildMemoryClassifierSystemPrompt(): string {
 
 Tu produis UNIQUEMENT un objet JSON valide, sans markdown ni texte autour.
 
-Objectif: détecter si le message utilisateur contient une information PERSONNELLE utile à retenir pour les conversations futures.
+Objectif: décider toi-même si le message contient une information PERSONNELLE durable utile pour les conversations futures. Aucune règle lexicale figée — juge le sens.
 
-Mémoriser si pertinent:
+Mémoriser si pertinent (faits stables sur l'utilisateur):
+- identité / démographie: âge, prénom ou surnom, ville/région, métier, situation familiale
 - préférences explicites (langage, outils, style de réponse)
 - matériel / config perso (PC, GPU, OS, stack)
 - projet en cours, contraintes récurrentes
@@ -71,9 +72,11 @@ NE PAS mémoriser:
 - questions ponctuelles sans info personnelle durable
 - faits encyclopédiques ou actualité
 - bavardage sans intérêt futur
-- secrets sensibles (mots de passe, tokens, numéros de carte)
+- secrets sensibles (mots de passe, tokens, numéros de carte, données bancaires)
 
-Si shouldRemember=true, extrais 0 à 3 faits concis formulés à la 3e personne sur l'utilisateur (ex: "Préfère les réponses concises").
+Si shouldRemember=true, extrais 1 à 3 faits concis formulés à la 3e personne, ≥10 caractères chacun.
+Exemples de formulation: "L'utilisateur a 26 ans", "L'utilisateur s'appelle Nicolas", "Préfère les réponses concises".
+Catégorie: identity → "other" ; préférences → "preference" ; etc. Importance ≥ 0.7 pour les faits d'identité.
 
 JSON attendu:
 {

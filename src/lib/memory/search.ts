@@ -78,6 +78,24 @@ export class TextMemoryRetriever implements MemoryRetriever {
     };
   }
 
+  /** Fallback: souvenirs stables les plus importants (identité, préférences). */
+  private async fetchTopImportance(limit: number): Promise<Memory[]> {
+    const sqlite = getSqlite();
+    try {
+      return sqlite
+        .prepare(
+          `SELECT id, content, category, importance, embedding,
+                  created_at as createdAt, updated_at as updatedAt
+           FROM memories
+           ORDER BY importance DESC, updated_at DESC
+           LIMIT ?`
+        )
+        .all(limit) as Memory[];
+    } catch {
+      return [];
+    }
+  }
+
   private async fetchCandidates(
     query: string,
     limit: number
@@ -86,20 +104,19 @@ export class TextMemoryRetriever implements MemoryRetriever {
     const words = query
       .toLowerCase()
       .split(/\s+/)
-      .filter((w) => w.length > 3)
+      .map((w) => w.replace(/[^\p{L}\p{N}]/gu, ""))
+      .filter((w) => w.length > 2)
       .slice(0, 8);
 
     if (words.length === 0) {
-      // No useful FTS tokens: do NOT return top-importance globally when
-      // caller wanted semantic relevance — return empty candidates.
-      // Callers that need a fallback can pass a broader primaryQuery.
-      return [];
+      // Pas de tokens FTS utiles: injecter quand même les souvenirs stables.
+      return this.fetchTopImportance(limit);
     }
 
     const ftsQuery = words.map((w) => `"${w.replace(/"/g, "")}"`).join(" OR ");
 
     try {
-      return sqlite
+      const matched = sqlite
         .prepare(
           `SELECT m.id, m.content, m.category, m.importance, m.embedding,
                   m.created_at as createdAt, m.updated_at as updatedAt
@@ -110,8 +127,12 @@ export class TextMemoryRetriever implements MemoryRetriever {
            LIMIT ?`
         )
         .all(ftsQuery, limit) as Memory[];
+
+      if (matched.length > 0) return matched;
+      // FTS vide mais budget actif → ne pas laisser la mémoire inutilisée.
+      return this.fetchTopImportance(limit);
     } catch {
-      return [];
+      return this.fetchTopImportance(limit);
     }
   }
 }

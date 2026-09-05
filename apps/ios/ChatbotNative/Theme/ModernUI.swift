@@ -444,6 +444,25 @@ struct MessageChromeMeta: Equatable {
     var filesFound: [FilesFoundFileDTO] = []
     /// Panel agent Cursor-like — reste attaché au message après la génération.
     var agentRun: AgentRunSnapshot?
+    /// Souvenirs enregistrés pendant cette réponse (SSE memory_saved).
+    var savedMemories: [SavedMemoryChipDTO] = []
+}
+
+struct SavedMemoryChipDTO: Identifiable, Hashable, Equatable {
+    let id: String
+    let content: String
+    let category: String
+
+    var categoryLabel: String {
+        switch category {
+        case "preference": return "Préférence"
+        case "hardware": return "Matériel"
+        case "project": return "Projet"
+        case "habit": return "Habitude"
+        case "communication": return "Communication"
+        default: return "Souvenir"
+        }
+    }
 }
 
 struct AppearFade: ViewModifier {

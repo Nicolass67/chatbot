@@ -77,9 +77,13 @@ export async function extractMemoriesAsync(
   if (!settings.memoryEnabled || !settings.selectedModel) return [];
 
   const runtime = getLocalAIRuntime();
-  const prompt = `Analyse cette conversation et détermine si des informations sur l'utilisateur méritent d'être mémorisées long terme.
+  const prompt = `Analyse cette conversation et décide toi-même si des informations PERSONNELLES durables sur l'utilisateur méritent d'être mémorisées long terme.
 
-NE mémorise PAS: questions ponctuelles, infos temporaires, données sensibles inutiles, bavardage sans intérêt futur.
+Mémorise notamment (si présents): âge, prénom, localisation, métier, préférences, matériel, projets, habitudes.
+Formule chaque fait à la 3e personne, ≥10 caractères (ex: "L'utilisateur a 26 ans").
+Importance ≥ 0.7 pour l'identité. Catégorie identity → "other".
+
+NE mémorise PAS: questions ponctuelles, infos temporaires, secrets (mots de passe, tokens, carte), bavardage sans intérêt futur.
 
 Réponds UNIQUEMENT en JSON valide:
 {"shouldRemember":boolean,"memories":[{"content":"...","category":"preference|hardware|project|habit|communication|other","importance":0.0-1.0}]}

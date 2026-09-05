@@ -103,6 +103,7 @@ export interface AgentLoopInput {
   pendingAttachmentNames?: string[];
   routeDecision?: RouteDecision;
   memoryIntent?: MemoryIntentDecision;
+  alreadySavedCount?: number;
   flushInitialMemorySaves?: (messageId: string) => void;
   userId?: string;
   toolCtxBase?: Omit<ToolContext, "signal">;
@@ -1355,12 +1356,13 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     input.onEvent({ type: "done", messageId: assistantId });
 
-    if (input.memoryIntent?.shouldRemember && input.settings.memoryEnabled) {
+    if (input.settings.memoryEnabled && input.memoryIntent) {
       const saved = await applyMemoryAfterResponse({
         intent: input.memoryIntent,
         userMessage: input.userContent,
         assistantMessage: fullContent,
         memoryEnabled: input.settings.memoryEnabled,
+        alreadySavedCount: input.alreadySavedCount ?? 0,
       });
       emitMemorySaved(input.onEvent, assistantId, saved);
     }
