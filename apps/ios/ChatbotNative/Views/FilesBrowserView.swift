@@ -1782,8 +1782,6 @@ struct FileFolderView: View {
     }
 }
 
-}
-
 /// Miniature lazy pour la grille / détails Files (cache ImagePipeline, pas de gros fichiers).
 private struct FilesEntryThumbnail: View {
     let entry: FileEntryDTO
