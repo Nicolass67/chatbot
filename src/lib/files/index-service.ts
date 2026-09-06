@@ -12,6 +12,7 @@ import { fileIndexChunks, fileIndexEntries } from "@/lib/db/schema";
 import { isSensitiveRelativePath } from "./access";
 import { INDEXABLE_EXTENSIONS, LIMITS } from "./constants";
 import { resolveUnderRoot, toPosixRelative } from "./path-guard";
+import { queryTokens } from "./provider";
 import type { FileRootRecord } from "./types";
 
 export async function purgeIndexEntry(input: {
@@ -254,10 +255,7 @@ export async function searchFileIndexPassages(input: {
   query: string;
   limit?: number;
 }): Promise<Array<{ content: string; relativePath: string; score: number }>> {
-  const q = input.query
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length > 2)
+  const q = queryTokens(input.query)
     .map((w) => `"${w.replace(/"/g, "")}"`)
     .join(" OR ");
   if (!q) return [];

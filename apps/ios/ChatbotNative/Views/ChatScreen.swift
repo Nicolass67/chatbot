@@ -399,7 +399,7 @@ struct ChatScreen: View {
     }
 
     private var messageScroll: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: .bottom) {
             ScrollViewReader { proxy in
                 ScrollView {
                     // VStack (pas LazyVStack) : Lazy sous-estime la hauteur des bulles hors écran
@@ -641,8 +641,7 @@ struct ChatScreen: View {
                     AppHaptics.light()
                     scrollToken += 1
                 }
-                .padding(.trailing, 14)
-                .padding(.bottom, 10)
+                .padding(.bottom, 12)
                 .transition(.opacity.combined(with: .scale))
             }
         }

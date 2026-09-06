@@ -313,6 +313,7 @@ struct ChatToolsSheet: View {
 
 struct ScrollToBottomButton: View {
     let action: () -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Button {
@@ -320,14 +321,33 @@ struct ScrollToBottomButton: View {
             action()
         } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(AppTheme.foreground)
-                .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
-                .background(AppTheme.surfaceElevated, in: Circle())
-                .overlay(Circle().stroke(AppTheme.borderSubtle, lineWidth: 1))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(AppTheme.foreground.opacity(0.9))
+                .frame(width: 32, height: 32)
+                .modifier(ScrollGlassChrome(reduceTransparency: reduceTransparency))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Descendre")
+    }
+}
+
+private struct ScrollGlassChrome: ViewModifier {
+    let reduceTransparency: Bool
+
+    func body(content: Content) -> some View {
+        Group {
+            if reduceTransparency {
+                content
+                    .background(AppTheme.surfaceElevated.opacity(0.92), in: Circle())
+            } else {
+                content
+                    .glassEffect(
+                        .regular.tint(AppTheme.surface.opacity(0.28)),
+                        in: Circle()
+                    )
+            }
+        }
+        .overlay(Circle().stroke(AppTheme.glassBorder, lineWidth: 0.6))
     }
 }
 

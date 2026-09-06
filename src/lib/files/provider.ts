@@ -32,38 +32,67 @@ const QUERY_STOPWORDS = new Set([
   "au",
   "aux",
   "avec",
+  "bonjour",
   "ce",
   "ces",
   "cette",
+  "cherche",
+  "chercher",
   "dans",
   "de",
   "des",
+  "donne",
+  "donner",
   "du",
   "en",
   "et",
   "fichier",
   "fichiers",
+  "hello",
+  "hi",
+  "il",
   "je",
   "l",
   "la",
   "le",
   "les",
   "ma",
+  "me",
   "mes",
+  "moi",
   "mon",
+  "montre",
+  "montrer",
   "ou",
+  "ouvre",
+  "ouvrir",
   "par",
+  "peux",
+  "please",
+  "plait",
   "pour",
+  "puis",
+  "recupere",
+  "recuperer",
   "sa",
+  "salut",
   "se",
   "ses",
   "son",
+  "stp",
   "sur",
+  "svp",
   "ta",
+  "te",
   "tes",
   "ton",
+  "trouve",
+  "trouver",
+  "tu",
   "un",
   "une",
+  "veux",
+  "voir",
   "y",
 ]);
 
@@ -84,7 +113,8 @@ export function queryTokens(query: string): string[] {
 
 /**
  * Score nom/chemin vs requête. Exige une majorité de tokens significatifs
- * pour éviter que « ma » matche Map/Manager.
+ * pour éviter que « ma » matche Map/Manager. Seuil assoupli (50 %) pour les
+ * phrases naturelles (« Cherche … stp ») une fois les stopwords retirés.
  */
 export function nameScore(haystack: string, query: string): number {
   const f = normalizeSearchText(haystack);
@@ -101,7 +131,7 @@ export function nameScore(haystack: string, query: string): number {
     if (f.includes(p)) matched += 1;
   }
   if (matched === 0) return 0;
-  if (parts.length >= 2 && matched < Math.ceil(parts.length * 0.6)) {
+  if (parts.length >= 2 && matched < Math.max(1, Math.ceil(parts.length * 0.5))) {
     return 0;
   }
 
