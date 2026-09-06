@@ -161,35 +161,6 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                    .overlay(alignment: .bottom) {
-                        // Ligne transparente (comme avant) : Disponible à gauche, boutons à droite.
-                        if !isSending {
-                            HStack(spacing: 8) {
-                                RuntimeStatusPill(status: displayRuntimeStatus)
-                                if !assistantReadyForSend {
-                                    Text(sendBlockedHint)
-                                        .font(CNFont.caption2)
-                                        .foregroundStyle(AppTheme.mutedForeground)
-                                        .lineLimit(1)
-                                }
-                                Spacer(minLength: 0)
-                                ComposerQuickControls(
-                                    thinkingEnabled: isThinkingEnabled,
-                                    chatMode: chatMode,
-                                    toolChannel: toolChannel,
-                                    thinkingAvailable: thinkingToggleAvailable,
-                                    showsToolChannel: showsToolChannelPicker,
-                                    onToggleThinking: { toggleThinking() },
-                                    onToggleMode: {
-                                        applyMode(chatMode == "agent" ? "chat" : "agent")
-                                    },
-                                    onCycleTool: { cycleToolChannel() }
-                                )
-                            }
-                            .padding(.horizontal, AppTheme.space16)
-                            .padding(.bottom, 2)
-                        }
-                    }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,
@@ -690,13 +661,13 @@ struct ChatScreen: View {
             }
 
             if showScrollDown {
-                // Centré + au-dessus de la rangée Disponible / quick controls (droite).
+                // Centré, au-dessus de la zone composer (PJ / Disponible / boutons).
                 ScrollToBottomButton {
                     AppHaptics.light()
                     scrollToken += 1
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 52)
+                .padding(.bottom, 12)
                 .transition(.opacity.combined(with: .scale))
                 .accessibilitySortPriority(1)
             }
@@ -1454,7 +1425,8 @@ struct ChatScreen: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 10) {
+        // Ordre (tous chats / assistants) : PJ → Disponible + boutons → capsule.
+        VStack(alignment: .leading, spacing: 8) {
             if !pendingAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -1464,8 +1436,35 @@ struct ChatScreen: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, AppTheme.space14)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !isSending {
+                HStack(spacing: 8) {
+                    RuntimeStatusPill(status: displayRuntimeStatus)
+                    if !assistantReadyForSend {
+                        Text(sendBlockedHint)
+                            .font(CNFont.caption2)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    ComposerQuickControls(
+                        thinkingEnabled: isThinkingEnabled,
+                        chatMode: chatMode,
+                        toolChannel: toolChannel,
+                        thinkingAvailable: thinkingToggleAvailable,
+                        showsToolChannel: showsToolChannelPicker,
+                        onToggleThinking: { toggleThinking() },
+                        onToggleMode: {
+                            applyMode(chatMode == "agent" ? "chat" : "agent")
+                        },
+                        onCycleTool: { cycleToolChannel() }
+                    )
+                }
+                .padding(.horizontal, AppTheme.space16)
             }
 
             ComposerCapsule(
