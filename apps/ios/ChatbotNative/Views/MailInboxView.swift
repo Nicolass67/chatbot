@@ -1219,40 +1219,13 @@ struct MailThreadView: View {
     }
 
     private var mailOverflowMenu: some View {
-        Menu {
-            Button {
-                Task { await runSummarize() }
-            } label: {
-                Label("Résumer", systemImage: "text.alignleft")
-            }
-            .disabled(aiBusy)
-            .accessibilityIdentifier(A11yID.Mail.summaryAction)
-            Button {
-                Task { await runSuggest() }
-            } label: {
-                Label("Préparer une réponse", systemImage: "arrowshape.turn.up.left")
-            }
-            .disabled(aiBusy)
-            .accessibilityIdentifier(A11yID.Mail.reply)
-            Button {
-                assistantDetent = .large
-                showAssistant = true
-            } label: {
-                Label("Assistant", systemImage: "sparkles")
-            }
-            .accessibilityIdentifier("mail.menu.assistant")
-            Divider()
-            Button(role: .destructive) {
-                Task { await trashFromThread() }
-            } label: {
-                Label("Corbeille", systemImage: "trash")
-            }
-            .disabled(aiBusy || trashing)
+        Button {
+            nav.openSettings()
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "gearshape")
         }
-        .accessibilityLabel("Actions du mail")
-        .accessibilityIdentifier(A11yID.Mail.overflow)
+        .accessibilityLabel("Paramètres")
+        .accessibilityIdentifier(A11yID.Mail.settings)
     }
 
     private func load() async {
