@@ -28,7 +28,7 @@ private struct BlurBandHeightKey: PreferenceKey {
     }
 }
 
-/// Dégradé de flou : opaque en bas, transparent en haut (s’arrête pile au-dessus des quick controls).
+/// Dégradé de flou : opaque en bas, transparent pile au sommet (sous les quick controls).
 private struct ComposerBottomBlurFade: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -38,8 +38,8 @@ private struct ComposerBottomBlurFade: View {
                 LinearGradient(
                     colors: [
                         AppTheme.background.opacity(0),
-                        AppTheme.background.opacity(0.55),
-                        AppTheme.background.opacity(0.88)
+                        AppTheme.background.opacity(0.4),
+                        AppTheme.background.opacity(0.82)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -51,8 +51,9 @@ private struct ComposerBottomBlurFade: View {
                         LinearGradient(
                             stops: [
                                 .init(color: .clear, location: 0),
-                                .init(color: .black.opacity(0.45), location: 0.28),
-                                .init(color: .black.opacity(0.85), location: 0.62),
+                                .init(color: .black.opacity(0.4), location: 0.1),
+                                .init(color: .black.opacity(0.8), location: 0.32),
+                                .init(color: .black, location: 0.55),
                                 .init(color: .black, location: 1)
                             ],
                             startPoint: .top,
@@ -143,10 +144,8 @@ struct ChatScreen: View {
     @State private var showScrollDown = false
     /// Hauteur totale du chrome flottant (bannières + PJ + flou + composer) pour le padding du fil.
     @State private var floatingChromeHeight: CGFloat = 168
-    /// Hauteur de la zone floutée (quick controls + composer + lift tab bar).
-    @State private var blurBandHeight: CGFloat = 120
-    /// Safe area bas (tab bar + home indicator) capturée hors clavier.
-    @State private var bottomChromeInset: CGFloat = 83
+    /// Hauteur mesurée des quick controls + composer (sans lift tab bar).
+    @State private var chromeContentHeight: CGFloat = 96
     /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
     @State private var keyboardLiftActive = false
     /// Collé en bas → suivi auto du stream. Remontée utilisateur → false.
@@ -228,7 +227,9 @@ struct ChatScreen: View {
                     // Fil jusqu’en bas d’écran (sous tab bar) ; le clavier reste respecté.
                     .ignoresSafeArea(.container, edges: .bottom)
                     .overlay(alignment: .bottom) {
+                        // Évite le double lift safe area + padding manuel.
                         composerFloatingChrome
+                            .ignoresSafeArea(.container, edges: .bottom)
                     }
             }
         }
@@ -236,15 +237,15 @@ struct ChatScreen: View {
             GeometryReader { geo in
                 let inset = geo.safeAreaInsets.bottom
                 Color.clear
-                    .onAppear { updateBottomChromeInset(inset) }
-                    .onChange(of: inset) { _, value in updateBottomChromeInset(value) }
+                    .onAppear { updateKeyboardLift(inset) }
+                    .onChange(of: inset) { _, value in updateKeyboardLift(value) }
             }
         }
         .onPreferenceChange(FloatingChromeHeightKey.self) { height in
             if height > 0 { floatingChromeHeight = height }
         }
         .onPreferenceChange(BlurBandHeightKey.self) { height in
-            if height > 0 { blurBandHeight = height }
+            if height > 0 { chromeContentHeight = height }
         }
         .navigationTitle(
             forcedScope != nil
@@ -1472,7 +1473,17 @@ struct ChatScreen: View {
 
     /// Hauteur réservée en bas du fil pour l’overlay (PJ + flou + composer + tab bar).
     private var composerChromeScrollPadding: CGFloat {
-        max(floatingChromeHeight, 160) + 12
+        max(floatingChromeHeight, 140) + 8
+    }
+
+    /// Lift au-dessus de la tab bar flottante — un seul inset contrôlé (pas toute la safe area).
+    private var tabBarOverlayLift: CGFloat {
+        keyboardLiftActive ? AppTheme.space8 : 54
+    }
+
+    /// Bande de flou = contrôles + composer + zone sous le composer jusqu’au bas.
+    private var blurBandTotalHeight: CGFloat {
+        max(chromeContentHeight, 1) + tabBarOverlayLift
     }
 
     /// Composer + chrome en surimpression ; flou du bas jusqu’au-dessus des 3 boutons.
@@ -1535,7 +1546,7 @@ struct ChatScreen: View {
             ZStack(alignment: .bottom) {
                 ComposerBottomBlurFade()
                     .frame(maxWidth: .infinity)
-                    .frame(height: max(blurBandHeight, 1))
+                    .frame(height: blurBandTotalHeight)
 
                 VStack(alignment: .leading, spacing: 8) {
                     if !isSending {
@@ -1566,12 +1577,12 @@ struct ChatScreen: View {
 
                     composer
                 }
-                .padding(.bottom, keyboardLiftActive ? AppTheme.space8 : max(bottomChromeInset, 49))
                 .background {
                     GeometryReader { geo in
                         Color.clear.preference(key: BlurBandHeightKey.self, value: geo.size.height)
                     }
                 }
+                .padding(.bottom, tabBarOverlayLift)
             }
         }
         .background {
@@ -1582,10 +1593,9 @@ struct ChatScreen: View {
         .allowsHitTesting(true)
     }
 
-    private func updateBottomChromeInset(_ inset: CGFloat) {
+    private func updateKeyboardLift(_ inset: CGFloat) {
         // Tab bar ≈ 49–100 ; clavier typiquement > 200.
         if inset > 0 && inset < 140 {
-            bottomChromeInset = inset
             keyboardLiftActive = false
         } else if inset >= 140 {
             keyboardLiftActive = true
