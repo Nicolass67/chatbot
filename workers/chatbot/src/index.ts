@@ -94,10 +94,11 @@ const worker = {
         return handleVpcTest(env);
       }
 
-      if (url.pathname === "/wake") {
+      if (url.pathname === "/wake" || url.pathname === "/api/infrastructure/power/wake") {
         if (request.method !== "POST") {
           return json({ error: "method_not_allowed" }, 405);
         }
+        // WoL Freebox au bord — ne dépend pas de Next.js (PC éteint).
         return handleWake(request, env);
       }
 

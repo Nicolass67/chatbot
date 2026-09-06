@@ -74,6 +74,64 @@ describe("worker routing when backend offline", () => {
     expect(html).toContain("Relancer les services");
   });
 
+  it("POST /api/infrastructure/power/wake routes to Freebox WoL (no PRIVATE_API)", async () => {
+    const vpcFetch = vi.fn(async () => {
+      throw new Error("tunnel_down");
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/v4/login/")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              result: { challenge: "abc" },
+            })
+          );
+        }
+        if (url.endsWith("/api/v4/login/session/")) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              result: { session_token: "sess", permissions: ["settings"] },
+            })
+          );
+        }
+        if (url.endsWith("/api/v4/lan/wol/pub/")) {
+          return new Response(JSON.stringify({ success: true, result: null }));
+        }
+        throw new Error(`unexpected ${url}`);
+      })
+    );
+
+    const env = {
+      PRIVATE_API: { fetch: vpcFetch } as unknown as Fetcher,
+      FREEBOX_APP_ID: "fr.chatbot.woltest.20250901b",
+      FREEBOX_API_DOMAIN: "example.freeboxos.fr",
+      FREEBOX_HTTPS_PORT: "443",
+      FREEBOX_WOL_MAC: "9C:69:B4:60:70:6B",
+      FREEBOX_APP_TOKEN: "secret",
+      BOOT_KV: createMemoryKv(),
+    };
+
+    const response = await worker.fetch(
+      new Request(
+        "https://chatbot.example.workers.dev/api/infrastructure/power/wake",
+        {
+          method: "POST",
+          headers: { "Cf-Access-Jwt-Assertion": "jwt-test" },
+        }
+      ),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(vpcFetch).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+  });
+
   it("POST /wake does not call PRIVATE_API", async () => {
     const vpcFetch = vi.fn(async () => {
       throw new Error("tunnel_down");

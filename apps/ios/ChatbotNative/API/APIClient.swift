@@ -692,7 +692,9 @@ final class APIClient: @unchecked Sendable {
         if UITestMode.isActive {
             return PowerStatusDTO(powerState: .starting, message: "Réveil simulé", ok: true)
         }
-        var req = authorizedRequest(path: "api/infrastructure/power/wake", method: "POST")
+        // Toujours /wake sur le Worker (Freebox) — fonctionne PC éteint.
+        // Ne pas passer par api/infrastructure/power/wake (Next.js, mort si PC off).
+        var req = authorizedRequest(path: "wake", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data("{}".utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -702,8 +704,13 @@ final class APIClient: @unchecked Sendable {
         }
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let ok = (obj["ok"] as? Bool) ?? true
-            let message = (obj["message"] as? String) ?? "Signal de réveil envoyé"
-            if !ok { throw APIClientError.http(500, message) }
+            let message = (obj["message"] as? String)
+                ?? (obj["msg"] as? String)
+                ?? "Signal de réveil envoyé"
+            if !ok {
+                let detail = (obj["error_code"] as? String).map { "\($0): \(message)" } ?? message
+                throw APIClientError.http((resp as? HTTPURLResponse)?.statusCode ?? 502, detail)
+            }
             return PowerStatusDTO(powerState: .starting, message: message, ok: true)
         }
         throw APIClientError.decode
