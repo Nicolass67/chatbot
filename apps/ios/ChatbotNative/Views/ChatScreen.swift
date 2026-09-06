@@ -97,11 +97,13 @@ struct ChatScreen: View {
     private let scrollHideButtonThreshold: CGFloat = 160
     @State private var scrollToken = 0
     /// Historique long : page récente + pages plus anciennes au scroll haut (RAM).
+    /// Fenêtre bornée — trop de bulles SwiftUI = lag (markdown / pastilles).
     @State private var hasMoreOlderMessages = false
     @State private var isLoadingOlderMessages = false
     @State private var scrollAnchorAfterPrepend: String?
-    private let historyInitialPageSize = 40
-    private let historyOlderPageSize = 30
+    /// Fenêtre récente bornée — trop de bulles SwiftUI = lag (surtout markdown / pastilles).
+    private let historyInitialPageSize = 15
+    private let historyOlderPageSize = 10
     private let historyLoadOlderOffsetY: CGFloat = 140
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
@@ -317,7 +319,8 @@ struct ChatScreen: View {
         }
         .onChange(of: messages) { _, msgs in
             // Cap cache : évite de réhydrater des fils géants en mémoire.
-            let cap = historyInitialPageSize + historyOlderPageSize * 3
+            // Cap serré : évite de réhydrater un fil trop long au retour d’onglet.
+            let cap = historyInitialPageSize + historyOlderPageSize * 2
             let toStore = msgs.count > cap ? Array(msgs.suffix(cap)) : msgs
             TabMemoryCache.saveChat(conversationId: conversation.id, messages: toStore)
         }
