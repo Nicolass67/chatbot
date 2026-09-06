@@ -231,7 +231,8 @@ struct AgentActivityView: View {
                     LinearGradient(
                         colors: [
                             AppTheme.chromeStroke,
-                            AppTheme.accent.opacity(state.completed ? 0.10 : 0.22),
+                            AppTheme.secondary.opacity(state.completed ? 0.12 : 0.28),
+                            AppTheme.accent.opacity(state.completed ? 0.08 : 0.16),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -262,7 +263,7 @@ struct AgentActivityView: View {
                 if !state.completed {
                     Image(systemName: "sparkle")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
                         .symbolEffect(
                             .pulse,
                             options: .repeating.speed(0.5),
@@ -293,7 +294,7 @@ struct AgentActivityView: View {
                 Capsule()
                     .fill(
                         LinearGradient(
-                            colors: [AppTheme.accent.opacity(0.85), AppTheme.accent],
+                            colors: [AppTheme.secondary.opacity(0.9), AppTheme.accent],
                             startPoint: .leading,
                             endPoint: .trailing
                         )
@@ -320,10 +321,10 @@ struct AgentActivityView: View {
                         .foregroundStyle(AppTheme.foreground)
                     Text(stepsBadgeText)
                         .font(.system(.caption, design: .rounded).weight(.semibold))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Capsule().fill(AppTheme.accentSubtle))
+                        .background(Capsule().fill(AppTheme.secondarySubtle))
                     Spacer(minLength: 0)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
@@ -492,8 +493,8 @@ struct AgentActivityView: View {
 
     private func stepColor(_ status: String) -> Color {
         switch status {
-        case "done": return AppTheme.accent.opacity(0.75)
-        case "running": return AppTheme.accent
+        case "done": return AppTheme.secondary.opacity(0.8)
+        case "running": return AppTheme.secondary
         case "error": return AppTheme.danger
         case "skipped": return AppTheme.mutedForeground.opacity(0.55)
         default: return AppTheme.mutedForeground.opacity(0.55)

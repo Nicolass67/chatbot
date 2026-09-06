@@ -237,7 +237,7 @@ struct MemorySavedNotice: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "brain.head.profile")
-                .foregroundStyle(AppTheme.accent)
+                .foregroundStyle(AppTheme.secondary)
             Text(text)
                 .font(.caption)
                 .foregroundStyle(AppTheme.foreground)
@@ -250,7 +250,7 @@ struct MemorySavedNotice: View {
             }
         }
         .padding(12)
-        .background(AppTheme.accentSubtle)
+        .background(AppTheme.secondarySubtle)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
@@ -308,7 +308,7 @@ struct MemoryUpdatedChip: View {
                     HStack(spacing: compact ? 5 : 7) {
                         Image(systemName: "brain.head.profile")
                             .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
-                            .foregroundStyle(AppTheme.accent)
+                            .foregroundStyle(AppTheme.secondary)
                         Text("Souvenir mis à jour")
                             .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
                             .foregroundStyle(AppTheme.foreground)
@@ -320,7 +320,7 @@ struct MemoryUpdatedChip: View {
                     }
                     .padding(.horizontal, compact ? 8 : 12)
                     .padding(.vertical, compact ? 4 : 8)
-                    .background(compact ? Color.clear : AppTheme.accentSubtle.opacity(0.85))
+                    .background(compact ? Color.clear : AppTheme.secondarySubtle.opacity(0.85))
                     .clipShape(Capsule(style: .continuous))
                     .overlay(
                         Capsule(style: .continuous)

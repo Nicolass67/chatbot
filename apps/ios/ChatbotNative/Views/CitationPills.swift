@@ -421,7 +421,7 @@ struct SourcePillView: View {
                 favicon
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(AppTheme.foreground.opacity(0.92))
+                    .foregroundStyle(AppTheme.secondary)
                     .lineLimit(1)
             }
             .padding(.leading, 5)
@@ -429,11 +429,11 @@ struct SourcePillView: View {
             .padding(.vertical, 4)
             .background(
                 Capsule(style: .continuous)
-                    .fill(AppTheme.muted.opacity(0.45))
+                    .fill(AppTheme.secondarySubtle)
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(AppTheme.chipStroke, lineWidth: 0.5)
+                    .stroke(AppTheme.secondary.opacity(0.28), lineWidth: 0.75)
             )
         }
         .buttonStyle(.plain)

@@ -118,14 +118,14 @@ struct ComposerRoundIconButton: View {
                 .foregroundStyle(
                     disabled
                         ? AppTheme.mutedForeground.opacity(0.45)
-                        : (isActive ? AppTheme.accentForeground : AppTheme.mutedForeground)
+                        : (isActive ? AppTheme.secondaryForeground : AppTheme.mutedForeground)
                 )
                 .frame(width: visualSize, height: visualSize)
                 .background(
                     Circle().fill(
                         disabled
                             ? Color.clear
-                            : (isActive ? AppTheme.accent.opacity(0.92) : AppTheme.surfaceElevated.opacity(0.55))
+                            : (isActive ? AppTheme.secondary.opacity(0.92) : AppTheme.surfaceElevated.opacity(0.55))
                     )
                 )
                 .overlay(

@@ -93,7 +93,7 @@ struct ThemeColorSettingsSection: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [AppTheme.accent, AppTheme.accentHover],
+                            colors: [AppTheme.accent, AppTheme.secondary],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -104,7 +104,7 @@ struct ThemeColorSettingsSection: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(AppTheme.accentForeground)
                     }
-                    .shadow(color: AppTheme.accent.opacity(0.35), radius: 8, y: 3)
+                    .shadow(color: AppTheme.secondary.opacity(0.35), radius: 8, y: 3)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Aperçu")
@@ -119,18 +119,19 @@ struct ThemeColorSettingsSection: View {
 
             HStack(spacing: 8) {
                 previewChip("Action", fill: AppTheme.accent, ink: AppTheme.accentForeground)
-                previewChip("Files", fill: AppTheme.filesAccent.opacity(0.20), ink: AppTheme.filesAccent)
+                previewChip("Secondaire", fill: AppTheme.secondary, ink: AppTheme.secondaryForeground)
+                previewChip("Files", fill: AppTheme.secondarySubtle, ink: AppTheme.secondary)
                 previewChip("Surface", fill: AppTheme.surfaceElevated, ink: AppTheme.foreground)
             }
 
             HStack(spacing: 10) {
                 Circle()
-                    .fill(AppTheme.accent.opacity(0.2))
+                    .fill(AppTheme.secondarySubtle)
                     .frame(width: 28, height: 28)
                     .overlay {
                         Text("A")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(AppTheme.accent)
+                            .foregroundStyle(AppTheme.secondary)
                     }
                 Text("Message exemple")
                     .font(CNFont.caption.weight(.medium))

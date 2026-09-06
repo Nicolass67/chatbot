@@ -198,7 +198,7 @@ struct MessageBubble: View {
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [AppTheme.accent.opacity(0.65), AppTheme.assistantBar.opacity(0.35)],
+                        colors: [AppTheme.accent.opacity(0.70), AppTheme.secondary.opacity(0.55)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -238,7 +238,7 @@ struct HandoffBanner: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(AppTheme.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
@@ -258,7 +258,7 @@ struct HandoffBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.accent.opacity(0.18), lineWidth: 0.5)
+                    .stroke(AppTheme.secondary.opacity(0.22), lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -291,7 +291,7 @@ struct FileResultCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "doc.fill")
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(AppTheme.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(file.filename)
                         .font(.subheadline.weight(.semibold))
@@ -381,7 +381,7 @@ struct SourceChipsView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(AppTheme.mutedForeground)
             }
-            .foregroundStyle(AppTheme.accent)
+            .foregroundStyle(AppTheme.secondary)
             .frame(minHeight: 36)
             .contentShape(Rectangle())
         }
@@ -414,7 +414,7 @@ struct SourcesSheet: View {
                         }
                         Text(src.url)
                             .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.accent)
+                            .foregroundStyle(AppTheme.secondary)
                             .lineLimit(1)
                     }
                     .padding(.vertical, AppTheme.space4)
@@ -513,11 +513,11 @@ struct RemoteAttachmentCard: View {
                             .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                     } else if (loading && isImage) || openingDoc {
-                        ProgressView().tint(AppTheme.accent)
+                        ProgressView().tint(AppTheme.secondary)
                     } else {
                         Image(systemName: failed ? "exclamationmark.triangle" : (isImage ? "photo" : "doc.fill"))
                             .font(.title3)
-                            .foregroundStyle(AppTheme.accent.opacity(0.85))
+                            .foregroundStyle(AppTheme.secondary.opacity(0.85))
                     }
                 }
 

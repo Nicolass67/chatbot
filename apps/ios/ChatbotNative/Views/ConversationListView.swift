@@ -86,10 +86,10 @@ struct ConversationListView: View {
                             if let mode = conv.chatMode, mode == "agent" {
                                 Text("Agent")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(AppTheme.accent)
+                                    .foregroundStyle(AppTheme.secondary)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 2)
-                                    .background(AppTheme.accentSubtle)
+                                    .background(AppTheme.secondarySubtle)
                                     .clipShape(Capsule())
                             }
                             if let updated = conv.updatedAt {

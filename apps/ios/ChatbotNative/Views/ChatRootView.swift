@@ -323,7 +323,7 @@ struct ConversationSwitcherSheet: View {
                         if let mode = conv.chatMode, mode == "agent" {
                             Text("Agent")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(AppTheme.accent)
+                                .foregroundStyle(AppTheme.secondary)
                         }
                         if let updated = conv.updatedAt {
                             Text(Self.friendlyDate(updated))
@@ -335,7 +335,7 @@ struct ConversationSwitcherSheet: View {
                 Spacer(minLength: 0)
                 if isActive {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
                         .accessibilityLabel("Conversation active")
                 }
             }
@@ -343,7 +343,7 @@ struct ConversationSwitcherSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(isActive ? AppTheme.accent.opacity(0.08) : Color.clear)
+        .listRowBackground(isActive ? AppTheme.secondary.opacity(0.10) : Color.clear)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
                 Task { await delete(conv) }

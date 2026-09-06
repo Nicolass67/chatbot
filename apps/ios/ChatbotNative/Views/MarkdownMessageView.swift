@@ -410,7 +410,7 @@ struct MarkdownMessageView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .top, spacing: AppTheme.space8) {
                         Text("•")
-                            .foregroundStyle(AppTheme.accent)
+                            .foregroundStyle(AppTheme.secondary)
                         inlineContent(item, font: CNFont.body, foreground: AppTheme.foreground)
                     }
                 }
@@ -430,7 +430,7 @@ struct MarkdownMessageView: View {
         case .quote(let text):
             HStack(alignment: .top, spacing: AppTheme.space12) {
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(AppTheme.accent.opacity(0.5))
+                    .fill(AppTheme.secondary.opacity(0.55))
                     .frame(width: 3)
                 inlineContent(text, font: CNFont.callout, foreground: AppTheme.muted)
             }
@@ -521,7 +521,7 @@ struct CodeBlockView: View {
                 } label: {
                     Label(copied ? "Copié" : "Copier", systemImage: copied ? "checkmark" : "doc.on.doc")
                         .font(CNFont.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
                         .frame(minHeight: 32)
                 }
                 .buttonStyle(.plain)

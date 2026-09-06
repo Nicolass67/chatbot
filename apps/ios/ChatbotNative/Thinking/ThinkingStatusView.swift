@@ -9,7 +9,7 @@ struct ThinkingStatusView: View {
     var body: some View {
         HStack(spacing: AppTheme.space10) {
             Circle()
-                .fill(AppTheme.accent)
+                .fill(AppTheme.secondary)
                 .frame(width: 7, height: 7)
                 .opacity(reduceMotion ? 0.9 : (pulse ? 1 : 0.35))
                 .animation(
@@ -49,7 +49,7 @@ struct InStreamWorkingIndicator: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label)
                 .font(CNFont.callout.weight(.medium))
-                .foregroundStyle(AppTheme.mutedForeground)
+                .foregroundStyle(AppTheme.secondary.opacity(0.85))
                 .opacity(reduceMotion ? 0.9 : (pulse ? 1.0 : 0.45))
                 .animation(
                     reduceMotion

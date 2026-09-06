@@ -25,7 +25,7 @@ struct SettingsHubView: View {
                                 }
                             } icon: {
                                 Image(systemName: "brain.head.profile")
-                                    .foregroundStyle(AppTheme.accent)
+                                    .foregroundStyle(AppTheme.secondary)
                                     .accessibilityHidden(true)
                             }
                         }
@@ -62,7 +62,7 @@ struct SettingsHubView: View {
                                 }
                             } icon: {
                                 Image(systemName: "gauge.with.dots.needle.33percent")
-                                    .foregroundStyle(AppTheme.accent)
+                                    .foregroundStyle(AppTheme.secondary)
                                     .accessibilityHidden(true)
                             }
                         }

@@ -272,10 +272,10 @@ struct MemoryRow: View {
             HStack {
                 Text(item.categoryLabel)
                     .font(CNFont.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(AppTheme.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(AppTheme.accentSubtle)
+                    .background(AppTheme.secondarySubtle)
                     .clipShape(Capsule())
                 Spacer()
                 if let updated = item.updatedAt ?? item.createdAt {
@@ -317,7 +317,7 @@ struct MemoryDetailSheet: View {
                 VStack(alignment: .leading, spacing: AppTheme.space16) {
                     Text(item.categoryLabel)
                         .font(CNFont.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
 
                     Text("Retenu pour personnaliser les réponses. Visible uniquement dans cette app. Tu peux modifier ou oublier à tout moment.")
                         .font(CNFont.caption)

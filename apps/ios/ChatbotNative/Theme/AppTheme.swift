@@ -20,6 +20,11 @@ enum AppTheme {
     static var accentForeground: Color { Color.cnLive(light: \.primaryInkLight, dark: \.primaryInkDark) }
     static var accentSubtle: Color { accent.opacity(0.14) }
 
+    /// Couleur secondaire du thème (réglages) — accents annexes, sources, fichiers, thinking.
+    static var secondary: Color { Color.cnLive(light: \.secondaryLight, dark: \.secondaryDark) }
+    static var secondarySubtle: Color { secondary.opacity(0.16) }
+    static var secondaryForeground: Color { Color.cnLive(light: \.primaryInkLight, dark: \.primaryInkDark) }
+
     static var muted: Color { Color.cnLive(light: \.mutedLight, dark: \.mutedDark) }
     static var mutedForeground: Color { Color.cnLive(light: \.mutedFgLight, dark: \.mutedFgDark) }
 
@@ -44,14 +49,15 @@ enum AppTheme {
         Color.cn(light: 0x00000000, dark: 0xFFFFFF16)
     }
     static var codeBg: Color { Color.cnLive(light: \.codeBgLight, dark: \.codeBgDark) }
-    static var assistantBar: Color { accent }
+    /// Barre assistant : mélange primaire → secondaire pour ancrer les deux teintes.
+    static var assistantBar: Color { secondary }
     static var ambientCool: Color { Color.cnLive(light: \.ambientCoolLight, dark: \.ambientCoolDark) }
     static let ambientWarm = Color.cn(light: 0xA8B0BC, dark: 0x1A222C)
 
     /// Principale (mail / actions).
     static var mailAccent: Color { accent }
-    /// Secondaire (files / accents annexes).
-    static var filesAccent: Color { Color.cnLive(light: \.secondaryLight, dark: \.secondaryDark) }
+    /// Secondaire (files / accents annexes) — alias de `secondary`.
+    static var filesAccent: Color { secondary }
 
     // MARK: - Spacing (4-pt)
 
@@ -172,7 +178,7 @@ struct AmbientBackground: View {
             AppTheme.background
             RadialGradient(
                 colors: [
-                    AppTheme.accent.opacity(scheme == .dark ? 0.10 : 0.08),
+                    AppTheme.accent.opacity(scheme == .dark ? 0.11 : 0.09),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.88, y: 0.02),
@@ -181,7 +187,16 @@ struct AmbientBackground: View {
             )
             RadialGradient(
                 colors: [
-                    AppTheme.ambientCool.opacity(scheme == .dark ? 0.06 : 0.05),
+                    AppTheme.secondary.opacity(scheme == .dark ? 0.14 : 0.11),
+                    .clear,
+                ],
+                center: UnitPoint(x: 0.12, y: 0.78),
+                startRadius: 8,
+                endRadius: 460
+            )
+            RadialGradient(
+                colors: [
+                    AppTheme.ambientCool.opacity(scheme == .dark ? 0.08 : 0.07),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.08, y: 0.95),

@@ -63,7 +63,7 @@ struct ComposerCapsule: View {
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     Image(systemName: "photo")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(AppTheme.accent)
+                        .foregroundStyle(AppTheme.secondary)
                         .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
                         .contentShape(Rectangle())
                 }
@@ -76,11 +76,11 @@ struct ComposerCapsule: View {
                         if uploading {
                             ProgressView()
                                 .controlSize(.small)
-                                .tint(AppTheme.accent)
+                                .tint(AppTheme.secondary)
                         } else {
                             Image(systemName: "paperclip")
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(AppTheme.accent)
+                                .foregroundStyle(AppTheme.secondary)
                         }
                     }
                     .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
@@ -274,7 +274,7 @@ struct ChatToolsSheet: View {
                     } label: {
                         HStack(spacing: AppTheme.space12) {
                             Image(systemName: thinkingEnabled ? "brain.fill" : "brain")
-                                .foregroundStyle(thinkingAvailable ? AppTheme.accent : AppTheme.mutedForeground)
+                                .foregroundStyle(thinkingAvailable ? AppTheme.secondary : AppTheme.mutedForeground)
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Raisonnement")
@@ -287,7 +287,7 @@ struct ChatToolsSheet: View {
                             }
                             Spacer()
                             Image(systemName: thinkingEnabled ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(thinkingEnabled ? AppTheme.accent : AppTheme.mutedForeground)
+                                .foregroundStyle(thinkingEnabled ? AppTheme.secondary : AppTheme.mutedForeground)
                         }
                     }
                     .disabled(!thinkingAvailable)
@@ -310,14 +310,14 @@ struct ChatToolsSheet: View {
                             } label: {
                                 HStack(spacing: AppTheme.space12) {
                                     Image(systemName: channel.systemImage)
-                                        .foregroundStyle(AppTheme.accent)
+                                        .foregroundStyle(AppTheme.secondary)
                                         .frame(width: 28)
                                     Text(channel.menuTitle)
                                         .foregroundStyle(AppTheme.foreground)
                                     Spacer()
                                     if toolChannel == channel {
                                         Image(systemName: "checkmark")
-                                            .foregroundStyle(AppTheme.accent)
+                                            .foregroundStyle(AppTheme.secondary)
                                     }
                                 }
                             }

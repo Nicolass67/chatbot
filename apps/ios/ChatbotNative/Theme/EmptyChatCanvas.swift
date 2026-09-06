@@ -40,7 +40,7 @@ struct EmptyChatCanvas: View {
                         HStack(spacing: AppTheme.space12) {
                             Image(systemName: item.icon)
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(AppTheme.accent)
+                                .foregroundStyle(AppTheme.secondary)
                                 .frame(width: 28)
                             Text(item.text)
                                 .font(CNFont.body)
@@ -49,7 +49,7 @@ struct EmptyChatCanvas: View {
                             Spacer(minLength: 0)
                             Image(systemName: "arrow.up.right")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(AppTheme.mutedForeground)
+                                .foregroundStyle(AppTheme.secondary.opacity(0.65))
                         }
                         .padding(.horizontal, AppTheme.space16)
                         .padding(.vertical, AppTheme.space14)

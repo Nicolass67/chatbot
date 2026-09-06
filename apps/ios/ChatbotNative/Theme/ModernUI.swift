@@ -147,7 +147,7 @@ struct SoftEmptyState: View {
             } icon: {
                 Image(systemName: systemImage)
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(AppTheme.secondary)
                     .symbolEffect(.pulse, options: .repeating.speed(0.4))
             }
         } description: {
@@ -173,7 +173,7 @@ struct SoftLoadingBlock: View {
         VStack(spacing: AppTheme.space16) {
             ProgressView()
                 .controlSize(.regular)
-                .tint(AppTheme.accent)
+                .tint(AppTheme.secondary)
             Text(label)
                 .font(CNFont.callout)
                 .foregroundStyle(AppTheme.muted)
