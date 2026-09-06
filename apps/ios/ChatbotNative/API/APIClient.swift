@@ -716,6 +716,60 @@ final class APIClient: @unchecked Sendable {
         throw APIClientError.decode
     }
 
+    /// PC déjà allumé : demande KV de démarrage stack (sans WoL). Consommée par ChatbotBootPoll.
+    @discardableResult
+    func startServices() async throws -> PowerStatusDTO {
+        try await postWorkerBootAction(
+            path: "start-services",
+            simulated: PowerStatusDTO(
+                powerState: .starting,
+                message: "Démarrage services simulé",
+                ok: true
+            ),
+            fallbackMessage: "Demande de démarrage enregistrée"
+        )
+    }
+
+    /// Relance complète (arrêt puis démarrage) via Worker KV.
+    @discardableResult
+    func restartServices() async throws -> PowerStatusDTO {
+        try await postWorkerBootAction(
+            path: "restart-services",
+            simulated: PowerStatusDTO(
+                powerState: .starting,
+                message: "Relance services simulée",
+                ok: true
+            ),
+            fallbackMessage: "Demande de relance enregistrée"
+        )
+    }
+
+    private func postWorkerBootAction(
+        path: String,
+        simulated: PowerStatusDTO,
+        fallbackMessage: String
+    ) async throws -> PowerStatusDTO {
+        if UITestMode.isActive { return simulated }
+        var req = authorizedRequest(path: path, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        if let decoded = try? JSONDecoder().decode(PowerStatusDTO.self, from: data) {
+            return decoded
+        }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? true
+            let message = (obj["message"] as? String) ?? fallbackMessage
+            if !ok {
+                let detail = (obj["error"] as? String).map { "\($0): \(message)" } ?? message
+                throw APIClientError.http((resp as? HTTPURLResponse)?.statusCode ?? 502, detail)
+            }
+            return PowerStatusDTO(powerState: .starting, message: message, ok: true)
+        }
+        throw APIClientError.decode
+    }
+
     @discardableResult
     func shutdownPc() async throws -> PowerStatusDTO {
         if UITestMode.isActive {

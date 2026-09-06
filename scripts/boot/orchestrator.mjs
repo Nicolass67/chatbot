@@ -26,6 +26,7 @@ import {
   acquireBootStackLock,
   releaseBootStackLock,
 } from "./lib/boot-stack-lock.mjs";
+import { ensureSupervisorRunning } from "./lib/supervisor.mjs";
 
 
 
@@ -332,7 +333,20 @@ export async function finishChatbotStack(config, prewarm, options = {}) {
 
   console.log("[boot] Stack Chatbot prête (SearXNG peut encore démarrer)");
 
-  return { ok: true, health };
+  const supervisor = await ensureSupervisorRunning();
+  if (supervisor.ok) {
+    console.log(
+      supervisor.alreadyRunning
+        ? "[boot] Supervisor déjà actif"
+        : "[boot] Supervisor démarré (surveillance post-boot)"
+    );
+  } else {
+    console.warn(
+      `[boot] Supervisor non démarré: ${supervisor.error ?? "unknown"}`
+    );
+  }
+
+  return { ok: true, health, supervisor };
 
 }
 

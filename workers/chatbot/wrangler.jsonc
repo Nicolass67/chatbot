@@ -10,7 +10,7 @@
     "FREEBOX_API_DOMAIN": "your-name.freeboxos.fr",
     "FREEBOX_HTTPS_PORT": "443",
     "FREEBOX_WOL_MAC": "00:00:00:00:00:00",
-    "BOOT_REQUEST_TTL_SECONDS": "300"
+    "BOOT_REQUEST_TTL_SECONDS": "900"
   },
   "kv_namespaces": [
     {

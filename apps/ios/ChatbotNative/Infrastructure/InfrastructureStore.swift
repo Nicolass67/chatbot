@@ -230,6 +230,34 @@ final class InfrastructureStore: ObservableObject {
         }
     }
 
+    /// PC déjà allumé : démarre la stack via Worker (sans WoL).
+    func startServices() async {
+        guard let client else { return }
+        do {
+            let power = try await client.startServices()
+            lastRepairMessage = power.message.isEmpty
+                ? "Démarrage des services demandé"
+                : power.message
+            await refresh()
+        } catch {
+            publishAlert(error.localizedDescription)
+        }
+    }
+
+    /// Relance complète de la stack (PC déjà allumé).
+    func restartServices() async {
+        guard let client else { return }
+        do {
+            let power = try await client.restartServices()
+            lastRepairMessage = power.message.isEmpty
+                ? "Relance des services demandée"
+                : power.message
+            await refresh()
+        } catch {
+            publishAlert(error.localizedDescription)
+        }
+    }
+
     func shutdown() async {
         guard let client else { return }
         do {

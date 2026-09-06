@@ -1,13 +1,16 @@
 #Requires -Version 5.1
 <#
-  Prechauffage optionnel au login Windows (PC serveur WoL).
-  - Docker Desktop : raccourci dossier Demarrage
-  - LM Studio serveur : tache planifiee lms server start (optionnel)
+  Prechauffage optionnel au login Windows — DECONSEILLE avec le boot conditionnel.
 
-  Usage :
+  Si Docker/Supervisor demarrent au login, ils lancent Next sans demande app
+  (contournement de /wake et /start-services).
+
+  Usage recommande :
+    .\enable-warm-autostart.ps1 -Disable
+
+  Usage (prechauffage permanent, non recommande) :
     .\enable-warm-autostart.ps1
     .\enable-warm-autostart.ps1 -LmStudio
-    .\enable-warm-autostart.ps1 -Disable
 #>
 
 param(
@@ -51,9 +54,11 @@ function Remove-WarmAutostart {
 
 if ($Disable) {
   Remove-WarmAutostart
-  Write-Host 'OK - prechauffage login desactive.' -ForegroundColor Green
+  Write-Host 'OK - prechauffage login desactive (boot conditionnel respecte).' -ForegroundColor Green
   exit 0
 }
+
+Write-Host 'ATTENTION: ce mode demarre Docker au login et contourne le boot conditionnel.' -ForegroundColor Yellow
 
 $dockerExe = Find-DockerDesktop
 if ($dockerExe) {
@@ -62,7 +67,7 @@ if ($dockerExe) {
   $shortcut.TargetPath = $dockerExe
   $shortcut.WorkingDirectory = Split-Path $dockerExe -Parent
   $shortcut.WindowStyle = 7
-  $shortcut.Description = 'Chatbot WoL - Docker Desktop au login'
+  $shortcut.Description = 'Chatbot - Docker Desktop au login (non recommande)'
   $shortcut.Save()
   Write-Host "OK - Docker au login : $DockerShortcut" -ForegroundColor Green
 } else {
@@ -89,7 +94,7 @@ if ($LmStudio) {
       -Action $action `
       -Trigger $trigger `
       -Settings $settings `
-      -Description 'Chatbot WoL - serveur LM Studio au login' `
+      -Description 'Chatbot - serveur LM Studio au login (non recommande)' `
       -RunLevel Limited | Out-Null
 
     Write-Host "OK - LM Studio serveur au login : tache $LmTaskName" -ForegroundColor Green

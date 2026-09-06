@@ -190,9 +190,29 @@ struct SystemStatusView: View {
             .accessibilityHint("Envoie un signal de réveil au PC")
 
             Button {
+                AppHaptics.light()
+                Task { await infra.startServices() }
+            } label: {
+                Label("Démarrer les services", systemImage: "play.circle")
+            }
+            .disabled(infra.repairing)
+            .foregroundStyle(AppTheme.foreground)
+            .accessibilityHint("Lance la stack Chatbot si le PC est déjà allumé")
+
+            Button {
+                AppHaptics.light()
+                Task { await infra.restartServices() }
+            } label: {
+                Label("Relancer les services", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(infra.repairing)
+            .foregroundStyle(AppTheme.foreground)
+            .accessibilityHint("Arrête puis relance la stack Chatbot")
+
+            Button {
                 confirmRestart = true
             } label: {
-                Label("Redémarrer", systemImage: "arrow.clockwise")
+                Label("Redémarrer le PC", systemImage: "arrow.clockwise")
             }
             .disabled(infra.repairing)
             .foregroundStyle(AppTheme.foreground)

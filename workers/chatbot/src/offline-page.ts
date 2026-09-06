@@ -277,7 +277,7 @@ export function renderOfflineWakePage(): string {
         </button>
         <button type="button" class="btn btn-secondary" id="services-btn">
           <span class="btn-spinner" id="services-spinner"></span>
-          <span class="btn-label" id="services-label">Relancer les services</span>
+          <span class="btn-label" id="services-label">Démarrer les services</span>
         </button>
         <button type="button" class="btn btn-danger" id="shutdown-btn">
           <span class="btn-spinner" id="shutdown-spinner"></span>
@@ -392,9 +392,13 @@ export function renderOfflineWakePage(): string {
 
       servicesBtn.addEventListener("click", function () {
         setAllLoading(true);
-        setStatus("info", "Redémarrage en cours…", "Arrêt puis relance de la stack Chatbot.");
+        setStatus(
+          "info",
+          "Démarrage en cours…",
+          "Demande enregistrée — le PC allumé lance la stack (~1 min)."
+        );
 
-        fetch("/restart-services", { method: "POST" })
+        fetch("/start-services", { method: "POST" })
           .then(function (response) {
             return response.json().then(function (data) {
               return { status: response.status, data: data };
@@ -404,10 +408,11 @@ export function renderOfflineWakePage(): string {
             if (result.data.ok) {
               setStatus(
                 "success",
-                "Demande de redémarrage envoyée",
-                result.data.message || "Le PC va arrêter puis relancer les services."
+                "Demande de démarrage envoyée",
+                result.data.message ||
+                  "Le PC va démarrer les services Chatbot."
               );
-              startPolling("Redémarrage des services…");
+              startPolling("Démarrage des services…");
               return;
             }
             setStatus("error", "Échec", formatError(result.data));

@@ -1,82 +1,87 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Installe la tâche planifiée Windows « ChatbotSupervisor ».
+  Installe/met a jour la tache planifiee Windows "ChatbotSupervisor".
+  Au logon: lance run-forever.cmd qui relance le supervisor s'il crash.
 
-.DESCRIPTION
-  Démarre le superviseur au logon de l'utilisateur courant et le relance
-  en cas d'échec. Exécute : node scripts/supervisor/index.mjs
+  Ne desenregistre JAMAIS avant d'avoir reussi a creer la nouvelle definition
+  (evite de perdre la tache si Register echoue / Access Denied).
 #>
+param(
+  [string]$TaskName = "ChatbotSupervisor",
+  [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
+  # Par défaut: PAS de démarrage au login (boot conditionnel Worker uniquement).
+  # Le Supervisor est lancé par scripts/boot après un wake/start-services app.
+  [switch]$AtLogOn,
+  [switch]$StartupShortcut
+)
 
 $ErrorActionPreference = "Stop"
+$wrapper = Join-Path $RepoRoot "scripts\supervisor\run-forever.cmd"
+$entry = Join-Path $RepoRoot "scripts\supervisor\index.mjs"
 
-$TaskName = "ChatbotSupervisor"
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$IndexPath = Join-Path $RepoRoot "scripts\supervisor\index.mjs"
-
-$NodeCmd = Get-Command node -ErrorAction SilentlyContinue
-$SystemNode = "C:\Program Files\nodejs\node.exe"
-if (Test-Path -LiteralPath $SystemNode) {
-  $NodePath = $SystemNode
-} elseif ($NodeCmd) {
-  $NodePath = $NodeCmd.Source
-} else {
-  throw "node introuvable dans le PATH. Installe Node.js puis réessaie."
+if (-not (Test-Path -LiteralPath $wrapper)) {
+  throw "Wrapper introuvable: $wrapper"
+}
+if (-not (Test-Path -LiteralPath $entry)) {
+  throw "Entrypoint introuvable: $entry"
 }
 
-if (-not (Test-Path -LiteralPath $IndexPath)) {
-  throw "Fichier introuvable: $IndexPath"
-}
-
-$Action = New-ScheduledTaskAction `
-  -Execute $NodePath `
-  -Argument "`"$IndexPath`"" `
+$action = New-ScheduledTaskAction `
+  -Execute "cmd.exe" `
+  -Argument ("/c `"{0}`"" -f $wrapper) `
   -WorkingDirectory $RepoRoot
 
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-
-$Settings = New-ScheduledTaskSettingsSet `
+$settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
   -StartWhenAvailable `
-  -RestartCount 999 `
-  -RestartInterval (New-TimeSpan -Minutes 1) `
-  -ExecutionTimeLimit (New-TimeSpan -Days 0) `
+  -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew
 
-$Principal = New-ScheduledTaskPrincipal `
+$principal = New-ScheduledTaskPrincipal `
   -UserId $env:USERNAME `
   -LogonType Interactive `
   -RunLevel Limited
 
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
-Register-ScheduledTask `
-  -TaskName $TaskName `
-  -Action $Action `
-  -Trigger $Trigger `
-  -Settings $Settings `
-  -Principal $Principal `
-  -Description "Chatbot Supervisor - docker searxng nextjs lm_studio cloudflared" `
-  | Out-Null
-
-Write-Host "Tâche '$TaskName' installée."
-Write-Host "  Node : $NodePath"
-Write-Host "  Script : $IndexPath"
-Write-Host "  Cwd : $RepoRoot"
-Write-Host "Démarre au logon ; redémarrage auto en cas d'échec (toutes les 1 min)."
-
-# Non-interactif : SUPERVISOR_START=1 ou -StartNow → démarre immédiatement
-$autoStart = ($env:SUPERVISOR_START -eq "1") -or ($args -contains "-StartNow")
-if ($autoStart) {
-  Start-ScheduledTask -TaskName $TaskName
-  Write-Host "Tâche démarrée."
-} elseif ([Environment]::UserInteractive -and -not $env:CI) {
-  $start = Read-Host "Démarrer la tâche maintenant ? (o/N)"
-  if ($start -match '^[oOyY]') {
-    Start-ScheduledTask -TaskName $TaskName
-    Write-Host "Tâche démarrée."
+if (-not $AtLogOn) {
+  if ($existing) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "OK: tache '$TaskName' retiree (pas de demarrage au login)."
+  } else {
+    Write-Host "OK: pas de tache AtLogOn (boot conditionnel)."
   }
 } else {
-  Write-Host "Tâche enregistrée (pas démarrée). Utilise: Start-ScheduledTask -TaskName $TaskName"
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  if ($existing) {
+    Set-ScheduledTask `
+      -TaskName $TaskName `
+      -Action $action `
+      -Trigger $trigger `
+      -Settings $settings `
+      -Principal $principal | Out-Null
+    Write-Host "OK: tache '$TaskName' mise a jour (Set-ScheduledTask)."
+  } else {
+    try {
+      Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Settings $settings `
+        -Principal $principal `
+        -Description "Chatbot local supervisor (API :3927) - forever loop + restart on failure" | Out-Null
+      Write-Host "OK: tache '$TaskName' creee."
+    } catch {
+      Write-Host "ERREUR: impossible de creer la tache (droits insuffisants ?)."
+      Write-Host $_.Exception.Message
+      throw
+    }
+  }
+  Write-Host "  Trigger : AtLogOn"
 }
+
+Write-Host "  Wrapper : $wrapper"
+Write-Host "  Entry   : $entry"
+Write-Host "Note: le Supervisor demarre via boot conditionnel (wake/start-services), pas au login."

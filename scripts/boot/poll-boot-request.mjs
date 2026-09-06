@@ -124,7 +124,18 @@ async function main() {
           healthRes.status === 200 &&
           isNextJsProductionReady(healthRes.health)
         ) {
-          console.log("[poll] Services déjà en ligne — skip.");
+          // Consommer quand même pour ne pas laisser une demande pending orpheline.
+          const { consumeBootRequest } = await import("./lib/worker-client.mjs");
+          await consumeBootRequest(
+            config.workerBaseUrl,
+            config.bootMachineToken,
+            peekRes.body.requestId,
+            fetch,
+            accessAuthFromConfig(config)
+          );
+          console.log(
+            "[poll] Services déjà en ligne — demande consommée, skip démarrage."
+          );
           process.exit(0);
         }
       } catch {
