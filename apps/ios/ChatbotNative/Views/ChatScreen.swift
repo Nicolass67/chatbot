@@ -637,12 +637,15 @@ struct ChatScreen: View {
             }
 
             if showScrollDown {
+                // Centré + au-dessus de la rangée Disponible / quick controls (droite).
                 ScrollToBottomButton {
                     AppHaptics.light()
                     scrollToken += 1
                 }
-                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.bottom, 44)
                 .transition(.opacity.combined(with: .scale))
+                .accessibilitySortPriority(1)
             }
         }
     }

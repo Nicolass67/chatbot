@@ -321,9 +321,9 @@ struct ScrollToBottomButton: View {
             action()
         } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(AppTheme.foreground.opacity(0.9))
-                .frame(width: 32, height: 32)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(AppTheme.foreground.opacity(0.85))
+                .frame(width: 28, height: 28)
                 .modifier(ScrollGlassChrome(reduceTransparency: reduceTransparency))
         }
         .buttonStyle(.plain)
@@ -338,16 +338,16 @@ private struct ScrollGlassChrome: ViewModifier {
         Group {
             if reduceTransparency {
                 content
-                    .background(AppTheme.surfaceElevated.opacity(0.92), in: Circle())
+                    .background(AppTheme.surfaceElevated.opacity(0.75), in: Circle())
             } else {
                 content
                     .glassEffect(
-                        .regular.tint(AppTheme.surface.opacity(0.28)),
+                        .regular.tint(AppTheme.surface.opacity(0.14)),
                         in: Circle()
                     )
             }
         }
-        .overlay(Circle().stroke(AppTheme.glassBorder, lineWidth: 0.6))
+        .overlay(Circle().stroke(AppTheme.glassBorder.opacity(0.7), lineWidth: 0.5))
     }
 }
 
