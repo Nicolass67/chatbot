@@ -146,33 +146,34 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                // Contrôles composer + statut — interactifs, au-dessus de la zone d’écriture.
-                if !isSending {
-                    HStack(spacing: 8) {
-                        ComposerQuickControls(
-                            thinkingEnabled: isThinkingEnabled,
-                            chatMode: chatMode,
-                            toolChannel: toolChannel,
-                            thinkingAvailable: thinkingToggleAvailable,
-                            onToggleThinking: { toggleThinking() },
-                            onToggleMode: {
-                                applyMode(chatMode == "agent" ? "chat" : "agent")
-                            },
-                            onCycleTool: { cycleToolChannel() }
-                        )
-                        RuntimeStatusPill(status: displayRuntimeStatus)
-                        if !assistantReadyForSend {
-                            Text(sendBlockedHint)
-                                .font(CNFont.caption2)
-                                .foregroundStyle(AppTheme.mutedForeground)
-                                .lineLimit(1)
+                    .overlay(alignment: .bottom) {
+                        // Ligne transparente (comme avant) : Disponible à gauche, boutons à droite.
+                        if !isSending {
+                            HStack(spacing: 8) {
+                                RuntimeStatusPill(status: displayRuntimeStatus)
+                                if !assistantReadyForSend {
+                                    Text(sendBlockedHint)
+                                        .font(CNFont.caption2)
+                                        .foregroundStyle(AppTheme.mutedForeground)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                                ComposerQuickControls(
+                                    thinkingEnabled: isThinkingEnabled,
+                                    chatMode: chatMode,
+                                    toolChannel: toolChannel,
+                                    thinkingAvailable: thinkingToggleAvailable,
+                                    onToggleThinking: { toggleThinking() },
+                                    onToggleMode: {
+                                        applyMode(chatMode == "agent" ? "chat" : "agent")
+                                    },
+                                    onCycleTool: { cycleToolChannel() }
+                                )
+                            }
+                            .padding(.horizontal, AppTheme.space16)
+                            .padding(.bottom, 2)
                         }
-                        Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, AppTheme.space16)
-                    .padding(.bottom, 4)
-                    .padding(.top, 2)
-                }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,

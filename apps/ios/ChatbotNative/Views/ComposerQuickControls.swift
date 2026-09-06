@@ -31,7 +31,7 @@ enum ComposerToolChannel: String, CaseIterable, Identifiable {
     }
 }
 
-/// Trois boutons ronds à gauche : thinking, chat/agent, canal d’outil.
+/// Trois boutons ronds (icônes) : thinking, chat/agent, canal d’outil.
 struct ComposerQuickControls: View {
     let thinkingEnabled: Bool
     let chatMode: String
@@ -98,12 +98,17 @@ struct ComposerRoundIconButton: View {
                 .background(
                     Circle().fill(
                         disabled
-                            ? AppTheme.surfaceElevated.opacity(0.5)
-                            : (isActive ? AppTheme.accent : AppTheme.surfaceElevated)
+                            ? Color.clear
+                            : (isActive ? AppTheme.accent.opacity(0.92) : Color.clear)
                     )
                 )
                 .overlay(
-                    Circle().stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                    Circle().stroke(
+                        disabled
+                            ? AppTheme.borderSubtle.opacity(0.35)
+                            : (isActive ? Color.clear : AppTheme.borderSubtle.opacity(0.7)),
+                        lineWidth: 0.8
+                    )
                 )
         }
         .buttonStyle(.plain)
