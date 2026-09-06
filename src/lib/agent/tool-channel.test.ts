@@ -109,9 +109,23 @@ describe("applyToolChannel", () => {
   });
 
   it("email → outils mail, coupe web/files", () => {
-    const r = applyToolChannel(baseRoute(), "email", caps);
+    const withAuto = {
+      ...baseRoute(),
+      web: {
+        ...baseRoute().web,
+        enabled: true,
+        mode: "required" as const,
+        autoSearch: true,
+        searchQuery: "vegan shop",
+      },
+    };
+    const r = applyToolChannel(withAuto, "email", caps);
     expect(r.route.web.mode).toBe("none");
+    expect(r.route.web.enabled).toBe(false);
+    expect(r.route.web.autoSearch).toBe(false);
+    expect(r.route.web.searchQuery).toBe("");
     expect(r.route.files.intent).toBe("none");
+    expect(r.webSearchEnabled).toBe(false);
     expect(r.emailEnabled).toBe(true);
     expect(r.emailToolCandidates).toContain("email_search");
     expect(r.suppressMailHandoff).toBe(true);

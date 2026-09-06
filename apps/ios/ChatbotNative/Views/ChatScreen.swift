@@ -2961,6 +2961,10 @@ private var sendBlockedHint: String {
                 thinkingKind = kind
             }
         case "tool_done", "tool_result":
+            if awaitingDraftRewrite {
+                // Pas d’indicateur « Recherche · N sources » pendant une réécriture mail.
+                break
+            }
             if agentActivity.visible {
                 if agentActivity.webPhase == .searching || agentActivity.webPhase == .analyzing {
                     agentActivity.webPhase = .analyzing
@@ -2986,6 +2990,8 @@ private var sendBlockedHint: String {
                 thinkingKind = .custom(AgentToolLabels.friendlyError(raw))
             }
         case "web_search":
+            // Réécriture brouillon mail : ignorer toute UI / état recherche web.
+            if awaitingDraftRewrite { break }
             let q = toolQuery(from: obj) ?? (obj["message"] as? String) ?? "Recherche web…"
             if agentActivity.visible {
                 agentActivity.webQuery = q
@@ -3158,6 +3164,8 @@ private var sendBlockedHint: String {
                 }
             }
         case "sources":
+            // Réécriture brouillon : pas de pastilles « N sources » (canal mail, pas web).
+            if awaitingDraftRewrite { break }
             if agentActivity.visible {
                 agentActivity.webPhase = .analyzing
                 progressAgentPlanForWebPhase(.analyzing)

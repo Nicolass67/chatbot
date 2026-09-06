@@ -155,10 +155,13 @@ export function applyToolChannel(
       ...route,
       web: {
         ...route.web,
+        enabled: false,
         mode: "none",
         mandatory: false,
         wouldBeUseful: false,
+        autoSearch: false,
         searchType: "none",
+        searchQuery: "",
         reason: "Canal files forcé — web désactivé",
       },
       email: {
@@ -212,10 +215,13 @@ export function applyToolChannel(
     ...route,
     web: {
       ...route.web,
+      enabled: false,
       mode: "none",
       mandatory: false,
       wouldBeUseful: false,
+      autoSearch: false,
       searchType: "none",
+      searchQuery: "",
       reason: "Canal email forcé — web désactivé",
     },
     files: {

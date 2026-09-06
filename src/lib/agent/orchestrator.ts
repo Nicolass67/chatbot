@@ -906,8 +906,12 @@ export async function runChatOrchestrator(
 
     // Mémoire : post-processeur asynchrone après `done` (pas de pré-stream).
 
+    // Ne jamais auto-search si le canal composer coupe le web (email/files).
     const shouldAutoSearch =
       chatMode === "chat" &&
+      channelResolved.webSearchEnabled &&
+      route.web.enabled &&
+      route.web.mode !== "none" &&
       route.web.autoSearch &&
       !input.regenerate &&
       imageCount === 0;
