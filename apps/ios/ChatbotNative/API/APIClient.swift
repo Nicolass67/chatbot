@@ -27,6 +27,8 @@ struct MessageDTO: Identifiable, Codable, Hashable {
     let content: String
     let createdAt: String?
     var attachments: [MessageAttachmentDTO]?
+    /// Sources web persistées côté serveur (pour pastilles web_N après reload).
+    var sources: [SearchSourceDTO]?
 }
 
 struct UploadedAttachment: Identifiable, Hashable {
@@ -77,12 +79,44 @@ struct ReasoningCapabilitiesDTO: Codable, Hashable {
     let defaultModeId: String?
 }
 
-struct SearchSourceDTO: Identifiable, Hashable {
+struct SearchSourceDTO: Identifiable, Codable, Hashable {
     let id: String
     let title: String
     let url: String
     let domain: String?
     let snippet: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, url, domain, snippet
+    }
+
+    init(id: String, title: String, url: String, domain: String? = nil, snippet: String? = nil) {
+        self.id = id
+        self.title = title
+        self.url = url
+        self.domain = domain
+        self.snippet = snippet
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id)
+            ?? c.decodeIfPresent(String.self, forKey: .url)
+            ?? UUID().uuidString
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        url = try c.decode(String.self, forKey: .url)
+        domain = try c.decodeIfPresent(String.self, forKey: .domain)
+        snippet = try c.decodeIfPresent(String.self, forKey: .snippet)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(url, forKey: .url)
+        try c.encodeIfPresent(domain, forKey: .domain)
+        try c.encodeIfPresent(snippet, forKey: .snippet)
+    }
 }
 
 struct MailHandoffDTO: Hashable {

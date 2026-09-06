@@ -41,12 +41,30 @@ enum CitationParser {
         pattern: #"\bweb_(\d+)\b"#,
         options: [.caseInsensitive]
     )
+    /// `[label](https://…)`
+    private static let markdownLinkRegex = try! NSRegularExpression(
+        pattern: #"\[([^\]]+)\]\((https?://[^)\s]+)\)"#,
+        options: [.caseInsensitive]
+    )
+    /// `(https://…)` — URL seule entre parenthèses (souvent en fin de puce).
+    private static let parenURLRegex = try! NSRegularExpression(
+        pattern: #"\((https?://[^)\s]+)\)"#,
+        options: [.caseInsensitive]
+    )
+    /// URL nue dans le texte.
+    private static let bareURLRegex = try! NSRegularExpression(
+        pattern: #"(?<![\w/@])(https?://[^\s<>\[\]\"']+)"#,
+        options: [.caseInsensitive]
+    )
 
     static func containsMarker(_ text: String) -> Bool {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return parenGroupRegex.firstMatch(in: text, range: range) != nil
             || bracketWebRegex.firstMatch(in: text, range: range) != nil
             || bareWebRegex.firstMatch(in: text, range: range) != nil
+            || markdownLinkRegex.firstMatch(in: text, range: range) != nil
+            || parenURLRegex.firstMatch(in: text, range: range) != nil
+            || bareURLRegex.firstMatch(in: text, range: range) != nil
     }
 
     static func segments(in text: String, sources: [SearchSourceDTO]) -> [CitationSegment] {
@@ -97,6 +115,62 @@ enum CitationParser {
                 Hit(
                     range: fullRange,
                     citations: citations(forIndices: [webIndex], sources: sources, location: match.range.location)
+                )
+            )
+        }
+
+        // Liens markdown / URLs nues → mêmes pastilles (persistantes via le contenu message).
+        markdownLinkRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  let fullRange = Range(match.range, in: text),
+                  let labelRange = Range(match.range(at: 1), in: text),
+                  let urlRange = Range(match.range(at: 2), in: text)
+            else { return }
+            if hits.contains(where: { $0.range.overlaps(fullRange) }) { return }
+            let label = String(text[labelRange])
+            let url = String(text[urlRange])
+            hits.append(
+                Hit(
+                    range: fullRange,
+                    citations: citations(forURL: url, hint: label, sources: sources, location: match.range.location)
+                )
+            )
+        }
+
+        parenURLRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  let fullRange = Range(match.range, in: text),
+                  let urlRange = Range(match.range(at: 1), in: text)
+            else { return }
+            if hits.contains(where: { $0.range.overlaps(fullRange) }) { return }
+            let url = String(text[urlRange])
+            hits.append(
+                Hit(
+                    range: fullRange,
+                    citations: citations(forURL: url, hint: nil, sources: sources, location: match.range.location)
+                )
+            )
+        }
+
+        bareURLRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  var fullRange = Range(match.range, in: text),
+                  let urlRange = Range(match.range(at: 1), in: text)
+            else { return }
+            if hits.contains(where: { $0.range.overlaps(fullRange) }) { return }
+            var url = String(text[urlRange])
+            // Trim ponctuation finale hors URL.
+            while let last = url.last, ".,;:!?".contains(last) {
+                url.removeLast()
+                if fullRange.upperBound > fullRange.lowerBound {
+                    fullRange = fullRange.lowerBound..<text.index(before: fullRange.upperBound)
+                }
+            }
+            guard url.lowercased().hasPrefix("http") else { return }
+            hits.append(
+                Hit(
+                    range: fullRange,
+                    citations: citations(forURL: url, hint: nil, sources: sources, location: match.range.location)
                 )
             )
         }
@@ -239,6 +313,52 @@ enum CitationParser {
         let i = webIndex - 1
         guard i >= 0, i < sources.count else { return nil }
         return sources[i]
+    }
+
+    /// Pastille pour une URL explicite — réutilise une source serveur si l’URL match, sinon synthétique.
+    private static func citations(
+        forURL rawURL: String,
+        hint: String?,
+        sources: [SearchSourceDTO],
+        location: Int
+    ) -> [InlineCitation] {
+        let url = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return [] }
+        let source = sources.first(where: { $0.url == url || urlsMatch($0.url, url) })
+            ?? syntheticSource(for: url, hint: hint)
+        return [
+            InlineCitation(
+                id: "\(source.id)-url-\(location)",
+                source: source,
+                label: displayLabel(hint: hint, source: source)
+            )
+        ]
+    }
+
+    private static func urlsMatch(_ a: String, _ b: String) -> Bool {
+        let na = a.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        let nb = b.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        return na == nb
+    }
+
+    private static func syntheticSource(for url: String, hint: String?) -> SearchSourceDTO {
+        let host = URL(string: url)?.host
+        let domain: String? = {
+            guard var h = host, !h.isEmpty else { return nil }
+            if h.lowercased().hasPrefix("www.") { h = String(h.dropFirst(4)) }
+            return h
+        }()
+        let title: String = {
+            if let hint, isUsableHint(hint) { return hint }
+            return domain ?? url
+        }()
+        return SearchSourceDTO(
+            id: "url-\(url.hashValue)",
+            title: title,
+            url: url,
+            domain: domain,
+            snippet: nil
+        )
     }
 
     private static func displayLabel(hint: String?, source: SearchSourceDTO) -> String {

@@ -37,15 +37,31 @@ function formatMessage(
     content: string;
     conversationId: string;
     createdAt: string;
-    sources?: unknown[] | null;
+    sources?:
+      | {
+          id: string;
+          title: string;
+          url: string;
+          domain: string;
+          snippet?: string | null;
+        }[]
+      | null;
     attachments?: unknown[] | null;
   } & Record<string, unknown>
 ): ConversationMessageDTO {
   const { text } = parseStoredMessageContent(m.content);
+  const sources = (m.sources ?? []).map((s) => ({
+    id: s.id,
+    title: s.title,
+    url: s.url,
+    domain: s.domain,
+    snippet: s.snippet ?? null,
+  }));
   return {
     ...m,
     content: text || m.content,
     attachments: m.attachments ?? [],
+    sources,
   };
 }
 

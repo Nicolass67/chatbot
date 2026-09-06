@@ -1583,6 +1583,8 @@ private var sendBlockedHint: String {
                     chromeById = stored
                 }
             }
+            // Réhydrate les pastilles web_N depuis l’API (survit au changement de chat / restart).
+            hydrateChromeSources(from: messages)
             pruneChromeOutsideWindow()
             error = nil
             let ids = messages.flatMap { $0.attachments ?? [] }
@@ -1622,6 +1624,7 @@ private var sendBlockedHint: String {
             suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
             scrollAnchorAfterPrepend = oldestId
             messages = older + messages
+            hydrateChromeSources(from: older)
             pruneChromeOutsideWindow()
             let ids = older.flatMap { $0.attachments ?? [] }
                 .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
@@ -1649,6 +1652,24 @@ private var sendBlockedHint: String {
         ConversationSessionStore.replaceChrome(conversationId: conversation.id, chrome: chromeById)
     }
 
+    /// Attache les `sources` renvoyées par GET /messages au chrome (pastilles web_N).
+    /// Ne remplace pas un chrome déjà rempli (ex. stream en cours / session mémoire).
+    private func hydrateChromeSources(from msgs: [MessageDTO]) {
+        var changed = false
+        for msg in msgs {
+            guard let sources = msg.sources, !sources.isEmpty else { continue }
+            var chrome = chromeById[msg.id] ?? MessageChromeMeta()
+            if chrome.sources.isEmpty {
+                chrome.sources = sources
+                chromeById[msg.id] = chrome
+                changed = true
+            }
+        }
+        if changed {
+            ConversationSessionStore.replaceChrome(conversationId: conversation.id, chrome: chromeById)
+        }
+    }
+
     /// Fusionne serveur + local pour éviter un frame vide pendant/après le stream.
     private func mergeMessages(
         local: [MessageDTO],
@@ -1665,7 +1686,8 @@ private var sendBlockedHint: String {
                     role: msg.role,
                     content: msg.content,
                     createdAt: existing.createdAt ?? msg.createdAt,
-                    attachments: existing.attachments ?? msg.attachments
+                    attachments: existing.attachments ?? msg.attachments,
+                    sources: existing.sources ?? msg.sources
                 )
             } else if byId[msg.id] == nil,
                       let preserveAssistantId,

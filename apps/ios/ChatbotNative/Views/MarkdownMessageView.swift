@@ -470,7 +470,8 @@ struct MarkdownMessageView: View {
 
     @ViewBuilder
     private func inlineContent(_ text: String, font: Font, foreground: Color) -> some View {
-        if sources.isEmpty || !CitationParser.containsMarker(text) {
+        // Pastilles web_N (si sources) + URLs nues/markdown — même sans chrome sources.
+        if !CitationParser.containsMarker(text) {
             Text(inline(text))
                 .font(font)
                 .foregroundStyle(foreground)
