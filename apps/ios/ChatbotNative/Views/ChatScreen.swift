@@ -176,6 +176,7 @@ struct ChatScreen: View {
                                     chatMode: chatMode,
                                     toolChannel: toolChannel,
                                     thinkingAvailable: thinkingToggleAvailable,
+                                    showsToolChannel: showsToolChannelPicker,
                                     onToggleThinking: { toggleThinking() },
                                     onToggleMode: {
                                         applyMode(chatMode == "agent" ? "chat" : "agent")
@@ -1405,6 +1406,7 @@ struct ChatScreen: View {
                 thinkingEnabled: isThinkingEnabled,
                 thinkingAvailable: thinkingToggleAvailable,
                 toolChannel: toolChannel,
+                showsToolChannelPicker: showsToolChannelPicker,
                 onModeChange: { mode in applyMode(mode) },
                 onWebChange: { enabled in applyWeb(enabled) },
                 onModelChange: { modelId in Task { await applyModel(modelId) } },
@@ -1455,7 +1457,16 @@ struct ChatScreen: View {
     }
 
     private var toolChannel: ComposerToolChannel {
-        ComposerToolChannel(rawValue: toolChannelRaw) ?? .web
+        // Assistants contextuels : canal imposé (pas de pastille de choix).
+        switch forcedScope {
+        case .mail: return .email
+        case .files: return .files
+        default: return ComposerToolChannel(rawValue: toolChannelRaw) ?? .web
+        }
+    }
+
+    private var showsToolChannelPicker: Bool {
+        forcedScope == nil
     }
 
     private var isThinkingEnabled: Bool {
@@ -1496,6 +1507,7 @@ struct ChatScreen: View {
     }
 
     private func cycleToolChannel() {
+        guard showsToolChannelPicker else { return }
         var next = toolChannel
         next.cycle()
         toolChannelRaw = next.rawValue
@@ -1503,6 +1515,7 @@ struct ChatScreen: View {
         applyWeb(next == .web)
     }
     private func selectToolChannel(_ channel: ComposerToolChannel) {
+        guard showsToolChannelPicker else { return }
         toolChannelRaw = channel.rawValue
         applyWeb(channel == .web)
     }

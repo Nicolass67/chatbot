@@ -22,6 +22,8 @@ struct ComposerCapsule: View {
     var thinkingEnabled: Bool = false
     var thinkingAvailable: Bool = false
     var toolChannel: ComposerToolChannel = .web
+    /// `false` dans les assistants Mail / Files (canal imposé).
+    var showsToolChannelPicker: Bool = true
 
     var onModeChange: ((String) -> Void)?
     var onWebChange: ((Bool) -> Void)?
@@ -132,6 +134,7 @@ struct ComposerCapsule: View {
                 thinkingEnabled: thinkingEnabled,
                 thinkingAvailable: thinkingAvailable,
                 toolChannel: toolChannel,
+                showsToolChannelPicker: showsToolChannelPicker,
                 onModeChange: { onModeChange?($0) },
                 onWebChange: { onWebChange?($0) },
                 onModelChange: { onModelChange?($0) },
@@ -224,6 +227,8 @@ struct ChatToolsSheet: View {
     var thinkingEnabled: Bool = false
     var thinkingAvailable: Bool = false
     var toolChannel: ComposerToolChannel = .web
+    /// `false` dans les assistants Mail / Files (canal imposé).
+    var showsToolChannelPicker: Bool = true
     let onModeChange: (String) -> Void
     let onWebChange: (Bool) -> Void
     let onModelChange: (String) -> Void
@@ -291,36 +296,38 @@ struct ChatToolsSheet: View {
                     Text("Contrôles rapides")
                 }
 
-                Section {
-                    ForEach(ComposerToolChannel.allCases) { channel in
-                        Button {
-                            AppHaptics.selection()
-                            onSelectToolChannel?(channel)
-                            if channel == .web {
-                                onWebChange(true)
-                            } else if toolChannel == .web {
-                                onWebChange(false)
-                            }
-                        } label: {
-                            HStack(spacing: AppTheme.space12) {
-                                Image(systemName: channel.systemImage)
-                                    .foregroundStyle(AppTheme.accent)
-                                    .frame(width: 28)
-                                Text(channel.menuTitle)
-                                    .foregroundStyle(AppTheme.foreground)
-                                Spacer()
-                                if toolChannel == channel {
-                                    Image(systemName: "checkmark")
+                if showsToolChannelPicker {
+                    Section {
+                        ForEach(ComposerToolChannel.allCases) { channel in
+                            Button {
+                                AppHaptics.selection()
+                                onSelectToolChannel?(channel)
+                                if channel == .web {
+                                    onWebChange(true)
+                                } else if toolChannel == .web {
+                                    onWebChange(false)
+                                }
+                            } label: {
+                                HStack(spacing: AppTheme.space12) {
+                                    Image(systemName: channel.systemImage)
                                         .foregroundStyle(AppTheme.accent)
+                                        .frame(width: 28)
+                                    Text(channel.menuTitle)
+                                        .foregroundStyle(AppTheme.foreground)
+                                    Spacer()
+                                    if toolChannel == channel {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(AppTheme.accent)
+                                    }
                                 }
                             }
+                            .listRowBackground(AppTheme.surface)
                         }
-                        .listRowBackground(AppTheme.surface)
+                    } header: {
+                        Text("Canal d’outils")
+                    } footer: {
+                        Text("Mêmes options que les boutons à droite du composer.")
                     }
-                } header: {
-                    Text("Canal d’outils")
-                } footer: {
-                    Text("Mêmes options que les boutons à droite du composer.")
                 }
 
                 Section {

@@ -39,12 +39,14 @@ enum ComposerToolChannel: String, CaseIterable, Identifiable {
     }
 }
 
-/// Trois boutons ronds (icônes) : thinking, chat/agent, canal d’outil.
+/// Boutons ronds (icônes) : thinking, chat/agent, et optionnellement canal d’outil.
 struct ComposerQuickControls: View {
     let thinkingEnabled: Bool
     let chatMode: String
     let toolChannel: ComposerToolChannel
     let thinkingAvailable: Bool
+    /// Masqué dans les assistants Mail / Files (canal imposé par le contexte).
+    var showsToolChannel: Bool = true
     let onToggleThinking: () -> Void
     let onToggleMode: () -> Void
     let onCycleTool: () -> Void
@@ -69,14 +71,16 @@ struct ComposerQuickControls: View {
                 action: onToggleMode
             )
 
-            ComposerRoundIconButton(
-                systemImage: toolChannel.systemImage,
-                isActive: true,
-                disabled: false,
-                accessibilityLabel: toolChannel.accessibilityLabel,
-                accessibilityIdentifier: A11yID.Chat.toolChannel,
-                action: onCycleTool
-            )
+            if showsToolChannel {
+                ComposerRoundIconButton(
+                    systemImage: toolChannel.systemImage,
+                    isActive: true,
+                    disabled: false,
+                    accessibilityLabel: toolChannel.accessibilityLabel,
+                    accessibilityIdentifier: A11yID.Chat.toolChannel,
+                    action: onCycleTool
+                )
+            }
         }
         .accessibilityElement(children: .contain)
     }
