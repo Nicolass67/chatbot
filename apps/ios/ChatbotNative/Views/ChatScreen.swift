@@ -162,6 +162,10 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
+                    .overlay(alignment: .bottom) {
+                        // Transparent : le fil continue derrière. Pas de bande / material.
+                        composerChromeOverlay
+                    }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,
@@ -539,7 +543,10 @@ struct ChatScreen: View {
                             )
                             .id("conversation-draft")
                         }
-                        Color.clear.frame(height: 28).id("bottom")
+                        // Espace pour scroller sous l’overlay PJ / Disponible / boutons.
+                        Color.clear
+                            .frame(height: composerChromeScrollPadding)
+                            .id("bottom")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -652,13 +659,13 @@ struct ChatScreen: View {
             }
 
             if showScrollDown {
-                // Centré, au-dessus de la zone composer (PJ / Disponible / boutons).
+                // Au-dessus de l’overlay PJ / Disponible / boutons.
                 ScrollToBottomButton {
                     AppHaptics.light()
                     scrollToken += 1
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 12)
+                .padding(.bottom, composerChromeScrollPadding)
                 .transition(.opacity.combined(with: .scale))
                 .accessibilitySortPriority(1)
             }
@@ -1415,8 +1422,21 @@ struct ChatScreen: View {
         return t
     }
 
-    private var composer: some View {
-        // Ordre (tous chats / assistants) : PJ → Disponible + boutons → capsule.
+    /// Hauteur réservée en bas du fil pour l’overlay transparent (PJ + statut + boutons).
+    private var composerChromeScrollPadding: CGFloat {
+        var height: CGFloat = 48
+        if !pendingAttachments.isEmpty {
+            height += 118
+        }
+        if !isSending {
+            height += 4
+        }
+        return height
+    }
+
+    /// PJ + Disponible + quick controls — flottants, sans fond, alignés à gauche pour les PJ.
+    @ViewBuilder
+    private var composerChromeOverlay: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !pendingAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1457,52 +1477,57 @@ struct ChatScreen: View {
                 }
                 .padding(.horizontal, AppTheme.space16)
             }
-
-            ComposerCapsule(
-                draft: $draft,
-                photoItem: $photoItem,
-                showTools: $showTools,
-                placeholder: editingMessageId == nil ? "Message" : "Modifier le message…",
-                canSend: canSend,
-                isSending: isSending,
-                uploading: uploading,
-                editing: editingMessageId != nil,
-                chatMode: chatMode,
-                webSearchEnabled: webSearchEnabled,
-                selectedModelName: selectedModel,
-                reasoningModes: reasoningModes,
-                reasoningEffort: reasoningEffort,
-                models: models,
-                modelSwitching: modelSwitching,
-                thinkingEnabled: isThinkingEnabled,
-                thinkingAvailable: thinkingToggleAvailable,
-                toolChannel: toolChannel,
-                showsToolChannelPicker: showsToolChannelPicker,
-                onModeChange: { mode in applyMode(mode) },
-                onWebChange: { enabled in applyWeb(enabled) },
-                onModelChange: { modelId in Task { await applyModel(modelId) } },
-                onReasoningChange: { mode in applyReasoning(mode) },
-                onToggleThinking: { toggleThinking() },
-                onSelectToolChannel: { channel in selectToolChannel(channel) },
-                onSend: {
-                    sendTask = Task { await send() }
-                },
-                onStop: {
-                    sendTask?.cancel()
-                    sendTask = nil
-                    Task { await streamingService.cancel() }
-                    finalizeStoppedStream()
-                },
-                onPickDoc: { showDocImporter = true },
-                onCancelEdit: {
-                    editingMessageId = nil
-                    draft = ""
-                }
-            )
-            .padding(.horizontal, AppTheme.space12)
-            .padding(.bottom, AppTheme.space12)
-            .padding(.top, AppTheme.space4)
         }
+        .padding(.bottom, 2)
+        .allowsHitTesting(true)
+    }
+
+    private var composer: some View {
+        // Capsule seule en bas — le chrome (PJ / Disponible / boutons) est en overlay transparent.
+        ComposerCapsule(
+            draft: $draft,
+            photoItem: $photoItem,
+            showTools: $showTools,
+            placeholder: editingMessageId == nil ? "Message" : "Modifier le message…",
+            canSend: canSend,
+            isSending: isSending,
+            uploading: uploading,
+            editing: editingMessageId != nil,
+            chatMode: chatMode,
+            webSearchEnabled: webSearchEnabled,
+            selectedModelName: selectedModel,
+            reasoningModes: reasoningModes,
+            reasoningEffort: reasoningEffort,
+            models: models,
+            modelSwitching: modelSwitching,
+            thinkingEnabled: isThinkingEnabled,
+            thinkingAvailable: thinkingToggleAvailable,
+            toolChannel: toolChannel,
+            showsToolChannelPicker: showsToolChannelPicker,
+            onModeChange: { mode in applyMode(mode) },
+            onWebChange: { enabled in applyWeb(enabled) },
+            onModelChange: { modelId in Task { await applyModel(modelId) } },
+            onReasoningChange: { mode in applyReasoning(mode) },
+            onToggleThinking: { toggleThinking() },
+            onSelectToolChannel: { channel in selectToolChannel(channel) },
+            onSend: {
+                sendTask = Task { await send() }
+            },
+            onStop: {
+                sendTask?.cancel()
+                sendTask = nil
+                Task { await streamingService.cancel() }
+                finalizeStoppedStream()
+            },
+            onPickDoc: { showDocImporter = true },
+            onCancelEdit: {
+                editingMessageId = nil
+                draft = ""
+            }
+        )
+        .padding(.horizontal, AppTheme.space12)
+        .padding(.bottom, AppTheme.space12)
+        .padding(.top, AppTheme.space4)
     }
 
     private var canSend: Bool {
