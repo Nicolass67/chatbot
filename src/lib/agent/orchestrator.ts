@@ -73,6 +73,10 @@ import {
   injectEmailDraftWritingIntoContext,
 } from "@/lib/email/draft";
 import { getLocalAIRuntime } from "@/lib/runtime/factory";
+import {
+  createLlmPageEvidenceAnalyzer,
+  runWebEvidencePipeline,
+} from "@/lib/context/web-evidence";
 import { applyMessageEdit } from "./edit-message";
 import {
   buildChatContext,
@@ -81,6 +85,7 @@ import {
   injectTemporalIntoContext,
   injectWebSearchFailureIntoContext,
   injectWebSearchIntoContext,
+  injectWebEvidenceIntoContext,
   type InjectedEmailHit,
   type InjectedFileSearchHit,
 } from "./context-builder";
@@ -92,6 +97,8 @@ import { isAbortLikeError } from "./abort";
 export type { OrchestratorEvent, ChatOrchestratorInput } from "./events";
 
 const MAX_TOOL_CALLS = 3;
+/** Chat+Web : 1 SERP, top N pages analysées, aucune itération de recherche. */
+const CHAT_WEB_EVIDENCE_MAX_PAGES = 5;
 const MAX_SAME_TOOL = 2;
 const ORCHESTRATOR_TIMEOUT_MS = 120_000;
 const STATUS_POLL_MS = 800;
@@ -108,11 +115,28 @@ async function runAutoWebSearchForChat(params: {
   settings: Awaited<ReturnType<typeof getSettings>>;
   query: string;
   toolCtxBase: Omit<ToolContext, "signal">;
+  runtime: ReturnType<typeof getLocalAIRuntime>;
+  userQuestion: string;
+  priorUserMessages?: string[];
 }): Promise<
-  | { ok: true; results: SearchResult[]; query: string; status: "success" }
+  | {
+      ok: true;
+      results: SearchResult[];
+      query: string;
+      status: "success";
+      evidenceContext?: string;
+    }
   | { ok: false; query: string; status: WebSearchStatus; message: string }
 > {
-  const { input, settings, query, toolCtxBase } = params;
+  const {
+    input,
+    settings,
+    query,
+    toolCtxBase,
+    runtime,
+    userQuestion,
+    priorUserMessages = [],
+  } = params;
   input.onEvent({ type: "tool_start", tool: "web_search", input: { query } });
 
   try {
@@ -121,13 +145,20 @@ async function runAutoWebSearchForChat(params: {
       { query },
       {
         ...toolCtxBase,
+        settings: {
+          ...toolCtxBase.settings,
+          webSearchMaxResults: CHAT_WEB_EVIDENCE_MAX_PAGES,
+        },
         signal:
           input.signal ??
           AbortSignal.timeout(settings.webSearchTimeoutMs + 5000),
       }
     )) as WebSearchOutput;
 
-    if (searchResult.results.length === 0 || searchResult.status === "no_results") {
+    if (
+      searchResult.results.length === 0 ||
+      searchResult.status === "no_results"
+    ) {
       input.onEvent({
         type: "tool_done",
         tool: "web_search",
@@ -143,19 +174,87 @@ async function runAutoWebSearchForChat(params: {
       };
     }
 
+    const results = searchResult.results.slice(0, CHAT_WEB_EVIDENCE_MAX_PAGES);
     input.onEvent({
       type: "tool_done",
       tool: "web_search",
       summary: "Recherche Web",
-      sourceCount: searchResult.results.length,
+      sourceCount: results.length,
     });
-    input.onEvent({ type: "sources", sources: searchResult.results });
+    input.onEvent({ type: "sources", sources: results });
+
+    input.onEvent({
+      type: "runtime_status",
+      status: "analyzing_web",
+      message: "Analyse des pages…",
+    });
+
+    let evidenceContext: string | undefined;
+    try {
+      if (!settings.selectedModel) {
+        throw new Error("Aucun modèle sélectionné pour l'analyse des pages.");
+      }
+      const pageContents: Record<string, string> = {
+        ...(searchResult.pageContents ?? {}),
+      };
+      const pageAnalyzer = createLlmPageEvidenceAnalyzer({
+        runtime,
+        model: settings.selectedModel,
+        signal: input.signal,
+        temperature: 0.1,
+        maxTokens: 450,
+      });
+      const evidenceResult = await runWebEvidencePipeline({
+        userQuestion,
+        searchQuery: query,
+        sources: results.map((src, i) => ({
+          sourceId: `web_${i + 1}`,
+          url: src.url,
+          title: src.title,
+          snippet: src.snippet ?? "",
+          domain: src.domain,
+          pageContent: pageContents[src.url],
+        })),
+        pageContents,
+        maxAnalyzePages: CHAT_WEB_EVIDENCE_MAX_PAGES,
+        maxTotalAnalyzePages: CHAT_WEB_EVIDENCE_MAX_PAGES,
+        maxCandidateSources: CHAT_WEB_EVIDENCE_MAX_PAGES,
+        extractionConcurrency: 2,
+        maxFollowUpPasses: 0,
+        maxPageCharsForAnalysis: 24_000,
+        conversationPriorUserMessages: priorUserMessages,
+        modelId: settings.selectedModel,
+        analyzeSource: pageAnalyzer,
+        onSourceProgress: (info) => {
+          input.onEvent({ type: "source_progress", ...info });
+        },
+      });
+      evidenceContext =
+        evidenceResult.finalApplicationContext?.trim() || undefined;
+      input.onEvent({
+        type: "runtime_status",
+        status: "web_evidence_ready",
+        message: `${evidenceResult.packets.length} page(s) analysée(s)`,
+      });
+    } catch (evidenceError) {
+      const msg =
+        evidenceError instanceof Error
+          ? evidenceError.message
+          : String(evidenceError);
+      console.warn("[chat-web-evidence] fallback snippets:", msg);
+      input.onEvent({
+        type: "runtime_status",
+        status: "web_evidence_fallback",
+        message: "Analyse pages indisponible — snippets SERP",
+      });
+    }
 
     return {
       ok: true,
-      results: searchResult.results,
+      results,
       query,
       status: "success",
+      evidenceContext,
     };
   } catch (error) {
     const status: WebSearchStatus =
@@ -789,12 +888,14 @@ export async function runChatOrchestrator(
         imageCount,
         attachmentCount: pendingAttachments.length,
         modelId: settings.selectedModel,
+        toolChannel: parseToolChannel(input.toolChannel),
         runtime,
         signal: input.signal,
         recentUserMessages: priorUserMsgs.slice(-3),
       },
       { memoryEnabled: settings.memoryEnabled }
     );
+    const channel = parseToolChannel(input.toolChannel);
     const routed = resolveConversationalWebRoute({
       route: analysis.route,
       userMessage: input.userContent,
@@ -805,14 +906,16 @@ export async function runChatOrchestrator(
           typeof m.content === "string" &&
           /web_search|web_sources|<web_/i.test(m.content)
       ),
+      toolChannel: channel,
+      llmFollowUp: analysis.route.understanding?.followUp,
     });
-    const channel = parseToolChannel(input.toolChannel);
+    /* channel already parsed */
     const channelResolved = applyToolChannel(
       routed,
       channel,
       {
         webSearchAllowed: settings.webSearchEnabled || channel === "web",
-        emailConnected: emailPolicyContext.emailConnected,
+        emailConnected: Boolean(emailPolicyContext.emailConnected),
         emailFeatureEnabled: emailEnabled,
         filesConfigured: Boolean(emailPolicyContext.hasConfiguredRoots),
         filesFeatureEnabled: filesEnabled,
@@ -950,6 +1053,13 @@ export async function runChatOrchestrator(
               settings,
               query: route.web.searchQuery,
               toolCtxBase,
+              runtime,
+              userQuestion: input.userContent,
+              priorUserMessages: historyMessages
+                .filter((m) => m.role === "user")
+                .slice(-4)
+                .map((m) => (typeof m.content === "string" ? m.content : ""))
+                .filter(Boolean),
             })
           : Promise.resolve(null),
         shouldAutoFileSearch
@@ -1040,11 +1150,18 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
     const collectedSources: SearchResult[] = [];
     if (autoSearch?.ok) {
       collectedSources.push(...autoSearch.results);
-      injectWebSearchIntoContext(
-        contextMessages,
-        autoSearch.query,
-        autoSearch.results
-      );
+      if (autoSearch.evidenceContext) {
+        injectWebEvidenceIntoContext(
+          contextMessages,
+          autoSearch.evidenceContext
+        );
+      } else {
+        injectWebSearchIntoContext(
+          contextMessages,
+          autoSearch.query,
+          autoSearch.results
+        );
+      }
     }
 
     if (autoFileSearch) {
@@ -1130,6 +1247,7 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       }
 
       await runAgentLoop({
+        toolChannel: parseToolChannel(input.toolChannel),
         conversationId: input.conversationId,
         userContent: input.userContent,
         conversationHistory: agentConversationHistory,
@@ -1405,7 +1523,8 @@ async function runChatMode(params: {
           }
           return { tool: tc.name, input: parsed, id: tc.id };
         }),
-        input.userContent
+        input.userContent,
+        parseToolChannel(input.toolChannel)
       ).map((call) => ({
         id: call.id as string,
         name: call.tool,

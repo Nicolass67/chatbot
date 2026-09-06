@@ -73,6 +73,16 @@ export type OrchestratorEvent =
       notice?: string;
     }
   | { type: "sources"; sources: SearchResult[] }
+  /** Additive — clients must ignore unknown types; which URL is being fetched/analyzed. */
+  | {
+      type: "source_progress";
+      phase: "fetching" | "analyzing" | "done";
+      url: string;
+      title?: string;
+      domain?: string;
+      index: number;
+      total: number;
+    }
   | { type: "assistant_start"; messageId: string }
   | { type: "assistant_discard"; messageId: string }
   | { type: "done"; messageId: string }

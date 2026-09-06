@@ -1,5 +1,5 @@
 import { groundSearchQueryWithContext } from "@/lib/context/conversation-continuity";
-import { resolveConversationalWebRoute } from "@/lib/context/conversational-web-resolution";
+import { resolveConversationalWebRoute, rewriteMisroutedFileSearchCalls } from "@/lib/context/conversational-web-resolution";
 import { isContextDebugEnabled } from "@/lib/context/debug-trace";
 import {
   createLlmPageEvidenceAnalyzer,
@@ -66,6 +66,10 @@ import { createAgentRunTracker, type AgentRunTracker } from "./observability";
 import { sanitizeToolStartPayload } from "@/lib/observability/sse-sanitize";
 import { createAgentPlan } from "./planner";
 import {
+  evaluateFinishAgainstPlan,
+  shouldSkipDeciderForPlan,
+} from "./plan-execution";
+import {
   applyStepStatusChange,
   cloneAgentPlan,
   finalizePlanOnWebFailure,
@@ -106,6 +110,8 @@ import {
 } from "./types";
 
 export interface AgentLoopInput {
+  /** Canal composer UI — source de vérité Chat/Mail/Files. */
+  toolChannel?: import("@/lib/agent/tool-channel").ToolChannel;
   conversationId: string;
   userContent: string;
   settings: AppSettings;
@@ -413,13 +419,14 @@ const MAX_COLLECTED_SOURCES_CEILING = 25;
 
 function shouldSkipDeciderLoop(
   researchState: ResearchFlowState,
-  collectedSources: SearchResult[]
+  collectedSources: SearchResult[],
+  plan: AgentPlan
 ): boolean {
-  return (
-    researchState.initialSearchDone &&
-    collectedSources.length > 0 &&
-    !researchState.required
-  );
+  return shouldSkipDeciderForPlan(plan, {
+    initialSearchDone: researchState.initialSearchDone,
+    collectedSourceCount: collectedSources.length,
+    researchRequired: researchState.required,
+  });
 }
 
 function applyWebSearchStopDecision(
@@ -491,6 +498,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         input.conversationHistory &&
           /web_search|web_sources|<web_/i.test(input.conversationHistory)
       ),
+      toolChannel: input.toolChannel,
+      llmFollowUp: route.understanding?.followUp,
     });
 
     const temporalContext = route.temporal;
@@ -732,13 +741,14 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
 
     const skipDeciderLoop = shouldSkipDeciderLoop(
       researchState,
-      collectedSources
+      collectedSources,
+      plan
     );
 
     
-    // V4: evidence after mandatory — ne pas laisser skipDeciderLoop contourner le pipeline
+    // Evidence après recherche obligatoire — indépendant du skip décidur
+    // (plan multi-étapes : evidence puis décidur pour les étapes restantes).
     if (
-      skipDeciderLoop &&
       collectedSources.length > 0 &&
       !durableWebSourcesBlock.includes("<web_evidence>")
     ) {
@@ -774,21 +784,25 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           })),
           pageContents: pageContentsByUrl,
           maxAnalyzePages: researchMode ? 10 : 8,
+          maxTotalAnalyzePages: researchMode ? 28 : 18,
           maxCandidateSources: Math.max(
-            20,
-            Math.min(30, collectedSources.length)
+            30,
+            Math.min(40, collectedSources.length)
           ),
           extractionConcurrency: 2,
-          maxFollowUpPasses: researchMode ? 1 : 1,
+          maxFollowUpPasses: researchMode ? 3 : 2,
           maxPageCharsForAnalysis: 24_000,
           conversationPriorUserMessages: input.priorUserMessages ?? [],
           modelId: input.settings.selectedModel,
           analyzeSource: pageAnalyzer,
+          onSourceProgress: (info) => {
+            input.onEvent({ type: "source_progress", ...info });
+          },
           runFollowUpSearch: async (followQuery) => {
             const provider = createWebSearchProvider();
             const search = await provider.search(followQuery, {
               maxResults: Math.min(
-                12,
+                researchMode ? 16 : 12,
                 Math.max(8, input.settings.webSearchMaxResults)
               ),
               timeoutMs: input.settings.webSearchTimeoutMs ?? 25_000,
@@ -839,7 +853,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           console.info(
             "[web-evidence-v4]",
             JSON.stringify({
-              path: "mandatory_skip_decider",
+              path: skipDeciderLoop
+                ? "mandatory_skip_decider"
+                : "mandatory_then_decider",
               metrics: evidenceResult.metrics,
               coverage: evidenceResult.coverage.reason,
             })
@@ -990,6 +1006,18 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           });
           continue;
         }
+        const planGate = evaluateFinishAgainstPlan(plan);
+        if (!planGate.allowed) {
+          execCtx.errors.push(planGate.reason ?? "Plan incomplet");
+          execCtx.observations.push({
+            tool: "system",
+            input: { type: "finish_rejected_plan" },
+            output: planGate,
+            summary: planGate.reason ?? "finish rejeté — étapes du plan encore ouvertes",
+            timestamp: new Date().toISOString(),
+          });
+          continue;
+        }
         break;
       }
 
@@ -1014,7 +1042,11 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       }
 
       if (decision.type === "tool_calls") {
-        let callsToRun = decision.calls;
+        let callsToRun = rewriteMisroutedFileSearchCalls(
+          decision.calls,
+          input.userContent,
+          input.toolChannel
+        );
         if (
           webSearchStopped &&
           callsToRun.some((c) => c.tool === "web_search")
@@ -1154,6 +1186,17 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                 maxPages: researchMode ? 6 : 4, // V4: deepen léger — le pipeline fetch les pages sélectionnées
                 signal: input.signal,
                 snippetInsufficient: isSnippetInsufficient,
+                onProgress: (info) => {
+                  input.onEvent({
+                    type: "source_progress",
+                    phase: info.phase === "done" ? "done" : "fetching",
+                    url: info.url,
+                    title: info.title,
+                    domain: info.domain,
+                    index: info.index,
+                    total: info.total,
+                  });
+                },
               });
               Object.assign(pageContentsByUrl, deepened);
 
@@ -1178,28 +1221,36 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                 })),
                 pageContents: pageContentsByUrl,
                 maxAnalyzePages: researchMode ? 10 : 8,
+                maxTotalAnalyzePages: researchMode ? 28 : 18,
                 maxCandidateSources: Math.max(
-                  20,
-                  Math.min(30, result.sources.length)
+                  30,
+                  Math.min(40, result.sources.length)
                 ),
                 extractionConcurrency: 2,
-                maxFollowUpPasses: researchMode ? 1 : 1,
+                maxFollowUpPasses: researchMode ? 3 : 2,
                 maxPageCharsForAnalysis: 24_000,
                 conversationPriorUserMessages: input.priorUserMessages ?? [],
                 analyzeSource: pageAnalyzer,
+                onSourceProgress: (info) => {
+                  input.onEvent({ type: "source_progress", ...info });
+                },
                 proposeFollowUpQueries: async ({ question, missingNeeds, existingEvidence }) => {
                   const focuses = missingNeeds
                     .map((n) => n.description)
                     .filter(Boolean)
                     .slice(0, 3);
-                  if (focuses.length === 0) return [question.slice(0, 160)];
-                  return focuses.map((f) => `${question} — ${f}`.slice(0, 180));
+                  const base = groundSearchQueryWithContext({
+                    query: route.web.searchQuery || question,
+                    recentUserMessages: input.priorUserMessages ?? [],
+                  });
+                  if (focuses.length === 0) return [base.slice(0, 160)];
+                  return focuses.map((f) => `${base} — ${f}`.slice(0, 180));
                 },
                 runFollowUpSearch: async (followQuery) => {
                   const provider = createWebSearchProvider();
                   const search = await provider.search(followQuery, {
                     maxResults: Math.min(
-                      12,
+                      researchMode ? 16 : 12,
                       Math.max(8, input.settings.webSearchMaxResults)
                     ),
                     timeoutMs: input.settings.webSearchTimeoutMs ?? 25_000,
@@ -1522,6 +1573,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
               forceHonestResponse:
                 synthesisValidation.forceHonestResponse ||
                 !freshnessGate.allowLlmSynthesis,
+              answerShape: route.understanding?.answerShape as
+                | import("@/lib/prompts/response-policy").AnswerShape
+                | undefined,
               userGoal: input.userContent,
               applicationContext: synthesisApplicationContext,
             }

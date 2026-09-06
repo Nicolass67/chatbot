@@ -2747,6 +2747,42 @@ private var sendBlockedHint: String {
         return nil
     }
 
+    /// Libellé court d’une source web (domaine préféré).
+    private func shortWebSourceLabel(domain: String?, title: String?, url: String?) -> String {
+        if let domain, !domain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return domain.replacingOccurrences(of: #"^www\."#, with: "", options: .regularExpression)
+        }
+        if let url, let host = URL(string: url)?.host, !host.isEmpty {
+            return host.replacingOccurrences(of: #"^www\."#, with: "", options: .regularExpression)
+        }
+        if let title {
+            let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return String(t.prefix(42)) }
+        }
+        return "source"
+    }
+
+    private func liveSourceStatusLine(
+        phase: String,
+        domain: String?,
+        title: String?,
+        url: String?,
+        index: Int?,
+        total: Int?
+    ) -> String {
+        let label = shortWebSourceLabel(domain: domain, title: title, url: url)
+        let verb: String
+        switch phase {
+        case "fetching": verb = "Lecture"
+        case "done": verb = "Sources"
+        default: verb = "Analyse"
+        }
+        if let index, let total, total > 1 {
+            return "\(verb) · \(label) (\(index)/\(total))"
+        }
+        return "\(verb) · \(label)"
+    }
+
     /// Attache / met à jour le panel agent sur le message assistant courant (persistance conversation).
     /// Ancre message dédiée à ce run agent — ne jamais réutiliser un ancien assistant.
     @discardableResult
@@ -2989,6 +3025,19 @@ private var sendBlockedHint: String {
             if type == "runtime_status", let st = obj["status"] as? String {
                 runtimeStatus = st
                 // Ne jamais afficher READY/BUSY comme texte « réflexion » dans le fil.
+                if !awaitingDraftRewrite, !agentActivity.visible, st == "analyzing_web" {
+                    let shouldReplace: Bool = {
+                        guard let thinkingKind else { return true }
+                        if thinkingKind == .searching { return true }
+                        if case .custom(let s) = thinkingKind {
+                            return s.hasPrefix("Recherche ·") || s.hasPrefix("Lecture ·")
+                        }
+                        return false
+                    }()
+                    if shouldReplace {
+                        thinkingKind = .custom("Analyse des pages…")
+                    }
+                }
                 break
             }
             if !agentActivity.visible {
@@ -3123,8 +3172,18 @@ private var sendBlockedHint: String {
                 activateAgentPlanStep(id: stepId)
             }
             if let action = obj["action"] as? [String: Any] {
-                let raw = (action["summary"] as? String) ?? (action["type"] as? String)
+                let tool = (action["tool"] as? String) ?? ""
+                let raw =
+                    (action["summary"] as? String)
+                    ?? (tool.isEmpty ? nil : tool)
+                    ?? (action["type"] as? String)
                 agentActivity.currentStepTitle = raw.map(AgentToolLabels.humanize)
+                if tool.lowercased().contains("search") || tool.lowercased().contains("web") {
+                    agentActivity.webPhase = .searching
+                    if let q = toolQuery(from: action) ?? toolQuery(from: obj) {
+                        agentActivity.webQuery = q
+                    }
+                }
                 if let label = raw.map(AgentToolLabels.humanize) {
                     var parts = (agentActivity.activitySummary ?? "")
                         .split(separator: "·")
@@ -3237,18 +3296,46 @@ private var sendBlockedHint: String {
             if !streamSources.isEmpty {
                 let count = streamSources.count
                 let bit = "\(count) source\(count > 1 ? "s" : "")"
+                let first = streamSources.first
+                let firstLabel = shortWebSourceLabel(
+                    domain: first?.domain,
+                    title: first?.title,
+                    url: first?.url
+                )
                 if agentActivity.visible {
-                    if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
-                        agentActivity.activitySummary = "\(base) · \(bit)"
-                    } else if let q = agentActivity.webQuery, !q.isEmpty {
+                    if let q = agentActivity.webQuery, !q.isEmpty {
                         agentActivity.activitySummary = "Recherche · \(q) · \(bit)"
-                    } else if agentActivity.activitySummary == nil {
+                    } else if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
+                        agentActivity.activitySummary = "\(base) · \(bit)"
+                    } else {
                         agentActivity.activitySummary = bit
                     }
+                    agentActivity.currentStepTitle = "Lecture · \(firstLabel)"
                     syncAgentChromeToStreamingMessage()
                 } else {
-                    thinkingKind = .custom("Recherche · \(bit)")
+                    // Teaser immédiat ; `source_progress` affine domaine par domaine.
+                    thinkingKind = .custom("Lecture · \(firstLabel) · \(bit)")
                 }
+            }
+        case "source_progress":
+            if awaitingDraftRewrite { break }
+            let phase = (obj["phase"] as? String) ?? "analyzing"
+            if phase == "done" { break }
+            let line = liveSourceStatusLine(
+                phase: phase,
+                domain: obj["domain"] as? String,
+                title: obj["title"] as? String,
+                url: obj["url"] as? String,
+                index: obj["index"] as? Int,
+                total: obj["total"] as? Int
+            )
+            if agentActivity.visible {
+                agentActivity.webPhase = .analyzing
+                progressAgentPlanForWebPhase(.analyzing)
+                agentActivity.currentStepTitle = line
+                syncAgentChromeToStreamingMessage()
+            } else {
+                thinkingKind = .custom(line)
             }
         case "context_snapshot":
             if let snap = obj["snapshot"] as? [String: Any] {

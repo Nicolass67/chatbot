@@ -4,7 +4,11 @@ data: {"type":"tool_start","tool":"web_search","input":{"query":"actu IA"}}
 
 data: {"type":"tool_done","tool":"web_search","summary":"3 résultats","sourceCount":3}
 
-data: {"type":"sources","sources":[{"title":"Exemple","url":"https://example.com","snippet":"…"}]}
+data: {"type":"sources","sources":[{"title":"Exemple","url":"https://example.com","snippet":"…","domain":"example.com"}]}
+
+data: {"type":"source_progress","phase":"fetching","url":"https://example.com","title":"Exemple","domain":"example.com","index":1,"total":1}
+
+data: {"type":"source_progress","phase":"analyzing","url":"https://example.com","title":"Exemple","domain":"example.com","index":1,"total":1}
 
 data: {"type":"token","content":"Voici ce que j'ai trouvé."}
 

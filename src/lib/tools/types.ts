@@ -71,6 +71,10 @@ export interface WebSearchOutput {
   temporalScope?: string;
   referenceDate?: string;
   freshness?: string;
+  /** Contenu pages (deepen) — optionnel, pour le pipeline d'évidence. */
+  pageContents?: Record<string, string>;
+  /** Contexte web déjà formaté (si deepen a réussi). */
+  groundedContext?: string;
 }
 
 export function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {

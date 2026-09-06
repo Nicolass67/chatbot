@@ -448,7 +448,11 @@ struct AgentActivityView: View {
             }
             return nil
         }
+        // source_progress / outil en cours — déjà humanisé côté ChatScreen.
         if let title = state.currentStepTitle, !title.isEmpty {
+            if title.hasPrefix("Lecture ·") || title.hasPrefix("Analyse ·") || title.hasPrefix("Sources ·") {
+                return title
+            }
             return AgentToolLabels.friendlyStepTitle(title)
         }
         switch state.webPhase {
