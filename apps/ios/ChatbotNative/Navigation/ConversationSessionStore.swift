@@ -132,6 +132,44 @@ enum ConversationSessionStore {
         var status: String
         var sent: Bool
         var inConversation: Bool
+        /// Carte repliée (croix) — récupérable, pas annulée serveur.
+        var collapsed: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case draftId, text, to, subject, status, sent, inConversation, collapsed
+        }
+
+        init(
+            draftId: String?,
+            text: String,
+            to: String,
+            subject: String,
+            status: String,
+            sent: Bool,
+            inConversation: Bool,
+            collapsed: Bool = false
+        ) {
+            self.draftId = draftId
+            self.text = text
+            self.to = to
+            self.subject = subject
+            self.status = status
+            self.sent = sent
+            self.inConversation = inConversation
+            self.collapsed = collapsed
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            draftId = try c.decodeIfPresent(String.self, forKey: .draftId)
+            text = try c.decode(String.self, forKey: .text)
+            to = try c.decode(String.self, forKey: .to)
+            subject = try c.decode(String.self, forKey: .subject)
+            status = try c.decode(String.self, forKey: .status)
+            sent = try c.decode(Bool.self, forKey: .sent)
+            inConversation = try c.decode(Bool.self, forKey: .inConversation)
+            collapsed = try c.decodeIfPresent(Bool.self, forKey: .collapsed) ?? false
+        }
     }
 
     private static let draftCardDefaultsPrefix = "ctxchat.draftCard."

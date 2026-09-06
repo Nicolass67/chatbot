@@ -131,6 +131,7 @@ struct ChatScreen: View {
     @State private var draftCardBusy = false
     @State private var draftCardStreaming = false
     @State private var draftCardSent = false
+    @State private var draftCardCollapsed = false
     @State private var confirmSendDraft = false
     @State private var draftInConversation = false
     @State private var lastSources: [SearchSourceDTO] = []
@@ -571,9 +572,13 @@ struct ChatScreen: View {
                                 onAttach: {
                                     showDocImporter = true
                                 },
-                                onDiscard: {
-                                    discardDraftCard()
+                                onCollapse: {
+                                    collapseDraftCard()
                                 },
+                                onExpand: {
+                                    expandDraftCard()
+                                },
+                                isCollapsed: draftCardCollapsed,
                                 onCommitHeaders: {
                                     Task { await commitDraftHeaders() }
                                 }
@@ -852,6 +857,7 @@ struct ChatScreen: View {
     /// Active le mode « conseil » : l’utilisateur écrit dans le composer (ex. plus formel).
     private func beginDraftImproveFromComposer() {
         guard draftCardId != nil, !isSending else { return }
+        draftCardCollapsed = false
         draftImprovePending = true
         draft = ""
         AppHaptics.selection()
@@ -927,6 +933,7 @@ struct ChatScreen: View {
         thinkingKind = .custom("Préparation de la réponse…")
         draftInConversation = true
         draftCardStreaming = true
+        draftCardCollapsed = false
         draftCardStatus = "Rédaction…"
         draftCardText = ""
         draftCardEditing = false
@@ -1259,6 +1266,7 @@ struct ChatScreen: View {
             draftCardStatus = "Envoyé"
             draftCardEditing = false
             draftCardStreaming = false
+            draftCardCollapsed = false
             draftCardCandidates = []
             draftCardAttachments = []
             draftRecipientSuggestions = []
@@ -1273,31 +1281,22 @@ struct ChatScreen: View {
         }
     }
 
-    private func discardDraftCard() {
-        draftRecipientSuggestTask?.cancel()
-        let idToCancel = draftCardId
-        draftCardId = nil
-        draftCardText = ""
-        draftCardTo = ""
-        draftCardSubject = ""
-        draftCardCandidates = []
-        draftCardAttachments = []
-        draftRecipientSuggestions = []
+    /// Croix : replie la carte — brouillon conservé localement + serveur, récupérable.
+    private func collapseDraftCard() {
+        guard !draftCardSent else { return }
+        draftCardCollapsed = true
         draftCardEditing = false
-        draftCardStreaming = false
-        draftCardSent = false
-        draftInConversation = false
         draftImprovePending = false
-        awaitingDraftRewrite = false
-        draftPreviewReceivedThisTurn = false
-        draftCardStatus = "Brouillon"
-        ConversationSessionStore.clearDraftCard(conversationId: conversation.id)
+        draftRecipientSuggestTask?.cancel()
+        draftRecipientSuggestions = []
+        persistDraftCardSnapshot()
         AppHaptics.light()
-        if let idToCancel, !idToCancel.isEmpty {
-            Task {
-                try? await client.cancelEmailDraft(id: idToCancel)
-            }
-        }
+    }
+
+    private func expandDraftCard() {
+        draftCardCollapsed = false
+        persistDraftCardSnapshot()
+        AppHaptics.light()
     }
 
     private func persistDraftCardSnapshot() {
@@ -1314,7 +1313,8 @@ struct ChatScreen: View {
                 subject: draftCardSubject,
                 status: draftCardStatus,
                 sent: draftCardSent,
-                inConversation: true
+                inConversation: true,
+                collapsed: draftCardCollapsed && !draftCardSent
             )
         )
     }
@@ -1329,6 +1329,7 @@ struct ChatScreen: View {
         draftCardSubject = snap.subject
         draftCardStatus = snap.status
         draftCardSent = snap.sent
+        draftCardCollapsed = snap.collapsed && !snap.sent
         draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
         draftCardEditing = false
         if let id = snap.draftId, !id.isEmpty {
@@ -2564,6 +2565,7 @@ private var sendBlockedHint: String {
         draftPreviewReceivedThisTurn = false
         suppressAssistantNarration = effectiveRewrite
         if effectiveRewrite {
+            draftCardCollapsed = false
             draftCardStreaming = true
             draftCardStatus = "Amélioration…"
             draftCardEditing = false
@@ -3686,6 +3688,7 @@ private var sendBlockedHint: String {
                     draftCardAttachments = APIClient.parseDraftAttachments(draft["attachments"])
                     draftCardStatus = "Brouillon"
                     draftCardSent = false
+                    draftCardCollapsed = false
                     draftInConversation = true
                     draftCardStreaming = false
                     draftPreviewReceivedThisTurn = true
