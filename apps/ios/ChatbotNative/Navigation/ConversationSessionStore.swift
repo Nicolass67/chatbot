@@ -132,7 +132,7 @@ enum ConversationSessionStore {
         var status: String
         var sent: Bool
         var inConversation: Bool
-        /// Carte repliée (croix) — récupérable, pas annulée serveur.
+        /// Carte masquée (croix) — récupérable, pas annulée serveur.
         var collapsed: Bool
 
         enum CodingKeys: String, CodingKey {

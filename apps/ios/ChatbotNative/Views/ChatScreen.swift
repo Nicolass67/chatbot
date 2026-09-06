@@ -132,6 +132,7 @@ struct ChatScreen: View {
     @State private var draftCardBusy = false
     @State private var draftCardStreaming = false
     @State private var draftCardSent = false
+    /// Croix : brouillon masqué du fil (pas annulé serveur) — récupérable.
     @State private var draftCardCollapsed = false
     @State private var confirmSendDraft = false
     @State private var draftInConversation = false
@@ -217,7 +218,7 @@ struct ChatScreen: View {
                     PersistentProductActionsBar(
                         scope: scope,
                         hasMailThread: forcedActiveContext?.mailThreadId != nil,
-                        hasDraft: draftCardId != nil && !draftCardSent,
+                        hasDraft: draftCardVisible,
                         onAction: { action in
                             Task { await runQuickAction(action) }
                         }
@@ -529,7 +530,7 @@ struct ChatScreen: View {
                             InStreamWorkingIndicator(label: thinkingKind.label)
                                 .id("working-indicator")
                         }
-                        if draftInConversation || draftCardId != nil || draftCardStreaming || draftCardSent {
+                        if draftCardVisible || draftCardStreaming || draftCardSent {
                             MailDraftProposal(
                                 draftText: $draftCardText,
                                 toText: $draftCardTo,
@@ -573,13 +574,9 @@ struct ChatScreen: View {
                                 onAttach: {
                                     showDocImporter = true
                                 },
-                                onCollapse: {
-                                    collapseDraftCard()
+                                onDismiss: {
+                                    dismissDraftCard()
                                 },
-                                onExpand: {
-                                    expandDraftCard()
-                                },
-                                isCollapsed: draftCardCollapsed,
                                 onCommitHeaders: {
                                     Task { await commitDraftHeaders() }
                                 }
@@ -859,8 +856,10 @@ struct ChatScreen: View {
     private func beginDraftImproveFromComposer() {
         guard draftCardId != nil, !isSending else { return }
         draftCardCollapsed = false
+        draftInConversation = true
         draftImprovePending = true
         draft = ""
+        persistDraftCardSnapshot()
         AppHaptics.selection()
     }
 
@@ -1282,8 +1281,8 @@ struct ChatScreen: View {
         }
     }
 
-    /// Croix : replie la carte — brouillon conservé localement + serveur, récupérable.
-    private func collapseDraftCard() {
+    /// Croix : masque la carte du fil — brouillon conservé localement + serveur, récupérable.
+    private func dismissDraftCard() {
         guard !draftCardSent else { return }
         draftCardCollapsed = true
         draftCardEditing = false
@@ -1294,10 +1293,13 @@ struct ChatScreen: View {
         AppHaptics.light()
     }
 
-    private func expandDraftCard() {
+    private func recoverDraftCard() {
         draftCardCollapsed = false
+        draftInConversation = true
         persistDraftCardSnapshot()
         AppHaptics.light()
+        // Remonter vers la carte une fois rétablie.
+        scrollToken += 1
     }
 
     private func persistDraftCardSnapshot() {
@@ -1476,6 +1478,18 @@ struct ChatScreen: View {
         max(floatingChromeHeight, 140) + 8
     }
 
+    /// Carte brouillon visible dans le fil (pas masquée, pas seulement envoyée).
+    private var draftCardVisible: Bool {
+        !draftCardCollapsed
+            && !draftCardSent
+            && (draftInConversation || draftCardId != nil || draftCardStreaming)
+    }
+
+    /// Brouillon masqué par la croix — récupérable sans être affiché dans le fil.
+    private var draftCardRecoverable: Bool {
+        draftCardCollapsed && !draftCardSent && draftCardId != nil
+    }
+
     /// Lift au-dessus de la tab bar flottante — un seul inset contrôlé (pas toute la safe area).
     private var tabBarOverlayLift: CGFloat {
         keyboardLiftActive ? AppTheme.space8 : 54
@@ -1540,6 +1554,32 @@ struct ChatScreen: View {
                     .padding(.horizontal, AppTheme.space14)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // Brouillon masqué → bouton de récupération (pas de carte « repliée » dans le fil).
+            if draftCardRecoverable {
+                Button {
+                    recoverDraftCard()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "envelope.badge")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Récupérer le brouillon")
+                            .font(CNFont.caption.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(AppTheme.mailAccent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(AppTheme.mailAccent.opacity(0.14), in: Capsule())
+                    .overlay(Capsule().stroke(AppTheme.mailAccent.opacity(0.28), lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, AppTheme.space14)
+                .accessibilityLabel("Récupérer le brouillon")
             }
 
             // Flou : du bas d’écran jusqu’au sommet de Disponible + 3 boutons.

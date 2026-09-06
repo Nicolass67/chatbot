@@ -40,10 +40,8 @@ struct MailDraftProposal: View {
     var onRetry: () -> Void
     var onSend: () -> Void
     var onAttach: (() -> Void)? = nil
-    /// Croix : replie la carte (brouillon conservé, récupérable).
-    var onCollapse: (() -> Void)? = nil
-    var onExpand: (() -> Void)? = nil
-    var isCollapsed: Bool = false
+    /// Croix : masque la carte (brouillon conservé, récupérable via un bouton ailleurs).
+    var onDismiss: (() -> Void)? = nil
     var onCommitHeaders: (() -> Void)? = nil
 
     /// Fragment en cours de saisie (pas encore confirmé en puce).
@@ -81,85 +79,7 @@ struct MailDraftProposal: View {
             .map { $0 }
     }
 
-    private var collapsedSubtitle: String {
-        let subject = subjectText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !subject.isEmpty { return subject }
-        let preview = draftText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: " ")
-        if !preview.isEmpty {
-            return preview.count > 72 ? String(preview.prefix(70)) + "…" : preview
-        }
-        if !confirmedRecipients.isEmpty {
-            return confirmedRecipients.joined(separator: ", ")
-        }
-        return "Appuyer pour rouvrir"
-    }
-
     var body: some View {
-        Group {
-            if isCollapsed && !isSent {
-                collapsedBar
-            } else {
-                expandedCard
-            }
-        }
-        .accessibilityIdentifier(A11yID.Mail.draft)
-    }
-
-    private var collapsedBar: some View {
-        Button {
-            AppHaptics.light()
-            onExpand?()
-        } label: {
-            HStack(spacing: AppTheme.space10) {
-                Image(systemName: "envelope.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(AppTheme.mailAccent)
-                    .frame(width: 32, height: 32)
-                    .background(AppTheme.mailAccent.opacity(0.14), in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Brouillon replié")
-                        .font(CNFont.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.foreground)
-                    Text(collapsedSubtitle)
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Text("Rouvrir")
-                    .font(CNFont.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.mailAccent)
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.mailAccent)
-            }
-            .padding(.horizontal, AppTheme.space14)
-            .padding(.vertical, 12)
-            .background {
-                let shape = RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                if reduceTransparency {
-                    shape.fill(AppTheme.surfaceElevated)
-                } else {
-                    Color.clear
-                        .glassEffect(
-                            .regular.tint(AppTheme.mailAccent.opacity(0.08)),
-                            in: shape
-                        )
-                }
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.glassBorder, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Rouvrir le brouillon")
-        .accessibilityHint(collapsedSubtitle)
-    }
-
-    private var expandedCard: some View {
         VStack(alignment: .leading, spacing: AppTheme.space12) {
             headerRow
 
@@ -222,6 +142,7 @@ struct MailDraftProposal: View {
                 onRecipientQueryChanged?("")
             }
         }
+        .accessibilityIdentifier(A11yID.Mail.draft)
     }
 
     private var headerRow: some View {
@@ -234,10 +155,10 @@ struct MailDraftProposal: View {
                 .background(statusTint.opacity(0.14), in: Capsule())
                 .labelStyle(.titleAndIcon)
             Spacer(minLength: 0)
-            if let onCollapse, !isSent {
+            if let onDismiss, !isSent {
                 Button {
                     AppHaptics.light()
-                    onCollapse()
+                    onDismiss()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .bold))
@@ -247,7 +168,8 @@ struct MailDraftProposal: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(busy || isStreaming)
-                .accessibilityLabel("Replier le brouillon")
+                .accessibilityLabel("Fermer le brouillon")
+                .accessibilityHint("Masque le brouillon. Tu pourras le récupérer ensuite.")
             }
             if busy || isStreaming {
                 ProgressView()
