@@ -14,54 +14,26 @@ private struct ChatScrollMetrics: Equatable {
     var distanceToBottom: CGFloat
 }
 
-private struct FloatingChromeHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private struct BlurBandHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// Dégradé de flou : opaque en bas, transparent pile au sommet (sous les quick controls).
+/// Dégradé bas : teinte ambient (pas de material gris), fondu court sous les quick controls.
 private struct ComposerBottomBlurFade: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if reduceTransparency {
-                LinearGradient(
-                    colors: [
-                        AppTheme.background.opacity(0),
-                        AppTheme.background.opacity(0.4),
-                        AppTheme.background.opacity(0.82)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            } else {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .mask(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: .black.opacity(0.4), location: 0.1),
-                                .init(color: .black.opacity(0.8), location: 0.32),
-                                .init(color: .black, location: 0.55),
-                                .init(color: .black, location: 1)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-            }
-        }
+        let base = AppTheme.background
+        let bottomOpacity: Double = reduceTransparency
+            ? (colorScheme == .dark ? 0.88 : 0.78)
+            : (colorScheme == .dark ? 0.72 : 0.62)
+        LinearGradient(
+            stops: [
+                .init(color: base.opacity(0), location: 0),
+                .init(color: base.opacity(bottomOpacity * 0.18), location: 0.28),
+                .init(color: base.opacity(bottomOpacity * 0.48), location: 0.58),
+                .init(color: base.opacity(bottomOpacity), location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -241,12 +213,6 @@ struct ChatScreen: View {
                     .onAppear { updateKeyboardLift(inset) }
                     .onChange(of: inset) { _, value in updateKeyboardLift(value) }
             }
-        }
-        .onPreferenceChange(FloatingChromeHeightKey.self) { height in
-            if height > 0 { floatingChromeHeight = height }
-        }
-        .onPreferenceChange(BlurBandHeightKey.self) { height in
-            if height > 0 { chromeContentHeight = height }
         }
         .navigationTitle(
             forcedScope != nil
@@ -1492,15 +1458,15 @@ struct ChatScreen: View {
 
     /// Lift au-dessus de la tab bar flottante — un seul inset contrôlé (pas toute la safe area).
     private var tabBarOverlayLift: CGFloat {
-        keyboardLiftActive ? AppTheme.space8 : 54
+        keyboardLiftActive ? AppTheme.space8 : 44
     }
 
-    /// Bande de flou = contrôles + composer + zone sous le composer jusqu’au bas.
+    /// Bande de fondu = contrôles + composer + zone sous le composer (hauteur intrinsèque, sans boucle).
     private var blurBandTotalHeight: CGFloat {
-        max(chromeContentHeight, 1) + tabBarOverlayLift
+        max(chromeContentHeight, 72) + tabBarOverlayLift
     }
 
-    /// Composer + chrome en surimpression ; flou du bas jusqu’au-dessus des 3 boutons.
+    /// Composer + chrome en surimpression ; fondu du bas jusqu’au-dessus des 3 boutons.
     @ViewBuilder
     private var composerFloatingChrome: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1582,7 +1548,7 @@ struct ChatScreen: View {
                 .accessibilityLabel("Récupérer le brouillon")
             }
 
-            // Flou : du bas d’écran jusqu’au sommet de Disponible + 3 boutons.
+            // Fondu ambient : hauteur = contenu intrinsèque (évite GeometryReader qui gonfle la bande).
             ZStack(alignment: .bottom) {
                 ComposerBottomBlurFade()
                     .frame(maxWidth: .infinity)
@@ -1617,18 +1583,22 @@ struct ChatScreen: View {
 
                     composer
                 }
-                .background {
-                    GeometryReader { geo in
-                        Color.clear.preference(key: BlurBandHeightKey.self, value: geo.size.height)
-                    }
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { _, height in
+                    guard height > 1, abs(height - chromeContentHeight) > 0.5 else { return }
+                    chromeContentHeight = height
                 }
                 .padding(.bottom, tabBarOverlayLift)
             }
         }
-        .background {
-            GeometryReader { geo in
-                Color.clear.preference(key: FloatingChromeHeightKey.self, value: geo.size.height)
-            }
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { _, height in
+            guard height > 1, abs(height - floatingChromeHeight) > 0.5 else { return }
+            floatingChromeHeight = height
         }
         .allowsHitTesting(true)
     }
