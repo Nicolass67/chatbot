@@ -296,6 +296,8 @@ struct MarkdownMessageView: View {
     let markdown: String
     /// Pendant le stream SSE : markdown live, reparse cadencé (~30 fps) + préfixe figé.
     var isStreaming: Bool = false
+    /// Sources web du message — pastilles cliquables à la place de `(site, web_N)`.
+    var sources: [SearchSourceDTO] = []
 
     @State private var rendered: [RenderedMarkdownBlock]
     @State private var parseTask: Task<Void, Never>?
@@ -304,9 +306,10 @@ struct MarkdownMessageView: View {
     @State private var frozenPrefix = ""
     @State private var inlineCache = InlineMarkdownCache()
 
-    init(markdown: String, isStreaming: Bool = false) {
+    init(markdown: String, isStreaming: Bool = false, sources: [SearchSourceDTO] = []) {
         self.markdown = markdown
         self.isStreaming = isStreaming
+        self.sources = sources
         let initial = MarkdownBlockParser.parse(markdown).enumerated().map {
             RenderedMarkdownBlock(id: "i-\($0.offset)", block: $0.element)
         }
@@ -397,15 +400,9 @@ struct MarkdownMessageView: View {
     private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .heading(let level, let text):
-            Text(inline(text))
-                .font(headingFont(level))
-                .foregroundStyle(AppTheme.foreground)
-                .textSelection(.enabled)
+            inlineContent(text, font: headingFont(level), foreground: AppTheme.foreground)
         case .paragraph(let text):
-            Text(inline(text))
-                .font(CNFont.body)
-                .foregroundStyle(AppTheme.foreground)
-                .textSelection(.enabled)
+            inlineContent(text, font: CNFont.body, foreground: AppTheme.foreground)
         case .code(let language, let code):
             CodeBlockView(language: language, code: code)
         case .bullet(let items):
@@ -414,10 +411,7 @@ struct MarkdownMessageView: View {
                     HStack(alignment: .top, spacing: AppTheme.space8) {
                         Text("•")
                             .foregroundStyle(AppTheme.accent)
-                        Text(inline(item))
-                            .font(CNFont.body)
-                            .foregroundStyle(AppTheme.foreground)
-                            .textSelection(.enabled)
+                        inlineContent(item, font: CNFont.body, foreground: AppTheme.foreground)
                     }
                 }
             }
@@ -429,10 +423,7 @@ struct MarkdownMessageView: View {
                             .font(CNFont.body.monospacedDigit())
                             .foregroundStyle(AppTheme.muted)
                             .frame(minWidth: 22, alignment: .trailing)
-                        Text(inline(item))
-                            .font(CNFont.body)
-                            .foregroundStyle(AppTheme.foreground)
-                            .textSelection(.enabled)
+                        inlineContent(item, font: CNFont.body, foreground: AppTheme.foreground)
                     }
                 }
             }
@@ -441,10 +432,7 @@ struct MarkdownMessageView: View {
                 RoundedRectangle(cornerRadius: 1)
                     .fill(AppTheme.accent.opacity(0.5))
                     .frame(width: 3)
-                Text(inline(text))
-                    .font(CNFont.callout)
-                    .foregroundStyle(AppTheme.muted)
-                    .textSelection(.enabled)
+                inlineContent(text, font: CNFont.callout, foreground: AppTheme.muted)
             }
             .padding(.vertical, AppTheme.space4)
         case .table(let headers, let rows):
@@ -452,9 +440,7 @@ struct MarkdownMessageView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top, spacing: 0) {
                         ForEach(Array(headers.enumerated()), id: \.offset) { _, h in
-                            Text(inline(h))
-                                .font(CNFont.caption.weight(.semibold))
-                                .foregroundStyle(AppTheme.foreground)
+                            inlineContent(h, font: CNFont.caption.weight(.semibold), foreground: AppTheme.foreground)
                                 .padding(AppTheme.space8)
                                 .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
                                 .background(AppTheme.surfaceElevated)
@@ -463,9 +449,7 @@ struct MarkdownMessageView: View {
                     ForEach(Array(rows.enumerated()), id: \.offset) { rIdx, row in
                         HStack(alignment: .top, spacing: 0) {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                Text(inline(cell))
-                                    .font(CNFont.caption)
-                                    .foregroundStyle(AppTheme.muted)
+                                inlineContent(cell, font: CNFont.caption, foreground: AppTheme.muted)
                                     .padding(AppTheme.space8)
                                     .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
                                     .background(rIdx % 2 == 0 ? AppTheme.surface.opacity(0.35) : Color.clear)
@@ -481,6 +465,24 @@ struct MarkdownMessageView: View {
             }
         case .thematicBreak:
             Divider().background(AppTheme.border)
+        }
+    }
+
+    @ViewBuilder
+    private func inlineContent(_ text: String, font: Font, foreground: Color) -> some View {
+        if sources.isEmpty || !CitationParser.containsMarker(text) {
+            Text(inline(text))
+                .font(font)
+                .foregroundStyle(foreground)
+                .textSelection(.enabled)
+        } else {
+            CitationAwareInlineText(
+                text: text,
+                sources: sources,
+                font: font,
+                foreground: foreground,
+                attributed: inline
+            )
         }
     }
 

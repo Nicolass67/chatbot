@@ -184,7 +184,11 @@ struct MessageBubble: View {
             if !trimmed.isEmpty {
                 if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
                     // Markdown live pendant le stream (parse incrémental + cache inline).
-                    MarkdownMessageView(markdown: message.content, isStreaming: isStreaming)
+                    MarkdownMessageView(
+                        markdown: message.content,
+                        isStreaming: isStreaming,
+                        sources: sources
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
