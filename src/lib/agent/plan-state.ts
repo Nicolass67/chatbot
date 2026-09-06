@@ -155,3 +155,29 @@ export function cloneAgentPlan(plan: AgentPlan): AgentPlan {
     })),
   };
 }
+
+/**
+ * Avance le plan vers l’étape `targetIndex` : les précédentes passent en done,
+ * la cible devient active. Utile sur le chemin skip-décider (recherche → analyse → synthèse)
+ * où le loop n’émettait pas d’entre-deux.
+ */
+export function progressPlanToStepIndex(
+  plan: AgentPlan,
+  targetIndex: number,
+  onEvent?: (event: OrchestratorEvent) => void
+): void {
+  if (plan.steps.length === 0) return;
+  const idx = Math.max(0, Math.min(targetIndex, plan.steps.length - 1));
+  for (let i = 0; i < idx; i++) {
+    const step = plan.steps[i];
+    if (!step) continue;
+    if (step.status === "pending" || step.status === "active") {
+      applyStepStatusChange(plan, step.id, "done", onEvent);
+    }
+  }
+  const target = plan.steps[idx];
+  if (!target) return;
+  if (target.status !== "done" && target.status !== "failed" && target.status !== "skipped") {
+    applyStepStatusChange(plan, target.id, "active", onEvent);
+  }
+}

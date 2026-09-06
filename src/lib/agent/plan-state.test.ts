@@ -4,6 +4,7 @@ import {
   finalizePlanOnSuccess,
   finalizePlanOnWebFailure,
   finalizePlanSteps,
+  progressPlanToStepIndex,
   sanitizePlanActiveSteps,
 } from "./plan-state";
 import type { AgentPlan } from "./types";
@@ -72,5 +73,28 @@ describe("plan-state", () => {
     expect(plan.steps[0]?.status).toBe("done");
     expect(plan.steps[1]?.status).toBe("failed");
     expect(plan.steps[2]?.status).toBe("skipped");
+  });
+
+  it("progressPlanToStepIndex avance les étapes précédentes", () => {
+    const plan: AgentPlan = {
+      steps: [
+        { id: "step-1", title: "Recherche", status: "active", actions: [] },
+        { id: "step-2", title: "Analyse", status: "pending", actions: [] },
+        { id: "step-3", title: "Synthèse", status: "pending", actions: [] },
+      ],
+    };
+    const events: Array<{ stepId: string; status: string }> = [];
+    progressPlanToStepIndex(plan, 1, (e) => {
+      if (e.type === "agent_step_update") {
+        events.push({ stepId: e.stepId, status: e.status });
+      }
+    });
+    expect(plan.steps[0]?.status).toBe("done");
+    expect(plan.steps[1]?.status).toBe("active");
+    expect(plan.steps[2]?.status).toBe("pending");
+    expect(events).toEqual([
+      { stepId: "step-1", status: "done" },
+      { stepId: "step-2", status: "active" },
+    ]);
   });
 });

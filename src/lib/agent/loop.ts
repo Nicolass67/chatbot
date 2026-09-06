@@ -1,4 +1,12 @@
 import { groundSearchQueryWithContext } from "@/lib/context/conversation-continuity";
+import { resolveConversationalWebRoute } from "@/lib/context/conversational-web-resolution";
+import { isContextDebugEnabled } from "@/lib/context/debug-trace";
+import {
+  createLlmPageEvidenceAnalyzer,
+  runWebEvidencePipeline,
+} from "@/lib/context/web-evidence";
+import { createWebSearchProvider } from "@/lib/tools/web-search/provider-factory";
+import { fetchWebPageText } from "@/lib/tools/web-search/fetch-page";
 import { nanoid } from "nanoid";
 import { eq } from "drizzle-orm";
 import { maybeSummarizeConversation } from "@/lib/context/summarizer";
@@ -12,6 +20,12 @@ import type { AppSettings } from "@/lib/settings/service";
 import { getRegisteredTools } from "@/lib/tools/registry";
 import type { ToolContext } from "@/lib/tools/types";
 import { formatSearchResultsBlock, capSourcesForSynthesis } from "@/lib/tools/web-search/heuristics";
+import {
+  formatWebSourcesForContext,
+  isSnippetInsufficient,
+  searchResultsToWebSources,
+} from "@/lib/context/web-provenance";
+import { deepenSearchResults } from "@/lib/tools/web-search/fetch-page";
 import { mergeUniqueSources } from "@/lib/tools/web-search/source-dedupe";
 import { routeRequest, routeToWebSearchIntent, type RouteDecision } from "@/lib/request-router";
 import { evaluateWebSearchAvailability } from "@/lib/tools/web-search/web-search-availability";
@@ -57,6 +71,7 @@ import {
   finalizePlanOnWebFailure,
   finalizePlanOnSuccess,
   finalizePlanSteps,
+  progressPlanToStepIndex,
   sanitizePlanActiveSteps,
 } from "./plan-state";
 import { SearchQueryCache } from "./search-dedup";
@@ -367,11 +382,27 @@ function trackWebSearchResult(
     status = "no_results";
   }
 
+  const domains = result.sources
+    .map((s) => {
+      const d = (s.domain || "").trim();
+      if (d) return d;
+      try {
+        return new URL(s.url).hostname;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
+
   tracker.record({
     query: getWebSearchQuery(result.input),
     status,
     usableResultCount: result.sources.length,
     uniqueAdded,
+    domains,
+    uniqueDomainsAdded: new Set(
+      domains.map((d) => d.toLowerCase().replace(/^www\./, ""))
+    ).size,
     error: result.error,
     deduplicated: result.deduplicated,
   });
@@ -452,9 +483,36 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         signal: input.signal,
       }));
 
+    route = resolveConversationalWebRoute({
+      route,
+      userMessage: input.userContent,
+      priorUserMessages: input.priorUserMessages ?? [],
+      priorWebUsed: Boolean(
+        input.conversationHistory &&
+          /web_search|web_sources|<web_/i.test(input.conversationHistory)
+      ),
+    });
+
     const temporalContext = route.temporal;
 
     let documentContext = input.documentContext;
+    const baseApplicationContext = input.documentContext;
+    let durableWebSourcesBlock = "";
+    const pageContentsByUrl: Record<string, string> = {};
+    let lastWebEvidenceMeta: {
+      packetCount: number;
+      evidenceCount: number;
+      researchPasses: number;
+      coverageSufficient: boolean;
+    } | null = null;
+    let execCtxRef: AgentExecutionContext | null = null;
+    const rebuildDocumentContext = () => {
+      documentContext = [baseApplicationContext, durableWebSourcesBlock]
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .join("\n\n");
+      if (execCtxRef) execCtxRef.applicationContext = documentContext;
+    };
     if ((input.priorUserMessages?.length ?? 0) > 0) {
       if (input.conversationHistory?.trim()) {
         documentContext = `${documentContext}\n\n<conversation_history>\n${input.conversationHistory.trim()}\n</conversation_history>`.trim();
@@ -574,7 +632,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       researchState,
       executedQueries: [],
       freshnessState,
+      applicationContext: documentContext,
     };
+    execCtxRef = execCtx;
 
     if (freshnessState.status === "failed") {
       webStopReason =
@@ -648,6 +708,11 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             webStopReason = applied.webStopReason;
             webSearchStopped = webSearchStopped || applied.webSearchStopped;
           }
+          // Entre-deux UX : recherche terminée → étape suivante (analyse).
+          if (plan.steps.length > 1 && !mandatoryRun.toolResult.error) {
+            progressPlanToStepIndex(plan, 1, input.onEvent);
+            tracker.setPlan(plan);
+          }
         }
       }
       execCtx.freshnessState = freshnessState;
@@ -669,6 +734,124 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       researchState,
       collectedSources
     );
+
+    
+    // V4: evidence after mandatory — ne pas laisser skipDeciderLoop contourner le pipeline
+    if (
+      skipDeciderLoop &&
+      collectedSources.length > 0 &&
+      !durableWebSourcesBlock.includes("<web_evidence>")
+    ) {
+      try {
+        // Analyse des sources — garder l’étape « analyse » active pendant le pipeline.
+        if (plan.steps.length > 1) {
+          progressPlanToStepIndex(plan, Math.min(1, plan.steps.length - 1), input.onEvent);
+          tracker.setPlan(plan);
+        }
+        const query =
+          route.web.searchQuery || input.userContent.slice(0, 120);
+        const researchMode =
+          route.web.searchType === "research" ||
+          route.web.mode === "required";
+        // Fetch manquant uniquement — éviter double deepen agressif
+        const pageAnalyzer = createLlmPageEvidenceAnalyzer({
+          runtime: input.runtime,
+          model: input.settings.selectedModel,
+          signal: input.signal,
+          temperature: 0.1,
+          maxTokens: 450,
+        });
+        const evidenceResult = await runWebEvidencePipeline({
+          userQuestion: input.userContent,
+          searchQuery: query,
+          sources: collectedSources.map((src, i) => ({
+            sourceId: `web_${i + 1}`,
+            url: src.url,
+            title: src.title,
+            snippet: src.snippet ?? "",
+            domain: src.domain,
+            pageContent: pageContentsByUrl[src.url],
+          })),
+          pageContents: pageContentsByUrl,
+          maxAnalyzePages: researchMode ? 10 : 8,
+          maxCandidateSources: Math.max(
+            20,
+            Math.min(30, collectedSources.length)
+          ),
+          extractionConcurrency: 2,
+          maxFollowUpPasses: researchMode ? 1 : 1,
+          maxPageCharsForAnalysis: 24_000,
+          conversationPriorUserMessages: input.priorUserMessages ?? [],
+          modelId: input.settings.selectedModel,
+          analyzeSource: pageAnalyzer,
+          runFollowUpSearch: async (followQuery) => {
+            const provider = createWebSearchProvider();
+            const search = await provider.search(followQuery, {
+              maxResults: Math.min(
+                12,
+                Math.max(8, input.settings.webSearchMaxResults)
+              ),
+              timeoutMs: input.settings.webSearchTimeoutMs ?? 25_000,
+              signal: input.signal ?? AbortSignal.timeout(25_000),
+            });
+            const sources = (search.results ?? []).map((src, i) => ({
+              sourceId: `web_${collectedSources.length + i + 1}`,
+              url: src.url,
+              title: src.title,
+              snippet: src.snippet ?? "",
+              domain: src.domain,
+            }));
+            const pageContents: Record<string, string> = {};
+            for (const src of sources.slice(0, 5)) {
+              if (pageContentsByUrl[src.url]) {
+                pageContents[src.url] = pageContentsByUrl[src.url]!;
+                continue;
+              }
+              const page = await fetchWebPageText(src.url, {
+                signal: input.signal,
+                maxChars: 24_000,
+              });
+              if (page.ok && page.text) {
+                pageContents[src.url] = page.text;
+                pageContentsByUrl[src.url] = page.text;
+              }
+            }
+            return {
+              query: followQuery,
+              sources: sources.map((s) => ({
+                ...s,
+                pageContent: pageContents[s.url],
+              })),
+              pageContents,
+            };
+          },
+        });
+        lastWebEvidenceMeta = {
+          packetCount: evidenceResult.packets.length,
+          evidenceCount: evidenceResult.evidence.length,
+          researchPasses: evidenceResult.researchPasses,
+          coverageSufficient: evidenceResult.coverage.sufficient,
+        };
+        durableWebSourcesBlock =
+          evidenceResult.finalApplicationContext || durableWebSourcesBlock;
+        rebuildDocumentContext();
+        if (isContextDebugEnabled() && evidenceResult.metrics) {
+          console.info(
+            "[web-evidence-v4]",
+            JSON.stringify({
+              path: "mandatory_skip_decider",
+              metrics: evidenceResult.metrics,
+              coverage: evidenceResult.coverage.reason,
+            })
+          );
+        }
+      } catch (err) {
+        console.warn(
+          "[web-grounding] mandatory evidence pipeline failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
 
     if (!skipDeciderLoop) {
     while (true) {
@@ -724,9 +907,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             },
           ],
           temperature: 0.4,
+          // Tool/decider : reasoning OFF explicite → 2048 OK.
           maxTokens: 2048,
           signal: input.signal,
-          reasoningEffort: null,
+          reasoningEffort: "off",
         });
       } catch (decideError) {
         const msg =
@@ -951,6 +1135,184 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             // uniqueAdded approximé : taille du batch (déjà dédupliqué à l'URL)
             const uniqueAdded = result.deduplicated ? 0 : result.sources.length;
             trackWebSearchResult(webSearchTracker, result, uniqueAdded);
+            try {
+              const query =
+                typeof (result.input as { query?: string } | undefined)?.query ===
+                "string"
+                  ? (result.input as { query: string }).query
+                  : input.userContent.slice(0, 120);
+              const researchMode =
+                route.web.searchType === "research" ||
+                route.web.mode === "required";
+              const deepened = await deepenSearchResults({
+                query,
+                results: result.sources.map((src) => ({
+                  title: src.title,
+                  url: src.url,
+                  snippet: src.snippet ?? "",
+                })),
+                maxPages: researchMode ? 6 : 4, // V4: deepen léger — le pipeline fetch les pages sélectionnées
+                signal: input.signal,
+                snippetInsufficient: isSnippetInsufficient,
+              });
+              Object.assign(pageContentsByUrl, deepened);
+
+              const pageAnalyzer = createLlmPageEvidenceAnalyzer({
+                runtime: input.runtime,
+                model: input.settings.selectedModel,
+                signal: input.signal,
+                temperature: 0.1,
+                maxTokens: 450,
+              });
+
+              const evidenceResult = await runWebEvidencePipeline({
+                userQuestion: input.userContent,
+                searchQuery: query,
+                sources: result.sources.map((src, i) => ({
+                  sourceId: `web_${i + 1}`,
+                  url: src.url,
+                  title: src.title,
+                  snippet: src.snippet ?? "",
+                  domain: src.domain,
+                  pageContent: pageContentsByUrl[src.url],
+                })),
+                pageContents: pageContentsByUrl,
+                maxAnalyzePages: researchMode ? 10 : 8,
+                maxCandidateSources: Math.max(
+                  20,
+                  Math.min(30, result.sources.length)
+                ),
+                extractionConcurrency: 2,
+                maxFollowUpPasses: researchMode ? 1 : 1,
+                maxPageCharsForAnalysis: 24_000,
+                conversationPriorUserMessages: input.priorUserMessages ?? [],
+                analyzeSource: pageAnalyzer,
+                proposeFollowUpQueries: async ({ question, missingNeeds, existingEvidence }) => {
+                  const focuses = missingNeeds
+                    .map((n) => n.description)
+                    .filter(Boolean)
+                    .slice(0, 3);
+                  if (focuses.length === 0) return [question.slice(0, 160)];
+                  return focuses.map((f) => `${question} — ${f}`.slice(0, 180));
+                },
+                runFollowUpSearch: async (followQuery) => {
+                  const provider = createWebSearchProvider();
+                  const search = await provider.search(followQuery, {
+                    maxResults: Math.min(
+                      12,
+                      Math.max(8, input.settings.webSearchMaxResults)
+                    ),
+                    timeoutMs: input.settings.webSearchTimeoutMs ?? 25_000,
+                    signal: input.signal ?? AbortSignal.timeout(25_000),
+                  });
+                  const sources = (search.results ?? []).map((src, i) => ({
+                    sourceId: `web_${collectedSources.length + i + 1}`,
+                    url: src.url,
+                    title: src.title,
+                    snippet: src.snippet ?? "",
+                    domain: src.domain,
+                  }));
+                  const pageContents: Record<string, string> = {};
+                  for (const src of sources.slice(0, 5)) {
+                    if (pageContentsByUrl[src.url]) {
+                      pageContents[src.url] = pageContentsByUrl[src.url]!;
+                      continue;
+                    }
+                    const page = await fetchWebPageText(src.url, {
+                      signal: input.signal,
+                      maxChars: 24_000,
+                    });
+                    if (page.ok && page.text) {
+                      pageContents[src.url] = page.text;
+                      pageContentsByUrl[src.url] = page.text;
+                    }
+                  }
+                  return {
+                    query: followQuery,
+                    sources: sources.map((s) => ({
+                      ...s,
+                      pageContent: pageContents[s.url],
+                    })),
+                    pageContents,
+                  };
+                },
+              });
+
+              lastWebEvidenceMeta = {
+                packetCount: evidenceResult.packets.length,
+                evidenceCount: evidenceResult.evidence.length,
+                researchPasses: evidenceResult.researchPasses,
+                coverageSufficient: evidenceResult.coverage.sufficient,
+              };
+              if (isContextDebugEnabled()) {
+                const selectedCount = evidenceResult.selection.filter(
+                  (d) => d.selected
+                ).length;
+                const fetchedStep = evidenceResult.trace.find(
+                  (s) => s.stage === "fetch"
+                );
+                input.onEvent({
+                  type: "context_debug",
+                  trace: {
+                    version: 1,
+                    history: {
+                      selectedCount: 0,
+                      excludedCount: 0,
+                      selectedReasons: [],
+                      excludedReasons: [],
+                    },
+                    memories: { selected: [], excluded: [] },
+                    budgets: {
+                      memoryBudget: 0,
+                      historyMode: "standard",
+                      tokenBudget: 0,
+                    },
+                    tokens: { bySource: {}, total: 0 },
+                    latencyMs: { retrieval: 0, build: 0, total: 0 },
+                    webEvidence: {
+                      candidateCount: evidenceResult.selection.length,
+                      selectedCount,
+                      fetchedCount: fetchedStep?.kept.length,
+                      packetCount: lastWebEvidenceMeta.packetCount,
+                      evidenceCount: lastWebEvidenceMeta.evidenceCount,
+                      researchPasses: lastWebEvidenceMeta.researchPasses,
+                      coverageSufficient:
+                        lastWebEvidenceMeta.coverageSufficient,
+                      coverageReason: evidenceResult.coverage.reason,
+                      stages: evidenceResult.trace.map((s) => s.stage),
+                      finalContextChars:
+                        evidenceResult.finalApplicationContext.length,
+                    },
+                  },
+                });
+                console.info(
+                  "[web-evidence-v4]",
+                  JSON.stringify({
+                    packets: lastWebEvidenceMeta.packetCount,
+                    evidence: lastWebEvidenceMeta.evidenceCount,
+                    passes: lastWebEvidenceMeta.researchPasses,
+                    coverage: evidenceResult.coverage.reason,
+                    stages: evidenceResult.trace.map((s) => s.stage),
+                    contextChars:
+                      evidenceResult.finalApplicationContext.length,
+                  })
+                );
+              }
+
+              durableWebSourcesBlock =
+                evidenceResult.finalApplicationContext ||
+                formatWebSourcesForContext(
+                  searchResultsToWebSources(query, result.sources, {
+                    pageContents: pageContentsByUrl,
+                  })
+                );
+              rebuildDocumentContext();
+            } catch (enrichErr) {
+              console.warn(
+                "[web-grounding] evidence pipeline failed",
+                enrichErr instanceof Error ? enrichErr.message : enrichErr
+              );
+            }
             researchState = recordWebSearchOutcome(
               researchState,
               !result.error,
@@ -1067,7 +1429,13 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         webStopReason
       );
     } else {
-      finalizePlanOnSuccess(plan);
+      // Synthèse en cours : étapes précédentes done, dernière active (pas tout validé d’un coup).
+      for (let i = 0; i < plan.steps.length; i++) {
+        const step = plan.steps[i];
+        if (!step || step.status === "failed") continue;
+        step.status = i === plan.steps.length - 1 ? "active" : "done";
+      }
+      sanitizePlanActiveSteps(plan);
     }
     tracker.setPlan(plan);
     input.onEvent({ type: "agent_plan", plan: cloneAgentPlan(plan) });
@@ -1075,6 +1443,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     input.onEvent({
       type: "agent_status",
       phase: "synthesizing",
+      currentStepTitle: plan.steps[plan.steps.length - 1]?.title,
+      stepIndex: Math.max(0, plan.steps.length - 1),
+      totalSteps: plan.steps.length,
     });
 
     const observationsText = formatObservationsForSynthesis(
@@ -1089,12 +1460,22 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       ? synthesisSources
       : capSourcesForSynthesis(collectedSources, maxCollectedSources);
     const sourcesBlock =
-      synthesisSources.length > 0
-        ? formatSearchResultsBlock(
-            input.userContent.slice(0, 80),
-            synthesisSources
-          )
-        : "";
+      durableWebSourcesBlock.includes("<web_evidence>")
+        ? durableWebSourcesBlock
+        : synthesisSources.length > 0
+          ? formatWebSourcesForContext(
+              searchResultsToWebSources(
+                input.userContent.slice(0, 80),
+                synthesisSources,
+                { pageContents: pageContentsByUrl }
+              )
+            )
+          : durableWebSourcesBlock;
+
+    // Évite le doublon evidence dans applicationContext + sourcesBlock (overflow 8k).
+    const synthesisApplicationContext = sourcesBlock.includes("<web_evidence>")
+      ? baseApplicationContext
+      : documentContext;
 
     const aggregateFreshness = assessSearchResultsFreshness(
       collectedSources,
@@ -1142,6 +1523,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                 synthesisValidation.forceHonestResponse ||
                 !freshnessGate.allowLlmSynthesis,
               userGoal: input.userContent,
+              applicationContext: synthesisApplicationContext,
             }
           ),
         },
@@ -1176,12 +1558,19 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           temperature: input.settings.temperature,
           maxTokens: synthesisMaxTokens,
           signal: input.signal,
-          reasoningEffort: null,
+          // Synthèse structurée : reasoning OFF (évite budget mangé par thinking).
+          reasoningEffort: "off",
         });
         if (response.usage) {
           emitSynthesisUsage(response.usage);
         }
-        return response.content?.trim() ?? "";
+        // content prioritaire ; reasoningContent uniquement si content vide.
+        const text = (
+          response.content?.trim() ||
+          response.reasoningContent?.trim() ||
+          ""
+        ).trim();
+        return text;
       };
 
       const runSynthesisGenerate = async (
@@ -1204,7 +1593,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                   temperature: input.settings.temperature,
                   maxTokens: synthesisMaxTokens,
                   signal: input.signal,
-                  reasoningEffort: null,
+                  reasoningEffort: "off",
                   streamContentOnly: true,
                 },
                 {
@@ -1270,10 +1659,32 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         }
       }
 
+      // Stream vide ≠ synthèse échouée : tenter un chat non-stream avant fallback sources.
+      if (!fullContent.trim() && !synthesisErrorDetail) {
+        try {
+          const chatRetry = await runSynthesisChatFallback(synthesisMessages);
+          if (chatRetry) {
+            fullContent = chatRetry;
+            input.onEvent({ type: "token", content: fullContent });
+          }
+        } catch (retryErr) {
+          synthesisErrorDetail =
+            retryErr instanceof Error ? retryErr.message : String(retryErr);
+        }
+      }
+
+      // Fallback « sources Web uniquement » uniquement si la synthèse a réellement échoué.
       if (!fullContent.trim()) {
+        const hasEvidencePackets =
+          durableWebSourcesBlock.includes("<web_evidence>") ||
+          (lastWebEvidenceMeta?.packetCount ?? 0) > 0;
         const llmDetail =
           synthesisErrorDetail ??
-          `Le modèle n'a pas produit de texte (${collectedSources.length} sources collectées, ${synthesisSources.length} en synthèse).`;
+          `Le modèle n'a pas produit de texte (${collectedSources.length} sources collectées, ${synthesisSources.length} en synthèse${
+            hasEvidencePackets
+              ? `, ${lastWebEvidenceMeta?.packetCount ?? 0} evidence packets`
+              : ""
+          }).`;
         if (collectedSources.length > 0) {
           fullContent = buildSourceBasedFallbackResponse(
             temporalContext,
@@ -1325,6 +1736,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     });
 
     if (tracker) {
+      if (!isWebFailure) {
+        finalizePlanOnSuccess(plan);
+        tracker.setPlan(plan);
+      }
       const finalPlan = cloneAgentPlan(plan);
       if (tracker.status === "running") {
         if (runOutcome === "web_unavailable") {

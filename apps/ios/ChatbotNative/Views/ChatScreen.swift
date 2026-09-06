@@ -642,8 +642,12 @@ struct ChatScreen: View {
         let chrome = chromeById[msg.id] ?? MessageChromeMeta()
         let liveStreaming = streamingAssistantId == msg.id && isSending
         if let run = chrome.agentRun {
-            AgentActivityView(state: run.asActivityState)
-                .id("agent-\(msg.id)")
+            // Pendant le run : le strip live (timer qui tick) a priorité sur le snapshot chrome figé.
+            let hideFrozenChrome = liveStreaming && shouldShowLiveAgentStrip
+            if !hideFrozenChrome {
+                AgentActivityView(state: run.asActivityState)
+                    .id("agent-\(msg.id)")
+            }
         }
         MessageBubble(
             message: msg,
@@ -2411,19 +2415,12 @@ struct ChatScreen: View {
         shouldShowLiveAgentStrip
     }
 
-    /// Panel live uniquement s’il n’est pas déjà accroché à un message du fil.
+    /// Panel live pendant tout le run — ne pas basculer sur le chrome figé (sinon timer bloqué).
     private var shouldShowLiveAgentStrip: Bool {
-        let active = agentActivity.visible
+        guard !agentActivity.completed else { return false }
+        return agentActivity.visible
             || agentActivity.webPhase != .idle
             || agentActivity.lastError != nil
-            || (agentActivity.completed && !agentActivity.planSteps.isEmpty)
-        guard active else { return false }
-        if let id = streamingAssistantId,
-           messages.contains(where: { $0.id == id }),
-           chromeById[id]?.agentRun != nil {
-            return false
-        }
-        return true
     }
 
     /// Attache / met à jour le panel agent sur le message assistant courant (persistance conversation).
@@ -2455,9 +2452,8 @@ struct ChatScreen: View {
             snap.completed = agentActivity.completed
             // Pendant le run : ne pas forcer toutes les étapes à done.
             snap.planSteps = agentActivity.planSteps
-            if let start = agentActivity.startedAt {
-                snap.thoughtSeconds = max(0, Int(Date().timeIntervalSince(start)))
-            }
+            // Ne pas figer thoughtSeconds ici — le strip live tick depuis startedAt.
+            snap.thoughtSeconds = nil
         }
         // Jamais de fallback sur le dernier assistant : ça écrasait le panel du tour précédent.
         let id = ensureAgentRunAnchorMessage()
@@ -2469,6 +2465,95 @@ struct ChatScreen: View {
             conversationId: conversation.id,
             messageId: id
         )
+    }
+
+    /// Active l’étape `index` et marque les précédentes comme terminées.
+    private func activateAgentPlanStep(at index: Int) {
+        guard !agentActivity.planSteps.isEmpty else { return }
+        let idx = min(max(0, index), agentActivity.planSteps.count - 1)
+        for i in agentActivity.planSteps.indices {
+            if i < idx {
+                let st = agentActivity.planSteps[i].status
+                if st == "running" || st == "pending" {
+                    agentActivity.planSteps[i].status = "done"
+                }
+            } else if i == idx {
+                let st = agentActivity.planSteps[i].status
+                if st != "done" && st != "error" && st != "skipped" {
+                    agentActivity.planSteps[i].status = "running"
+                }
+                agentActivity.currentStepTitle = agentActivity.planSteps[i].title
+                agentActivity.stepIndex = i
+            }
+        }
+        agentActivity.totalSteps = max(agentActivity.totalSteps, agentActivity.planSteps.count)
+    }
+
+    private func activateAgentPlanStep(id: String?) {
+        guard let id,
+              let i = agentActivity.planSteps.firstIndex(where: { $0.id == id }) else { return }
+        activateAgentPlanStep(at: i)
+    }
+
+    private func inferAgentPlanStepIndex(from title: String?) -> Int? {
+        guard let title, !title.isEmpty, !agentActivity.planSteps.isEmpty else { return nil }
+        let lower = title.lowercased()
+        if let i = agentActivity.planSteps.firstIndex(where: { $0.title.lowercased() == lower }) {
+            return i
+        }
+        if let i = agentActivity.planSteps.firstIndex(where: {
+            let t = $0.title.lowercased()
+            return t.contains(lower.prefix(16)) || lower.contains(t.prefix(16))
+        }) {
+            return i
+        }
+        if lower.contains("synth") || lower.contains("rédig") || lower.contains("repond")
+            || lower.contains("répond") || lower.contains("présentation") {
+            return agentActivity.planSteps.count - 1
+        }
+        if lower.contains("analys") || lower.contains("compar") || lower.contains("évalu")
+            || lower.contains("evidence") {
+            return min(1, agentActivity.planSteps.count - 1)
+        }
+        if lower.contains("recherch") || lower.contains("search") || lower.contains("web")
+            || lower.contains("benchmark") {
+            return 0
+        }
+        return nil
+    }
+
+    private func applyAgentPlanFromPayload(_ plan: [String: Any]) {
+        guard let steps = plan["steps"] as? [[String: Any]] else { return }
+        agentActivity.planSteps = steps.enumerated().map { idx, s in
+            let rawStatus = (s["status"] as? String) ?? "pending"
+            return AgentPlanStep(
+                id: (s["id"] as? String) ?? "\(idx)",
+                title: AgentToolLabels.friendlyStepTitle(
+                    (s["title"] as? String) ?? (s["goal"] as? String) ?? "Étape \(idx + 1)"
+                ),
+                status: AgentToolLabels.normalizeStepStatus(rawStatus)
+            )
+        }
+        agentActivity.totalSteps = agentActivity.planSteps.count
+        if let running = agentActivity.planSteps.first(where: { $0.status == "running" }) {
+            agentActivity.currentStepTitle = running.title
+            agentActivity.phase = "executing"
+            agentActivity.stepIndex = agentActivity.planSteps.firstIndex(where: { $0.id == running.id }) ?? 0
+        } else if let first = agentActivity.planSteps.first {
+            agentActivity.currentStepTitle = first.title
+        }
+    }
+
+    private func progressAgentPlanForWebPhase(_ phase: WebSearchPhase) {
+        guard !agentActivity.planSteps.isEmpty else { return }
+        switch phase {
+        case .searching:
+            activateAgentPlanStep(at: 0)
+        case .analyzing, .done:
+            activateAgentPlanStep(at: min(1, agentActivity.planSteps.count - 1))
+        case .idle:
+            break
+        }
     }
 
     private func finalizeStoppedStream() {
@@ -2541,6 +2626,14 @@ struct ChatScreen: View {
         case "token":
             if let c = obj["content"] as? String {
                 streamAccum.text += c
+                // Dès que la réponse s’écrit : basculer l’étape courante vers la synthèse.
+                if agentActivity.visible,
+                   !agentActivity.planSteps.isEmpty,
+                   agentActivity.phase != "synthesis",
+                   agentActivity.phase != "synthesizing" {
+                    agentActivity.phase = "synthesis"
+                    activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
+                }
                 // Réécriture brouillon : accumuler pour fallback, ne pas afficher dans le fil.
                 if awaitingDraftRewrite || suppressAssistantNarration {
                     streamingText = streamAccum.text
@@ -2618,6 +2711,7 @@ struct ChatScreen: View {
             let q = (obj["query"] as? String) ?? (obj["message"] as? String) ?? "Recherche web…"
             agentActivity.webQuery = q
             agentActivity.webPhase = .searching
+            progressAgentPlanForWebPhase(.searching)
             if !agentActivity.visible {
                 thinkingKind = .searching
             }
@@ -2693,6 +2787,9 @@ struct ChatScreen: View {
         case "agent_action_start":
             agentActivity.visible = true
             agentActivity.phase = "executing"
+            if let stepId = obj["stepId"] as? String {
+                activateAgentPlanStep(id: stepId)
+            }
             if let action = obj["action"] as? [String: Any] {
                 let raw = (action["summary"] as? String) ?? (action["type"] as? String)
                 agentActivity.currentStepTitle = raw.map(AgentToolLabels.humanize)
@@ -2705,11 +2802,58 @@ struct ChatScreen: View {
                         agentActivity.activitySummary = parts.filter { !$0.isEmpty }.joined(separator: " · ")
                     }
                 }
+            } else if let title = agentActivity.currentStepTitle,
+                      let idx = inferAgentPlanStepIndex(from: title) {
+                activateAgentPlanStep(at: idx)
             }
             syncAgentChromeToStreamingMessage()
-        case "agent_done", "agent_status":
-            if type == "agent_done" {
-                agentActivity.phase = "synthesis"
+        case "agent_action_done":
+            agentActivity.visible = true
+            if let summary = obj["summary"] as? String, !summary.isEmpty {
+                agentActivity.currentStepTitle = AgentToolLabels.humanize(summary)
+            }
+            if let count = obj["sourceCount"] as? Int, count > 0 {
+                let bit = "\(count) source\(count > 1 ? "s" : "")"
+                if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
+                    agentActivity.activitySummary = "\(base) · \(bit)"
+                } else if agentActivity.activitySummary == nil {
+                    agentActivity.activitySummary = bit
+                }
+                if agentActivity.webPhase == .searching {
+                    agentActivity.webPhase = .analyzing
+                    progressAgentPlanForWebPhase(.analyzing)
+                }
+            }
+            syncAgentChromeToStreamingMessage()
+        case "agent_status":
+            agentActivity.visible = true
+            if let phase = obj["phase"] as? String {
+                agentActivity.phase = phase
+                if phase == "synthesizing" || phase == "synthesis" {
+                    activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
+                }
+            }
+            if let total = obj["totalSteps"] as? Int { agentActivity.totalSteps = total }
+            if let idx = obj["stepIndex"] as? Int {
+                activateAgentPlanStep(at: idx)
+            } else if let title = (obj["currentStepTitle"] as? String) ?? (obj["message"] as? String),
+                      !title.isEmpty {
+                agentActivity.currentStepTitle = AgentToolLabels.friendlyStepTitle(title)
+                if let inferred = inferAgentPlanStepIndex(from: title) {
+                    activateAgentPlanStep(at: inferred)
+                }
+            }
+            syncAgentChromeToStreamingMessage()
+        case "agent_done":
+            agentActivity.visible = true
+            agentActivity.phase = "synthesis"
+            if let plan = obj["plan"] as? [String: Any] {
+                applyAgentPlanFromPayload(plan)
+            } else {
+                for i in agentActivity.planSteps.indices
+                where agentActivity.planSteps[i].status == "running" || agentActivity.planSteps[i].status == "pending" {
+                    agentActivity.planSteps[i].status = "done"
+                }
             }
             if let msg = obj["message"] as? String, !msg.isEmpty {
                 agentActivity.currentStepTitle = msg
@@ -2740,7 +2884,8 @@ struct ChatScreen: View {
                 }
             }
         case "sources":
-            agentActivity.webPhase = .done
+            agentActivity.webPhase = .analyzing
+            progressAgentPlanForWebPhase(.analyzing)
             if let arr = obj["sources"] as? [[String: Any]] {
                 streamSources = arr.enumerated().compactMap { idx, s in
                     guard let url = s["url"] as? String else { return nil }
