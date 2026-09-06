@@ -55,6 +55,15 @@ enum ConversationSessionStore {
         chromeMemory[conversationId] ?? [:]
     }
 
+    /// Remplace la map chrome (après prune fenêtre historique).
+    static func replaceChrome(conversationId: String, chrome: [String: MessageChromeMeta]) {
+        if chrome.isEmpty {
+            chromeMemory.removeValue(forKey: conversationId)
+        } else {
+            chromeMemory[conversationId] = chrome
+        }
+    }
+
     static func setChrome(
         _ meta: MessageChromeMeta,
         conversationId: String,

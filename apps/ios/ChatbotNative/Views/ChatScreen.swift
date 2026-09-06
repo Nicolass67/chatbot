@@ -8,6 +8,12 @@ private final class ChatStreamAccum {
     var text = ""
 }
 
+/// Distances scroll pour pin-to-bottom + pagination historique.
+private struct ChatScrollMetrics: Equatable {
+    var distanceToTop: CGFloat
+    var distanceToBottom: CGFloat
+}
+
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -90,6 +96,13 @@ struct ChatScreen: View {
     /// Redescente : re-pin + masquer le bouton (hystérésis).
     private let scrollHideButtonThreshold: CGFloat = 160
     @State private var scrollToken = 0
+    /// Historique long : page récente + pages plus anciennes au scroll haut (RAM).
+    @State private var hasMoreOlderMessages = false
+    @State private var isLoadingOlderMessages = false
+    @State private var scrollAnchorAfterPrepend: String?
+    private let historyInitialPageSize = 40
+    private let historyOlderPageSize = 30
+    private let historyLoadOlderOffsetY: CGFloat = 140
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
     @State private var confirmingFileAction = false
@@ -263,12 +276,17 @@ struct ChatScreen: View {
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
             restoreDraftCardSnapshot()
             persistActiveConversation()
-            if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id) {
-                messages = cached
+            if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id), !cached.isEmpty {
+                // Fenêtre récente seulement — pas tout le cache (RAM).
+                if cached.count > historyInitialPageSize {
+                    messages = Array(cached.suffix(historyInitialPageSize))
+                    hasMoreOlderMessages = true
+                } else {
+                    messages = cached
+                }
             }
-            if messages.isEmpty {
-                await loadMessages()
-            }
+            // Toujours resync serveur (hasMore + page bornée).
+            await loadMessages()
             if !settingsHydrated {
                 await loadSettings()
             }
@@ -297,7 +315,10 @@ struct ChatScreen: View {
             }
         }
         .onChange(of: messages) { _, msgs in
-            TabMemoryCache.saveChat(conversationId: conversation.id, messages: msgs)
+            // Cap cache : évite de réhydrater des fils géants en mémoire.
+            let cap = historyInitialPageSize + historyOlderPageSize * 3
+            let toStore = msgs.count > cap ? Array(msgs.suffix(cap)) : msgs
+            TabMemoryCache.saveChat(conversationId: conversation.id, messages: toStore)
         }
         .onChange(of: nav.chatComposerPrefill) { _, text in
             guard let text, !text.isEmpty else { return }
@@ -330,6 +351,9 @@ struct ChatScreen: View {
             sendGeneration &+= 1
             isSending = false
             thinkingKind = nil
+            hasMoreOlderMessages = false
+            isLoadingOlderMessages = false
+            scrollAnchorAfterPrepend = nil
             Task { await streamingService.cancel() }
             if forcedScope == .mail, !nav.mailStickyAttachSources.isEmpty {
                 Task { await rehydrateMailStickyAttachments() }
@@ -405,6 +429,22 @@ struct ChatScreen: View {
                     // VStack (pas LazyVStack) : Lazy sous-estime la hauteur des bulles hors écran
                     // → l’indicateur de scroll saute dès qu’on remonte un peu.
                     VStack(alignment: .leading, spacing: 14) {
+                        if hasMoreOlderMessages || isLoadingOlderMessages {
+                            HStack {
+                                Spacer()
+                                if isLoadingOlderMessages {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Text("Messages plus anciens")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 6)
+                            .id("history-top")
+                        }
                         if messages.isEmpty && streamingText.isEmpty {
                             emptyThread
                         }
@@ -551,17 +591,25 @@ struct ChatScreen: View {
                         }
                     }
                 )
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                .onScrollGeometryChange(for: ChatScrollMetrics.self) { geometry in
                     let contentH = geometry.contentSize.height
                     let visibleH = geometry.containerSize.height
                     let offsetY = geometry.contentOffset.y
+                    let topInset = geometry.contentInsets.top
                     let bottomInset = geometry.contentInsets.bottom
-                    return max(0, contentH + bottomInset - visibleH - offsetY)
-                } action: { _, distanceToBottom in
+                    let distanceToBottom = max(0, contentH + bottomInset - visibleH - offsetY)
+                    let distanceToTop = max(0, offsetY + topInset)
+                    return ChatScrollMetrics(distanceToTop: distanceToTop, distanceToBottom: distanceToBottom)
+                } action: { _, metrics in
                     // IMPORTANT : pendant le stream, le contenu grandit → distance explose
                     // avant le scrollTo. Ne jamais interpréter ça comme une remontée user.
                     if Date() < suppressScrollGeometryUntil { return }
 
+                    if metrics.distanceToTop < historyLoadOlderOffsetY {
+                        Task { await loadOlderMessages(proxy: proxy) }
+                    }
+
+                    let distanceToBottom = metrics.distanceToBottom
                     if distanceToBottom > scrollShowButtonThreshold {
                         if isPinnedToBottom { isPinnedToBottom = false }
                         if !showScrollDown {
@@ -1503,8 +1551,26 @@ private var sendBlockedHint: String {
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
         do {
-            let server = try await client.listMessages(conversationId: conversation.id)
-            messages = mergeMessages(local: messages, server: server, preserveAssistantId: preserveAssistantId)
+            let page = try await client.listMessages(
+                conversationId: conversation.id,
+                limit: historyInitialPageSize
+            )
+            let recent = page.messages
+            // Conserve les pages plus anciennes déjà chargées (scroll haut).
+            var olderKept: [MessageDTO] = []
+            if let firstRecentId = recent.first?.id,
+               let cut = messages.firstIndex(where: { $0.id == firstRecentId }) {
+                olderKept = Array(messages.prefix(cut))
+            }
+            let combined = olderKept + recent
+            messages = mergeMessages(
+                local: messages,
+                server: combined,
+                preserveAssistantId: preserveAssistantId
+            )
+            if olderKept.isEmpty {
+                hasMoreOlderMessages = page.hasMore
+            }
             if let preserveAssistantId {
                 chromeById = ConversationSessionStore.remountChrome(
                     conversationId: conversation.id,
@@ -1517,6 +1583,7 @@ private var sendBlockedHint: String {
                     chromeById = stored
                 }
             }
+            pruneChromeOutsideWindow()
             error = nil
             let ids = messages.flatMap { $0.attachments ?? [] }
                 .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
@@ -1527,6 +1594,59 @@ private var sendBlockedHint: String {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Charge une page plus ancienne (scroll vers le haut) sans dégrader le contenu visible.
+    private func loadOlderMessages(proxy: ScrollViewProxy) async {
+        guard hasMoreOlderMessages, !isLoadingOlderMessages, !isSending else { return }
+        guard let oldestId = messages.first?.id else { return }
+        isLoadingOlderMessages = true
+        defer { isLoadingOlderMessages = false }
+        do {
+            let page = try await client.listMessages(
+                conversationId: conversation.id,
+                limit: historyOlderPageSize,
+                beforeId: oldestId
+            )
+            let older = page.messages.filter { candidate in
+                !messages.contains(where: { $0.id == candidate.id })
+            }
+            hasMoreOlderMessages = page.hasMore
+            guard !older.isEmpty else {
+                // Doublons / pivot invalide : stoppe les retries inutiles.
+                if !page.hasMore || page.messages.isEmpty {
+                    hasMoreOlderMessages = false
+                }
+                return
+            }
+            suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
+            scrollAnchorAfterPrepend = oldestId
+            messages = older + messages
+            pruneChromeOutsideWindow()
+            let ids = older.flatMap { $0.attachments ?? [] }
+                .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
+                .map(\.id)
+            client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 360)
+            if let anchor = scrollAnchorAfterPrepend {
+                // Restaure la position visuelle après prepend.
+                proxy.scrollTo(anchor, anchor: .top)
+                scrollAnchorAfterPrepend = nil
+            }
+        } catch {
+            // Silencieux : le fil récent reste utilisable.
+            #if DEBUG
+            print("[chat] loadOlderMessages: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    private func pruneChromeOutsideWindow() {
+        var keep = Set(messages.map(\.id))
+        if let streamingAssistantId {
+            keep.insert(streamingAssistantId)
+        }
+        chromeById = chromeById.filter { keep.contains($0.key) }
+        ConversationSessionStore.replaceChrome(conversationId: conversation.id, chrome: chromeById)
     }
 
     /// Fusionne serveur + local pour éviter un frame vide pendant/après le stream.

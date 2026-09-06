@@ -275,16 +275,52 @@ final class APIClient: @unchecked Sendable {
         try await patchConversation(id: id, chatMode: mode)
     }
 
-    func listMessages(conversationId: String) async throws -> [MessageDTO] {
-        if UITestMode.isActive { return UITestFixtures.messages(conversationId: conversationId) }
-        let req = authorizedRequest(path: "api/conversations/\(conversationId)/messages")
+    struct MessagesPage: Decodable {
+        let messages: [MessageDTO]
+        let hasMore: Bool
+        let nextBeforeId: String?
+    }
+
+    /// Paginated history. `limit` = newest page size; `beforeId` = older page cursor.
+    /// Omitting both keeps legacy full-history fetch for callers that need it.
+    func listMessages(
+        conversationId: String,
+        limit: Int? = nil,
+        beforeId: String? = nil
+    ) async throws -> MessagesPage {
+        if UITestMode.isActive {
+            let all = UITestFixtures.messages(conversationId: conversationId)
+            return MessagesPage(messages: all, hasMore: false, nextBeforeId: all.first?.id)
+        }
+        var path = "api/conversations/\(conversationId)/messages"
+        var query: [String] = []
+        if let limit, limit > 0 {
+            query.append("limit=\(limit)")
+        }
+        if let beforeId, !beforeId.isEmpty {
+            let enc = beforeId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? beforeId
+            query.append("beforeId=\(enc)")
+        }
+        if !query.isEmpty {
+            path += "?" + query.joined(separator: "&")
+        }
+        let req = authorizedRequest(path: path)
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
         if let arr = try? JSONDecoder().decode([MessageDTO].self, from: data) {
-            return arr
+            return MessagesPage(messages: arr, hasMore: false, nextBeforeId: arr.first?.id)
         }
-        struct Wrap: Decodable { let messages: [MessageDTO] }
-        return try JSONDecoder().decode(Wrap.self, from: data).messages
+        struct Wrap: Decodable {
+            let messages: [MessageDTO]
+            let hasMore: Bool?
+            let nextBeforeId: String?
+        }
+        let wrap = try JSONDecoder().decode(Wrap.self, from: data)
+        return MessagesPage(
+            messages: wrap.messages,
+            hasMore: wrap.hasMore ?? false,
+            nextBeforeId: wrap.nextBeforeId ?? wrap.messages.first?.id
+        )
     }
 
     func uploadAttachment(
