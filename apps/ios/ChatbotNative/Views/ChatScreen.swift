@@ -2314,7 +2314,7 @@ private var sendBlockedHint: String {
         }
 
         var opts = options ?? ChatSendOptions(attachmentIds: ids, mode: chatMode)
-        opts.toolChannel = toolChannel.rawValue
+        opts.toolChannel = toolChannel.apiValue
         if let editId = editingMessageId {
             opts.editMessageId = editId
         }

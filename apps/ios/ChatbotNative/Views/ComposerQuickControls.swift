@@ -1,15 +1,23 @@
 import SwiftUI
 
-/// Canal d’outil forcé depuis le composer (cycle web → files → email).
+/// Canal d’outil depuis le composer (cycle auto → web → files → email).
+/// `auto` = aucun forçage : le routeur choisit selon le message.
 enum ComposerToolChannel: String, CaseIterable, Identifiable {
+    case auto
     case web
     case files
     case email
 
     var id: String { rawValue }
 
+    /// Valeur API (`nil` = pas de forçage, équivalent à omettre le champ).
+    var apiValue: String? {
+        self == .auto ? nil : rawValue
+    }
+
     var systemImage: String {
         switch self {
+        case .auto: return "circle.dashed"
         case .web: return "globe"
         case .files: return "folder"
         case .email: return "envelope"
@@ -18,6 +26,7 @@ enum ComposerToolChannel: String, CaseIterable, Identifiable {
 
     var accessibilityLabel: String {
         switch self {
+        case .auto: return "Aucun canal forcé"
         case .web: return "Recherche web"
         case .files: return "Fichiers locaux"
         case .email: return "Outils e-mail"
@@ -26,6 +35,7 @@ enum ComposerToolChannel: String, CaseIterable, Identifiable {
 
     var menuTitle: String {
         switch self {
+        case .auto: return "Aucun"
         case .web: return "Web"
         case .files: return "Fichiers"
         case .email: return "E-mail"
@@ -74,7 +84,7 @@ struct ComposerQuickControls: View {
             if showsToolChannel {
                 ComposerRoundIconButton(
                     systemImage: toolChannel.systemImage,
-                    isActive: true,
+                    isActive: toolChannel != .auto,
                     disabled: false,
                     accessibilityLabel: toolChannel.accessibilityLabel,
                     accessibilityIdentifier: A11yID.Chat.toolChannel,
