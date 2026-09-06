@@ -102,8 +102,8 @@ struct ChatScreen: View {
     @State private var isLoadingOlderMessages = false
     @State private var scrollAnchorAfterPrepend: String?
     /// Fenêtre récente bornée — trop de bulles SwiftUI = lag (surtout markdown / pastilles).
-    private let historyInitialPageSize = 15
-    private let historyOlderPageSize = 10
+    private let historyInitialPageSize = 5
+    private let historyOlderPageSize = 5
     private let historyLoadOlderOffsetY: CGFloat = 140
     @State private var memoryNotice: String?
     @State private var pendingFileAction: PendingFileAction?
