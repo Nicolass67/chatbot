@@ -29,11 +29,11 @@ enum AppTheme {
     static let warning = Color.cn(light: 0x64748B, dark: 0x94A3B8)
 
     static var border: Color { Color.cnLive(light: \.borderLight, dark: \.borderDark) }
-    /// Séparateurs / traits secondaires — très soft en clair (évite les contours « noirs »).
-    static let borderSubtle = Color.cn(light: 0x0000000A, dark: 0xFFFFFF14)
-    /// Contour glass chrome (composer, FAB, dock) — quasi invisible en clair.
+    /// Séparateurs / traits secondaires — transparent en clair (plus de contours noirs).
+    static let borderSubtle = Color.cn(light: 0x00000000, dark: 0xFFFFFF14)
+    /// Contour glass chrome (composer, FAB, dock) — invisible en clair.
     static var glassBorder: Color {
-        Color.cn(light: 0x00000006, dark: 0xFFFFFF1E)
+        Color.cn(light: 0x00000000, dark: 0xFFFFFF1E)
     }
     /// Trait de contour UI : désactivé en clair, léger en sombre.
     static var chromeStroke: Color {

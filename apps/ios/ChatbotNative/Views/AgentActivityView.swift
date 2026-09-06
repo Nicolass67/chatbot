@@ -230,8 +230,8 @@ struct AgentActivityView: View {
                 .stroke(
                     LinearGradient(
                         colors: [
-                            AppTheme.borderSubtle,
-                            AppTheme.accent.opacity(state.completed ? 0.12 : 0.28),
+                            AppTheme.chromeStroke,
+                            AppTheme.accent.opacity(state.completed ? 0.10 : 0.22),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing

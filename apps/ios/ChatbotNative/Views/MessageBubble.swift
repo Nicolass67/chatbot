@@ -151,8 +151,8 @@ struct MessageBubble: View {
                     style: .continuous
                 )
                 .stroke(
-                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.chromeStroke,
-                    lineWidth: isEditing ? 1 : 0.5
+                    isEditing ? AppTheme.accent.opacity(0.55) : Color.clear,
+                    lineWidth: isEditing ? 1 : 0
                 )
             )
             .contextMenu {

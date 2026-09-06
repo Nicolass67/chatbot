@@ -438,7 +438,7 @@ struct MailInboxView: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                        .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
                 )
                 .padding(.horizontal, AppTheme.space16)
             }

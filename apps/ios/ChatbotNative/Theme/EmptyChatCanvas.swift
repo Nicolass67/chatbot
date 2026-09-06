@@ -55,12 +55,9 @@ struct EmptyChatCanvas: View {
                         .padding(.vertical, AppTheme.space14)
                         .background(
                             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                                .fill(AppTheme.surface.opacity(0.72))
+                                .fill(AppTheme.surfaceElevated.opacity(0.92))
                         )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                                .stroke(AppTheme.borderSubtle, lineWidth: 1)
-                        )
+                        // Pas de contour en clair — le relief vient du fill uniquement.
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(item.text)

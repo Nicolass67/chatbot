@@ -344,7 +344,7 @@ struct SoftErrorBanner: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
         )
         .accessibilityElement(children: .combine)
     }
@@ -399,7 +399,7 @@ struct ContextUsageMeter: View {
             .padding(.vertical, 5)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
-            .overlay(Capsule().stroke(color.opacity(0.25), lineWidth: 1))
+            .overlay(Capsule().stroke(AppTheme.chipStroke, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .frame(minHeight: AppTheme.touchMin * 0.7)
