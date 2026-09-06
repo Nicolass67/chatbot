@@ -1222,9 +1222,9 @@ struct MailThreadView: View {
         Button {
             nav.openSettings()
         } label: {
-            Image(systemName: "gearshape")
+            Image(systemName: "person.crop.circle")
         }
-        .accessibilityLabel("Paramètres")
+        .accessibilityLabel("Réglages")
         .accessibilityIdentifier(A11yID.Mail.settings)
     }
 

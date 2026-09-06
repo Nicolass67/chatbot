@@ -429,11 +429,11 @@ struct SourcePillView: View {
             .padding(.vertical, 4)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(0.10))
+                    .fill(AppTheme.muted.opacity(0.45))
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                    .stroke(AppTheme.chipStroke, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)

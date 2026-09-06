@@ -459,7 +459,7 @@ struct MarkdownMessageView: View {
                 }
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
             }
@@ -543,7 +543,7 @@ struct CodeBlockView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
         )
     }
 }

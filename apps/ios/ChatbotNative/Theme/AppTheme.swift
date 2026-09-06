@@ -29,9 +29,19 @@ enum AppTheme {
     static let warning = Color.cn(light: 0x64748B, dark: 0x94A3B8)
 
     static var border: Color { Color.cnLive(light: \.borderLight, dark: \.borderDark) }
-    static let borderSubtle = Color.cn(light: 0x00000014, dark: 0xFFFFFF14)
+    /// Séparateurs / traits secondaires — très soft en clair (évite les contours « noirs »).
+    static let borderSubtle = Color.cn(light: 0x0000000A, dark: 0xFFFFFF14)
+    /// Contour glass chrome (composer, FAB, dock) — quasi invisible en clair.
     static var glassBorder: Color {
-        Color.cn(light: 0x00000018, dark: 0xFFFFFF22)
+        Color.cn(light: 0x00000006, dark: 0xFFFFFF1E)
+    }
+    /// Trait de contour UI : désactivé en clair, léger en sombre.
+    static var chromeStroke: Color {
+        Color.cn(light: 0x00000000, dark: 0xFFFFFF18)
+    }
+    /// Pastilles / chips : pas de trait en clair, hairline en sombre.
+    static var chipStroke: Color {
+        Color.cn(light: 0x00000000, dark: 0xFFFFFF16)
     }
     static var codeBg: Color { Color.cnLive(light: \.codeBgLight, dark: \.codeBgDark) }
     static var assistantBar: Color { accent }
@@ -202,7 +212,7 @@ struct ChromeGlass: ViewModifier {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                        .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
                 )
         } else {
             content
@@ -216,7 +226,7 @@ struct ChromeGlass: ViewModifier {
                 }
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(AppTheme.glassBorder, lineWidth: 0.75)
+                        .stroke(AppTheme.chromeStroke, lineWidth: scheme == .dark ? 0.75 : 0)
                 )
         }
     }

@@ -151,7 +151,7 @@ struct MessageBubble: View {
                     style: .continuous
                 )
                 .stroke(
-                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.borderSubtle,
+                    isEditing ? AppTheme.accent.opacity(0.55) : AppTheme.chromeStroke,
                     lineWidth: isEditing ? 1 : 0.5
                 )
             )
@@ -341,7 +341,7 @@ struct FileResultCard: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
         )
         .contextMenu {
             Button("Ouvrir", systemImage: "doc", action: onOpen)
@@ -536,7 +536,7 @@ struct RemoteAttachmentCard: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.borderSubtle, lineWidth: 1)
+                    .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)

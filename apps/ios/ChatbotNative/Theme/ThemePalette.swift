@@ -136,7 +136,8 @@ enum ThemeColorMath {
 
     static func border(on bg: UInt32) -> UInt32 {
         let toward: UInt32 = isDark(bg) ? 0xFFFFFF : 0x000000
-        return mix(bg, toward, t: isDark(bg) ? 0.18 : 0.14)
+        // Clair : trait très soft (0.06) — évite les contours noirs sur fond clair.
+        return mix(bg, toward, t: isDark(bg) ? 0.18 : 0.06)
     }
 
     static func accentInk(on accent: UInt32) -> UInt32 {

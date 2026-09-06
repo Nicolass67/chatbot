@@ -254,7 +254,7 @@ struct MemorySavedNotice: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
         )
     }
 }
@@ -299,7 +299,7 @@ struct MemoryUpdatedChip: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                        .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                        .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
                 )
             } else {
                 Button {
@@ -324,7 +324,7 @@ struct MemoryUpdatedChip: View {
                     .clipShape(Capsule(style: .continuous))
                     .overlay(
                         Capsule(style: .continuous)
-                            .stroke(compact ? Color.clear : AppTheme.borderSubtle, lineWidth: 0.5)
+                            .stroke(compact ? Color.clear : AppTheme.chromeStroke, lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
@@ -401,7 +401,7 @@ struct FileActionPendingCard: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.borderSubtle, lineWidth: 0.5)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
         )
     }
 

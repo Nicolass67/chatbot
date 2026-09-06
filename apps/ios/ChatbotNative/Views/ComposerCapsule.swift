@@ -207,7 +207,7 @@ private struct ComposerGlassChrome: ViewModifier {
         }
         .overlay(
             shape.stroke(
-                editing ? AppTheme.accent.opacity(0.4) : AppTheme.borderSubtle,
+                editing ? AppTheme.accent.opacity(0.4) : AppTheme.chromeStroke,
                 lineWidth: editing ? 1.25 : 0.5
             )
         )
@@ -455,7 +455,7 @@ private struct ScrollGlassChrome: ViewModifier {
                     )
             }
         }
-        .overlay(Circle().stroke(AppTheme.glassBorder.opacity(0.7), lineWidth: 0.5))
+        .overlay(Circle().stroke(AppTheme.chromeStroke, lineWidth: 0.5))
     }
 }
 
@@ -509,7 +509,7 @@ struct PersistentProductActionsBar: View {
                         .foregroundStyle(AppTheme.foreground)
                         .background(AppTheme.surfaceElevated)
                         .clipShape(Capsule())
-                        .overlay(Capsule().stroke(AppTheme.borderSubtle, lineWidth: 0.5))
+                        .overlay(Capsule().stroke(AppTheme.chipStroke, lineWidth: 0.5))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(item.1)
