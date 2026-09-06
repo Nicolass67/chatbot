@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyToolChannel } from "./tool-channel";
+import { applyToolChannel, resolveForcedSearchQuery } from "./tool-channel";
 import type { RouteDecision } from "@/lib/request-router/types";
 
 function baseRoute(): RouteDecision {
@@ -60,6 +60,18 @@ const caps = {
   filesFeatureEnabled: true,
 };
 
+describe("resolveForcedSearchQuery", () => {
+  it("préfère le message utilisateur (canal forcé)", () => {
+    expect(
+      resolveForcedSearchQuery("Cherche la facture stp", "facture EDF")
+    ).toBe("Cherche la facture stp");
+  });
+
+  it("fallback classifieur si message vide", () => {
+    expect(resolveForcedSearchQuery("  ", "facture EDF")).toBe("facture EDF");
+  });
+});
+
 describe("applyToolChannel", () => {
   it("web → force web_search, coupe files/email", () => {
     const r = applyToolChannel(baseRoute(), "web", caps);
@@ -69,15 +81,31 @@ describe("applyToolChannel", () => {
     expect(r.fileToolCandidates).toEqual([]);
     expect(r.emailToolCandidates).toEqual([]);
     expect(r.route.tools.candidates).toEqual(["web_search"]);
+    expect(r.suppressFilesHandoff).toBe(true);
   });
 
-  it("files → file_search, coupe web", () => {
-    const r = applyToolChannel(baseRoute(), "files", caps);
+  it("files → file_search in-chat, coupe web, suppress handoff", () => {
+    const r = applyToolChannel(
+      baseRoute(),
+      "files",
+      caps,
+      "Cherche la carte d'identité stp"
+    );
     expect(r.route.web.mode).toBe("none");
     expect(r.route.files.intent).toBe("search");
     expect(r.webSearchEnabled).toBe(false);
     expect(r.fileToolCandidates).toContain("file_search");
     expect(r.emailToolCandidates).toEqual([]);
+    expect(r.suppressFilesHandoff).toBe(true);
+    expect(r.suppressMailHandoff).toBe(true);
+    // Message utilisateur prime sur une query classifiée hors-sujet
+    expect(r.route.files.searchQuery).toBe("Cherche la carte d'identité stp");
+  });
+
+  it("files sans message → query classifiée", () => {
+    const r = applyToolChannel(baseRoute(), "files", caps);
+    expect(r.route.files.searchQuery).toBe("restaurants");
+    expect(r.suppressFilesHandoff).toBe(true);
   });
 
   it("email → outils mail, coupe web/files", () => {
@@ -87,5 +115,6 @@ describe("applyToolChannel", () => {
     expect(r.emailEnabled).toBe(true);
     expect(r.emailToolCandidates).toContain("email_search");
     expect(r.suppressMailHandoff).toBe(true);
+    expect(r.suppressFilesHandoff).toBe(true);
   });
 });

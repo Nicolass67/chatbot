@@ -34,6 +34,16 @@ function filesToolSet(): string[] {
   );
 }
 
+/** Requête locale : message utilisateur d'abord (canal forcé), sinon classifieur. */
+export function resolveForcedSearchQuery(
+  userMessage: string | undefined,
+  classified?: string | undefined
+): string {
+  const fromUser = userMessage?.trim() ?? "";
+  if (fromUser) return fromUser.slice(0, 200);
+  return (classified?.trim() ?? "").slice(0, 200);
+}
+
 export interface ToolChannelCaps {
   webSearchAllowed: boolean;
   emailConnected: boolean;
@@ -51,12 +61,18 @@ export interface ToolChannelResolution {
   fileToolCandidates: string[];
   /** Si true, ne pas faire de handoff mail (outils email in-chat). */
   suppressMailHandoff: boolean;
+  /**
+   * Si true, ne pas émettre files_handoff : exécuter file_search in-chat.
+   * Activé dès que le canal Files est forcé par le composer.
+   */
+  suppressFilesHandoff: boolean;
 }
 
 export function applyToolChannel(
   route: RouteDecision,
   channel: ToolChannel | undefined,
-  caps: ToolChannelCaps
+  caps: ToolChannelCaps,
+  userMessage?: string
 ): ToolChannelResolution {
   if (!channel) {
     return {
@@ -70,14 +86,15 @@ export function applyToolChannel(
       filesEnabled: false,
       fileToolCandidates: [],
       suppressMailHandoff: false,
+      suppressFilesHandoff: false,
     };
   }
 
   if (channel === "web") {
-    const searchQuery =
-      route.web.searchQuery?.trim() ||
-      route.files.searchQuery?.trim() ||
-      "";
+    const searchQuery = resolveForcedSearchQuery(
+      userMessage,
+      route.web.searchQuery || route.files.searchQuery
+    );
     const next: RouteDecision = {
       ...route,
       knowledge: "current",
@@ -123,16 +140,17 @@ export function applyToolChannel(
       filesEnabled: false,
       fileToolCandidates: [],
       suppressMailHandoff: true,
+      suppressFilesHandoff: true,
     };
   }
 
   if (channel === "files") {
     const filesOk = caps.filesFeatureEnabled && caps.filesConfigured;
     const candidates = filesOk ? filesToolSet() : [];
-    const searchQuery =
-      route.files.searchQuery?.trim() ||
-      route.web.searchQuery?.trim() ||
-      "";
+    const searchQuery = resolveForcedSearchQuery(
+      userMessage,
+      route.files.searchQuery || route.web.searchQuery
+    );
     const next: RouteDecision = {
       ...route,
       web: {
@@ -156,7 +174,7 @@ export function applyToolChannel(
         wouldBeUseful: filesOk,
         intent: filesOk ? "search" : "none",
         suggestedTools: candidates,
-        searchQuery: filesOk ? searchQuery || undefined : undefined,
+        searchQuery: filesOk && searchQuery ? searchQuery : undefined,
         reason: filesOk
           ? `${route.files.reason} | canal composer=files`
           : "Files non configurés",
@@ -178,16 +196,18 @@ export function applyToolChannel(
       filesEnabled: filesOk,
       fileToolCandidates: candidates,
       suppressMailHandoff: true,
+      // Toujours : le canal Files doit chercher in-chat, pas renvoyer vers l’onglet Files.
+      suppressFilesHandoff: true,
     };
   }
 
   // email
   const emailOk = caps.emailFeatureEnabled && caps.emailConnected;
   const candidates = emailOk ? [...EMAIL_TOOL_SET] : [];
-  const searchQuery =
-    route.email.searchQuery?.trim() ||
-    route.web.searchQuery?.trim() ||
-    "";
+  const searchQuery = resolveForcedSearchQuery(
+    userMessage,
+    route.email.searchQuery || route.web.searchQuery
+  );
   const next: RouteDecision = {
     ...route,
     web: {
@@ -211,7 +231,7 @@ export function applyToolChannel(
       wouldBeUseful: emailOk,
       intent: emailOk ? "search" : "none",
       suggestedTools: candidates,
-      searchQuery: emailOk ? searchQuery || undefined : undefined,
+      searchQuery: emailOk && searchQuery ? searchQuery : undefined,
       reason: emailOk
         ? `${route.email.reason} | canal composer=email`
         : "Email non connecté",
@@ -233,5 +253,6 @@ export function applyToolChannel(
     filesEnabled: false,
     fileToolCandidates: [],
     suppressMailHandoff: true,
+    suppressFilesHandoff: true,
   };
 }

@@ -76,9 +76,11 @@ import { getLocalAIRuntime } from "@/lib/runtime/factory";
 import { applyMessageEdit } from "./edit-message";
 import {
   buildChatContext,
+  injectFileSearchIntoContext,
   injectTemporalIntoContext,
   injectWebSearchFailureIntoContext,
   injectWebSearchIntoContext,
+  type InjectedFileSearchHit,
 } from "./context-builder";
 import type { ChatOrchestratorInput } from "./events";
 import { runAgentLoop } from "./loop";
@@ -167,6 +169,91 @@ async function runAutoWebSearchForChat(params: {
       query,
       status,
       message: `Recherche web échouée (${status}): ${errMsg}. Ne pas inventer de données actuelles.`,
+    };
+  }
+}
+
+async function runAutoFileSearchForChat(params: {
+  input: ChatOrchestratorInput;
+  query: string;
+  toolCtxBase: Omit<ToolContext, "signal">;
+}): Promise<{
+  ok: boolean;
+  query: string;
+  results: InjectedFileSearchHit[];
+  message?: string;
+}> {
+  const { input, query, toolCtxBase } = params;
+  const q = query.trim();
+  if (!q) {
+    return {
+      ok: false,
+      query: q,
+      results: [],
+      message: "Requête fichiers vide.",
+    };
+  }
+
+  input.onEvent({ type: "tool_start", tool: "file_search", input: { query: q } });
+
+  try {
+    const raw = (await executeToolWithPolicy(
+      "file_search",
+      { query: q },
+      {
+        ...toolCtxBase,
+        signal: input.signal ?? AbortSignal.timeout(30_000),
+      }
+    )) as {
+      results?: Array<Record<string, unknown>>;
+    };
+
+    const results: InjectedFileSearchHit[] = (raw.results ?? [])
+      .map((r) => ({
+        fileId: String(r.fileId ?? ""),
+        filename: String(r.filename ?? r.name ?? "fichier"),
+        relativePath:
+          typeof r.relativePath === "string" ? r.relativePath : undefined,
+        rootId: typeof r.rootId === "string" ? r.rootId : undefined,
+        snippet: typeof r.snippet === "string" ? r.snippet : undefined,
+      }))
+      .filter((f) => f.fileId.length > 0)
+      .slice(0, 12);
+
+    input.onEvent({
+      type: "tool_done",
+      tool: "file_search",
+      summary:
+        results.length > 0
+          ? `${results.length} fichier(s) trouvé(s)`
+          : "Aucun fichier trouvé",
+      sourceCount: results.length,
+    });
+    if (results.length > 0) {
+      input.onEvent({
+        type: "files_found",
+        files: results.map((f) => ({
+          fileId: f.fileId,
+          filename: f.filename,
+          relativePath: f.relativePath,
+          rootId: f.rootId,
+        })),
+      });
+    }
+
+    return { ok: true, query: q, results };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    input.onEvent({
+      type: "tool_done",
+      tool: "file_search",
+      summary: `Erreur: ${errMsg}`,
+    });
+    return {
+      ok: false,
+      query: q,
+      results: [],
+      message: `Recherche fichiers échouée: ${errMsg}`,
     };
   }
 }
@@ -644,13 +731,18 @@ export async function runChatOrchestrator(
       ),
     });
     const channel = parseToolChannel(input.toolChannel);
-    const channelResolved = applyToolChannel(routed, channel, {
-      webSearchAllowed: settings.webSearchEnabled || channel === "web",
-      emailConnected: emailPolicyContext.emailConnected,
-      emailFeatureEnabled: emailEnabled,
-      filesConfigured: Boolean(emailPolicyContext.hasConfiguredRoots),
-      filesFeatureEnabled: filesEnabled,
-    });
+    const channelResolved = applyToolChannel(
+      routed,
+      channel,
+      {
+        webSearchAllowed: settings.webSearchEnabled || channel === "web",
+        emailConnected: emailPolicyContext.emailConnected,
+        emailFeatureEnabled: emailEnabled,
+        filesConfigured: Boolean(emailPolicyContext.hasConfiguredRoots),
+        filesFeatureEnabled: filesEnabled,
+      },
+      input.userContent
+    );
     const route = channelResolved.route;
     input.onEvent({ type: "route_decision", decision: route });
     input.onEvent({ type: "memory_intent", decision: analysis.memory });
@@ -738,7 +830,15 @@ export async function runChatOrchestrator(
       !input.regenerate &&
       imageCount === 0;
 
-    const [builtContext, autoSearch] = await Promise.all([
+    const shouldAutoFileSearch =
+      chatMode === "chat" &&
+      channel === "files" &&
+      channelResolved.filesEnabled &&
+      Boolean(route.files.searchQuery?.trim()) &&
+      !input.regenerate &&
+      imageCount === 0;
+
+    const [builtContext, autoSearch, autoFileSearch] = await Promise.all([
       buildChatContext({
         conversationId: input.conversationId,
         userContent: input.userContent,
@@ -755,6 +855,13 @@ export async function runChatOrchestrator(
             input,
             settings,
             query: route.web.searchQuery,
+            toolCtxBase,
+          })
+        : Promise.resolve(null),
+      shouldAutoFileSearch
+        ? runAutoFileSearchForChat({
+            input,
+            query: route.files.searchQuery!.trim(),
             toolCtxBase,
           })
         : Promise.resolve(null),
@@ -836,6 +943,14 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         contextMessages,
         autoSearch.query,
         autoSearch.results
+      );
+    }
+
+    if (autoFileSearch) {
+      injectFileSearchIntoContext(
+        contextMessages,
+        autoFileSearch.query,
+        autoFileSearch.results
       );
     }
 
@@ -1010,6 +1125,9 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         channelResolved.fileToolCandidates.length > 0
           ? channelResolved.fileToolCandidates
           : route.tools.candidates.filter((c) => c.startsWith("file_")),
+      suppressFilesHandoff: channelResolved.suppressFilesHandoff,
+      // Recherche déjà faite via canal Files → pas de 2e file_search inutile.
+      skipFileTools: Boolean(autoFileSearch),
     });
   } catch (error) {
     if (isAbortLikeError(error) || input.signal?.aborted) {
@@ -1047,6 +1165,8 @@ async function runChatMode(params: {
   emailToolCandidates: string[];
   filesEnabled: boolean;
   fileToolCandidates: string[];
+  suppressFilesHandoff?: boolean;
+  skipFileTools?: boolean;
 }) {
   const {
     input,
@@ -1066,6 +1186,8 @@ async function runChatMode(params: {
     emailToolCandidates,
     filesEnabled,
     fileToolCandidates,
+    suppressFilesHandoff = false,
+    skipFileTools = false,
   } = params;
 
   const db = getDb();
@@ -1075,11 +1197,12 @@ async function runChatMode(params: {
     webSearchEnabled: webAllowed,
     emailEnabled,
     emailToolCandidates,
-    filesEnabled,
-    fileToolCandidates,
+    filesEnabled: filesEnabled && !skipFileTools,
+    fileToolCandidates: skipFileTools ? [] : fileToolCandidates,
   });
 
   if (
+    !suppressFilesHandoff &&
     filesEnabled &&
     routeDecision.files.wouldBeUseful &&
     routeDecision.files.intent !== "none"
