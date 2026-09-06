@@ -19,11 +19,16 @@ struct ComposerCapsule: View {
     var reasoningEffort: String = ""
     var models: [ModelOptionDTO] = []
     var modelSwitching: Bool = false
+    var thinkingEnabled: Bool = false
+    var thinkingAvailable: Bool = false
+    var toolChannel: ComposerToolChannel = .web
 
     var onModeChange: ((String) -> Void)?
     var onWebChange: ((Bool) -> Void)?
     var onModelChange: ((String) -> Void)?
     var onReasoningChange: ((String) -> Void)?
+    var onToggleThinking: (() -> Void)?
+    var onSelectToolChannel: ((ComposerToolChannel) -> Void)?
 
     let onSend: () -> Void
     let onStop: () -> Void
@@ -124,10 +129,15 @@ struct ComposerCapsule: View {
                 reasoningModes: reasoningModes,
                 reasoningEffort: reasoningEffort,
                 modelSwitching: modelSwitching,
+                thinkingEnabled: thinkingEnabled,
+                thinkingAvailable: thinkingAvailable,
+                toolChannel: toolChannel,
                 onModeChange: { onModeChange?($0) },
                 onWebChange: { onWebChange?($0) },
                 onModelChange: { onModelChange?($0) },
-                onReasoningChange: { onReasoningChange?($0) }
+                onReasoningChange: { onReasoningChange?($0) },
+                onToggleThinking: { onToggleThinking?() },
+                onSelectToolChannel: { onSelectToolChannel?($0) }
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -211,10 +221,15 @@ struct ChatToolsSheet: View {
     let reasoningModes: [ReasoningModeDTO]
     let reasoningEffort: String
     let modelSwitching: Bool
+    var thinkingEnabled: Bool = false
+    var thinkingAvailable: Bool = false
+    var toolChannel: ComposerToolChannel = .web
     let onModeChange: (String) -> Void
     let onWebChange: (Bool) -> Void
     let onModelChange: (String) -> Void
     let onReasoningChange: (String) -> Void
+    var onToggleThinking: (() -> Void)? = nil
+    var onSelectToolChannel: ((ComposerToolChannel) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     @State private var localModel = ""
@@ -223,6 +238,91 @@ struct ChatToolsSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        AppHaptics.selection()
+                        onModeChange(chatMode == "agent" ? "chat" : "agent")
+                    } label: {
+                        HStack(spacing: AppTheme.space12) {
+                            Image(systemName: chatMode == "agent" ? "cpu.fill" : "bubble.left.and.bubble.right")
+                                .foregroundStyle(AppTheme.accent)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Mode")
+                                    .foregroundStyle(AppTheme.foreground)
+                                Text(chatMode == "agent" ? "Agent" : "Chat")
+                                    .font(CNFont.caption)
+                                    .foregroundStyle(AppTheme.mutedForeground)
+                            }
+                            Spacer()
+                            Text(chatMode == "agent" ? "Passer en chat" : "Passer en agent")
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                        }
+                    }
+                    .listRowBackground(AppTheme.surface)
+
+                    Button {
+                        guard thinkingAvailable else { return }
+                        AppHaptics.selection()
+                        onToggleThinking?()
+                    } label: {
+                        HStack(spacing: AppTheme.space12) {
+                            Image(systemName: thinkingEnabled ? "brain.fill" : "brain")
+                                .foregroundStyle(thinkingAvailable ? AppTheme.accent : AppTheme.mutedForeground)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Raisonnement")
+                                    .foregroundStyle(
+                                        thinkingAvailable ? AppTheme.foreground : AppTheme.mutedForeground
+                                    )
+                                Text(thinkingEnabled ? "Activé" : "Désactivé")
+                                    .font(CNFont.caption)
+                                    .foregroundStyle(AppTheme.mutedForeground)
+                            }
+                            Spacer()
+                            Image(systemName: thinkingEnabled ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(thinkingEnabled ? AppTheme.accent : AppTheme.mutedForeground)
+                        }
+                    }
+                    .disabled(!thinkingAvailable)
+                    .listRowBackground(AppTheme.surface)
+                } header: {
+                    Text("Contrôles rapides")
+                }
+
+                Section {
+                    ForEach(ComposerToolChannel.allCases) { channel in
+                        Button {
+                            AppHaptics.selection()
+                            onSelectToolChannel?(channel)
+                            if channel == .web {
+                                onWebChange(true)
+                            } else if toolChannel == .web {
+                                onWebChange(false)
+                            }
+                        } label: {
+                            HStack(spacing: AppTheme.space12) {
+                                Image(systemName: channel.systemImage)
+                                    .foregroundStyle(AppTheme.accent)
+                                    .frame(width: 28)
+                                Text(channel.menuTitle)
+                                    .foregroundStyle(AppTheme.foreground)
+                                Spacer()
+                                if toolChannel == channel {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(AppTheme.accent)
+                                }
+                            }
+                        }
+                        .listRowBackground(AppTheme.surface)
+                    }
+                } header: {
+                    Text("Canal d’outils")
+                } footer: {
+                    Text("Mêmes options que les boutons à droite du composer.")
+                }
+
                 Section {
                     if modelSwitching {
                         HStack(spacing: AppTheme.space8) {
@@ -297,11 +397,6 @@ struct ChatToolsSheet: View {
                 }
             }
             .onAppear {
-                // Conservés pour compat API ComposerCapsule (mode/web sont sur la barre rapide).
-                _ = onModeChange
-                _ = onWebChange
-                _ = chatMode
-                _ = webSearchEnabled
                 localModel = selectedModelName
                 localReasoning = reasoningEffort
             }
@@ -315,18 +410,24 @@ struct ScrollToBottomButton: View {
     let action: () -> Void
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    private let visualSize: CGFloat = 36
+    private let hitSize: CGFloat = AppTheme.touchMin
+
     var body: some View {
         Button {
             AppHaptics.light()
             action()
         } label: {
             Image(systemName: "arrow.down")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(AppTheme.foreground.opacity(0.85))
-                .frame(width: 28, height: 28)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(AppTheme.foreground.opacity(0.9))
+                .frame(width: visualSize, height: visualSize)
                 .modifier(ScrollGlassChrome(reduceTransparency: reduceTransparency))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .frame(width: hitSize, height: hitSize)
+        .contentShape(Circle())
         .accessibilityLabel("Descendre")
     }
 }

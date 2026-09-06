@@ -24,6 +24,14 @@ enum ComposerToolChannel: String, CaseIterable, Identifiable {
         }
     }
 
+    var menuTitle: String {
+        switch self {
+        case .web: return "Web"
+        case .files: return "Fichiers"
+        case .email: return "E-mail"
+        }
+    }
+
     mutating func cycle() {
         let all = Self.allCases
         guard let idx = all.firstIndex(of: self) else { return }
@@ -42,7 +50,7 @@ struct ComposerQuickControls: View {
     let onCycleTool: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             ComposerRoundIconButton(
                 systemImage: thinkingEnabled ? "brain.fill" : "brain",
                 isActive: thinkingEnabled,
@@ -82,24 +90,28 @@ struct ComposerRoundIconButton: View {
     let accessibilityIdentifier: String
     let action: () -> Void
 
+    /// Disque visible (~36) + zone tactile 44pt (HIG) pour un tap fiable au pouce.
+    private let visualSize: CGFloat = 36
+    private let hitSize: CGFloat = AppTheme.touchMin
+
     var body: some View {
         Button {
             AppHaptics.selection()
             action()
         } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(
                     disabled
                         ? AppTheme.mutedForeground.opacity(0.45)
                         : (isActive ? AppTheme.accentForeground : AppTheme.mutedForeground)
                 )
-                .frame(width: 28, height: 28)
+                .frame(width: visualSize, height: visualSize)
                 .background(
                     Circle().fill(
                         disabled
                             ? Color.clear
-                            : (isActive ? AppTheme.accent.opacity(0.92) : Color.clear)
+                            : (isActive ? AppTheme.accent.opacity(0.92) : AppTheme.surfaceElevated.opacity(0.55))
                     )
                 )
                 .overlay(
@@ -110,9 +122,11 @@ struct ComposerRoundIconButton: View {
                         lineWidth: 0.8
                     )
                 )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .frame(width: 34, height: 34)
+        .frame(width: hitSize, height: hitSize)
+        .contentShape(Circle())
         .disabled(disabled)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier(accessibilityIdentifier)

@@ -643,7 +643,7 @@ struct ChatScreen: View {
                     scrollToken += 1
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 44)
+                .padding(.bottom, 52)
                 .transition(.opacity.combined(with: .scale))
                 .accessibilitySortPriority(1)
             }
@@ -1354,10 +1354,15 @@ struct ChatScreen: View {
                 reasoningEffort: reasoningEffort,
                 models: models,
                 modelSwitching: modelSwitching,
+                thinkingEnabled: isThinkingEnabled,
+                thinkingAvailable: thinkingToggleAvailable,
+                toolChannel: toolChannel,
                 onModeChange: { mode in applyMode(mode) },
                 onWebChange: { enabled in applyWeb(enabled) },
                 onModelChange: { modelId in Task { await applyModel(modelId) } },
                 onReasoningChange: { mode in applyReasoning(mode) },
+                onToggleThinking: { toggleThinking() },
+                onSelectToolChannel: { channel in selectToolChannel(channel) },
                 onSend: {
                     sendTask = Task { await send() }
                 },
@@ -1449,8 +1454,13 @@ struct ChatScreen: View {
         // Aligne le réglage web global avec le canal choisi.
         applyWeb(next == .web)
     }
+    private func selectToolChannel(_ channel: ComposerToolChannel) {
+        toolChannelRaw = channel.rawValue
+        applyWeb(channel == .web)
+    }
 
-    private var sendBlockedHint: String {
+
+private var sendBlockedHint: String {
         switch displayRuntimeStatus.uppercased() {
         case "OFFLINE": return "Choisis un modèle"
         case "LOADING", "LOADING_MODEL", "SWITCHING": return "Patiente…"
