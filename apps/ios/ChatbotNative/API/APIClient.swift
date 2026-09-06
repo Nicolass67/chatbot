@@ -119,6 +119,11 @@ enum APIClientError: LocalizedError {
             if body.isEmpty || body == "SSE failed" {
                 return "HTTP \(code)"
             }
+            // Ne jamais afficher une page HTML / payload RSC Next dans l’UI.
+            if lower.hasPrefix("<!doctype") || lower.hasPrefix("<html")
+                || lower.contains("self.__next_f") || lower.contains("__next_f.push") {
+                return "HTTP \(code) — réponse serveur invalide (HTML). Réessaie."
+            }
             // API files renvoie souvent `{ "error": "..." }` — surface le message métier.
             if let data = body.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -126,7 +131,8 @@ enum APIClientError: LocalizedError {
                !msg.isEmpty {
                 return msg
             }
-            return body.hasPrefix("HTTP") ? body : "HTTP \(code): \(body)"
+            let clipped = body.count > 280 ? String(body.prefix(280)) + "…" : body
+            return body.hasPrefix("HTTP") ? body : "HTTP \(code): \(clipped)"
         case .decode: return "Impossible de lire la réponse du serveur. Réessaie."
         case .emptyResponse: return "Le serveur n’a pas renvoyé de données. Réessaie dans un instant."
         }
@@ -292,19 +298,29 @@ final class APIClient: @unchecked Sendable {
             let all = UITestFixtures.messages(conversationId: conversationId)
             return MessagesPage(messages: all, hasMore: false, nextBeforeId: all.first?.id)
         }
-        var path = "api/conversations/\(conversationId)/messages"
-        var query: [String] = []
+        // IMPORTANT: ne jamais coller `?…` dans `authorizedRequest(path:)` —
+        // chaque segment est appendingPathComponent → `?` devient `%3F` et Next
+        // renvoie du HTML RSC au lieu de JSON (chat illisible).
+        var components = URLComponents(
+            url: baseURL
+                .appendingPathComponent("api")
+                .appendingPathComponent("conversations")
+                .appendingPathComponent(conversationId)
+                .appendingPathComponent("messages"),
+            resolvingAgainstBaseURL: false
+        )!
+        var items: [URLQueryItem] = []
         if let limit, limit > 0 {
-            query.append("limit=\(limit)")
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
         }
         if let beforeId, !beforeId.isEmpty {
-            let enc = beforeId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? beforeId
-            query.append("beforeId=\(enc)")
+            items.append(URLQueryItem(name: "beforeId", value: beforeId))
         }
-        if !query.isEmpty {
-            path += "?" + query.joined(separator: "&")
+        if !items.isEmpty {
+            components.queryItems = items
         }
-        let req = authorizedRequest(path: path)
+        guard let url = components.url else { throw APIClientError.decode }
+        let req = authorizedURLRequest(url)
         let (data, resp) = try await URLSession.shared.data(for: req)
         try throwIfNeeded(resp, data)
         if let arr = try? JSONDecoder().decode([MessageDTO].self, from: data) {
