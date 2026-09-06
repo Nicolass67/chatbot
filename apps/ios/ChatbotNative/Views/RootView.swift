@@ -160,38 +160,48 @@ struct MainTabView: View {
     var body: some View {
         let _ = themeRevision
         @Bindable var nav = nav
-        // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
-        TabView(selection: $nav.selectedTab) {
-            Tab(AppTab.chat.title, systemImage: AppTab.chat.systemImage, value: AppTab.chat) {
-                ChatRootView()
-            }
-            .accessibilityIdentifier(A11yID.Navigation.tabChat)
+        // DIAGNOSTIC TEMPORAIRE — test rouge plein écran (MainTabView / TabView uniquement).
+        // But : le rouge atteint-il les derniers pixels sous la tab bar ?
+        ZStack {
+            // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
+            TabView(selection: $nav.selectedTab) {
+                Tab(AppTab.chat.title, systemImage: AppTab.chat.systemImage, value: AppTab.chat) {
+                    ChatRootView()
+                }
+                .accessibilityIdentifier(A11yID.Navigation.tabChat)
 
-            Tab(AppTab.mail.title, systemImage: AppTab.mail.systemImage, value: AppTab.mail) {
-                MailInboxView()
-            }
-            .accessibilityIdentifier(A11yID.Navigation.tabMail)
+                Tab(AppTab.mail.title, systemImage: AppTab.mail.systemImage, value: AppTab.mail) {
+                    MailInboxView()
+                }
+                .accessibilityIdentifier(A11yID.Navigation.tabMail)
 
-            Tab(AppTab.files.title, systemImage: AppTab.files.systemImage, value: AppTab.files) {
-                FilesBrowserView()
+                Tab(AppTab.files.title, systemImage: AppTab.files.systemImage, value: AppTab.files) {
+                    FilesBrowserView()
+                }
+                .accessibilityIdentifier(A11yID.Navigation.tabFiles)
             }
-            .accessibilityIdentifier(A11yID.Navigation.tabFiles)
+            .tint(AppTheme.accent)
+            .animation(.easeInOut(duration: 0.2), value: themeRevision)
+            .tabBarMinimizeBehavior(.onScrollDown)
+            // Tab bar en surimpression : pas de bandeau opaque derrière Chat / Mail / Files.
+            .toolbarBackground(.hidden, for: .tabBar)
+            .onAppear {
+                let appearance = UITabBarAppearance()
+                appearance.configureWithTransparentBackground()
+                appearance.backgroundColor = .clear
+                appearance.shadowColor = .clear
+                UITabBar.appearance().standardAppearance = appearance
+                UITabBar.appearance().scrollEdgeAppearance = appearance
+                UITabBar.appearance().isTranslucent = true
+            }
+            .accessibilityIdentifier(A11yID.Navigation.tabBar)
+
+            // TEST ROUGE — hors ChatScreen, au niveau MainTabView.
+            Color.red
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("diagnostic.tabViewRedOverlay")
         }
-        .tint(AppTheme.accent)
-        .animation(.easeInOut(duration: 0.2), value: themeRevision)
-        .tabBarMinimizeBehavior(.onScrollDown)
-        // Tab bar en surimpression : pas de bandeau opaque derrière Chat / Mail / Files.
-        .toolbarBackground(.hidden, for: .tabBar)
-        .onAppear {
-            let appearance = UITabBarAppearance()
-            appearance.configureWithTransparentBackground()
-            appearance.backgroundColor = .clear
-            appearance.shadowColor = .clear
-            UITabBar.appearance().standardAppearance = appearance
-            UITabBar.appearance().scrollEdgeAppearance = appearance
-            UITabBar.appearance().isTranslucent = true
-        }
-        .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
                 .environmentObject(session)
