@@ -14,22 +14,26 @@ private struct ChatScrollMetrics: Equatable {
     var distanceToBottom: CGFloat
 }
 
-/// Dégradé bas : teinte ambient (pas de material gris), fondu court sous les quick controls.
+/// Dégradé bas : teinte ambient, dense surtout sous le composer / tab bar (pas de voile gris haut).
 private struct ComposerBottomBlurFade: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let base = AppTheme.background
-        let bottomOpacity: Double = reduceTransparency
-            ? (colorScheme == .dark ? 0.88 : 0.78)
-            : (colorScheme == .dark ? 0.72 : 0.62)
+        let peak: Double = reduceTransparency
+            ? (colorScheme == .dark ? 0.9 : 0.8)
+            : (colorScheme == .dark ? 0.78 : 0.65)
         LinearGradient(
             stops: [
+                // Haut (au-dessus des quick controls) : totalement transparent.
                 .init(color: base.opacity(0), location: 0),
-                .init(color: base.opacity(bottomOpacity * 0.18), location: 0.28),
-                .init(color: base.opacity(bottomOpacity * 0.48), location: 0.58),
-                .init(color: base.opacity(bottomOpacity), location: 1)
+                .init(color: base.opacity(0), location: 0.2),
+                // Derrière Disponible / composer : léger.
+                .init(color: base.opacity(peak * 0.22), location: 0.48),
+                .init(color: base.opacity(peak * 0.5), location: 0.72),
+                // Sous le composer + derrière Chat/Mail/Files : plus dense.
+                .init(color: base.opacity(peak), location: 1)
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -119,6 +123,8 @@ struct ChatScreen: View {
     @State private var floatingChromeHeight: CGFloat = 168
     /// Hauteur mesurée des quick controls + composer (sans lift tab bar).
     @State private var chromeContentHeight: CGFloat = 96
+    /// Safe area bas (tab bar + home indicator) — pour pousser le composer ET étendre le fondu dessous.
+    @State private var bottomSafeInset: CGFloat = 83
     /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
     @State private var keyboardLiftActive = false
     /// Collé en bas → suivi auto du stream. Remontée utilisateur → false.
@@ -185,6 +191,8 @@ struct ChatScreen: View {
         let _ = themeRevision
         ZStack {
             AmbientBackground()
+                // Même plan que le fil : pas de bande noire sous la tab bar.
+                .ignoresSafeArea(.container, edges: .bottom)
             VStack(spacing: 0) {
                 if let scope = forcedScope, scope == .mail {
                     PersistentProductActionsBar(
@@ -200,7 +208,16 @@ struct ChatScreen: View {
                     // Fil jusqu’en bas d’écran (sous tab bar) ; le clavier reste respecté.
                     .ignoresSafeArea(.container, edges: .bottom)
                     .overlay(alignment: .bottom) {
-                        // Évite le double lift safe area + padding manuel.
+                        // Couche 1 : fondu jusqu’au bas physique (derrière Chat/Mail/Files).
+                        ComposerBottomBlurFade()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: blurBandTotalHeight)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                            .ignoresSafeArea(.container, edges: .bottom)
+                    }
+                    .overlay(alignment: .bottom) {
+                        // Couche 2 : composer / chrome au-dessus du fondu.
                         composerFloatingChrome
                             .ignoresSafeArea(.container, edges: .bottom)
                     }
@@ -210,8 +227,8 @@ struct ChatScreen: View {
             GeometryReader { geo in
                 let inset = geo.safeAreaInsets.bottom
                 Color.clear
-                    .onAppear { updateKeyboardLift(inset) }
-                    .onChange(of: inset) { _, value in updateKeyboardLift(value) }
+                    .onAppear { updateBottomSafeInset(inset) }
+                    .onChange(of: inset) { _, value in updateBottomSafeInset(value) }
             }
         }
         .navigationTitle(
@@ -1456,17 +1473,18 @@ struct ChatScreen: View {
         draftCardCollapsed && !draftCardSent && draftCardId != nil
     }
 
-    /// Lift au-dessus de la tab bar flottante — un seul inset contrôlé (pas toute la safe area).
+    /// Lift au-dessus de Chat / Mail / Files (toute la safe area bas, pas un demi-espace).
     private var tabBarOverlayLift: CGFloat {
-        keyboardLiftActive ? AppTheme.space8 : 44
+        if keyboardLiftActive { return AppTheme.space8 }
+        return max(bottomSafeInset, 72)
     }
 
-    /// Bande de fondu = contrôles + composer + zone sous le composer (hauteur intrinsèque, sans boucle).
+    /// Fondu = quick controls + composer + zone jusqu’au bas d’écran (sous la tab bar).
     private var blurBandTotalHeight: CGFloat {
         max(chromeContentHeight, 72) + tabBarOverlayLift
     }
 
-    /// Composer + chrome en surimpression ; fondu du bas jusqu’au-dessus des 3 boutons.
+    /// Composer + chrome en surimpression (le fondu est une couche séparée derrière).
     @ViewBuilder
     private var composerFloatingChrome: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1507,7 +1525,6 @@ struct ChatScreen: View {
                     .padding(.horizontal, AppTheme.space12)
             }
 
-            // PJ au-dessus de la zone de flou (texte net derrière).
             if !pendingAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -1522,7 +1539,6 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Brouillon masqué → bouton de récupération (pas de carte « repliée » dans le fil).
             if draftCardRecoverable {
                 Button {
                     recoverDraftCard()
@@ -1548,50 +1564,43 @@ struct ChatScreen: View {
                 .accessibilityLabel("Récupérer le brouillon")
             }
 
-            // Fondu ambient : hauteur = contenu intrinsèque (évite GeometryReader qui gonfle la bande).
-            ZStack(alignment: .bottom) {
-                ComposerBottomBlurFade()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: blurBandTotalHeight)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    if !isSending {
-                        HStack(spacing: 8) {
-                            RuntimeStatusPill(status: displayRuntimeStatus)
-                            if !assistantReadyForSend {
-                                Text(sendBlockedHint)
-                                    .font(CNFont.caption2)
-                                    .foregroundStyle(AppTheme.mutedForeground)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
-                            ComposerQuickControls(
-                                thinkingEnabled: isThinkingEnabled,
-                                chatMode: chatMode,
-                                toolChannel: toolChannel,
-                                thinkingAvailable: thinkingToggleAvailable,
-                                showsToolChannel: showsToolChannelPicker,
-                                onToggleThinking: { toggleThinking() },
-                                onToggleMode: {
-                                    applyMode(chatMode == "agent" ? "chat" : "agent")
-                                },
-                                onCycleTool: { cycleToolChannel() }
-                            )
+            VStack(alignment: .leading, spacing: 8) {
+                if !isSending {
+                    HStack(spacing: 8) {
+                        RuntimeStatusPill(status: displayRuntimeStatus)
+                        if !assistantReadyForSend {
+                            Text(sendBlockedHint)
+                                .font(CNFont.caption2)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                                .lineLimit(1)
                         }
-                        .padding(.horizontal, AppTheme.space16)
+                        Spacer(minLength: 0)
+                        ComposerQuickControls(
+                            thinkingEnabled: isThinkingEnabled,
+                            chatMode: chatMode,
+                            toolChannel: toolChannel,
+                            thinkingAvailable: thinkingToggleAvailable,
+                            showsToolChannel: showsToolChannelPicker,
+                            onToggleThinking: { toggleThinking() },
+                            onToggleMode: {
+                                applyMode(chatMode == "agent" ? "chat" : "agent")
+                            },
+                            onCycleTool: { cycleToolChannel() }
+                        )
                     }
+                    .padding(.horizontal, AppTheme.space16)
+                }
 
-                    composer
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { _, height in
-                    guard height > 1, abs(height - chromeContentHeight) > 0.5 else { return }
-                    chromeContentHeight = height
-                }
-                .padding(.bottom, tabBarOverlayLift)
+                composer
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { _, height in
+                guard height > 1, abs(height - chromeContentHeight) > 0.5 else { return }
+                chromeContentHeight = height
+            }
+            .padding(.bottom, tabBarOverlayLift)
         }
         .fixedSize(horizontal: false, vertical: true)
         .onGeometryChange(for: CGFloat.self) { proxy in
@@ -1603,9 +1612,10 @@ struct ChatScreen: View {
         .allowsHitTesting(true)
     }
 
-    private func updateKeyboardLift(_ inset: CGFloat) {
-        // Tab bar ≈ 49–100 ; clavier typiquement > 200.
+    private func updateBottomSafeInset(_ inset: CGFloat) {
+        // Tab bar + home indicator ≈ 49–110 ; clavier typiquement > 200.
         if inset > 0 && inset < 140 {
+            bottomSafeInset = inset
             keyboardLiftActive = false
         } else if inset >= 140 {
             keyboardLiftActive = true
