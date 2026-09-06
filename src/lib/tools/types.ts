@@ -21,6 +21,12 @@ export interface ToolContext {
   userId?: string;
   /** PJ du message utilisateur courant — auto-attachées au brouillon mail. */
   pendingAttachmentIds?: string[];
+  /** Fil mail actif (assistant Mail) — injecté dans email_create_draft si le modèle omet threadId. */
+  activeMailThreadId?: string;
+  /** Dernier message du fil actif — pour inReplyToMessageId. */
+  activeMailInReplyToMessageId?: string;
+  /** Brouillon ouvert côté client — réécriture = update, pas nouveau brouillon orphelin. */
+  activeDraftId?: string;
   /** Contexte policy optionnel (email OAuth, confirmation). */
   policyContext?: Partial<
     Omit<PolicyContext, "userId" | "conversationId">

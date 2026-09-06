@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
+  getEmailDraftForUser,
   loadOutgoingAttachmentsByIds,
   persistEmailDraft,
   toEmailDraftPreview,
+  updateEmailDraft,
 } from "@/lib/email/draft";
 import type { Tool } from "../types";
 import {
@@ -11,6 +13,7 @@ import {
   requireToolUserId,
   resolveRecipients,
 } from "./helpers";
+import { getMailThread } from "@/lib/mail/service";
 import { getOAuthAccount } from "@/lib/integrations/oauth";
 
 const inputSchema = z.object({
@@ -66,15 +69,6 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       throw new Error("Au moins un destinataire est requis.");
     }
 
-    let inReplyToHeader: string | undefined;
-    let referencesHeader: string | undefined;
-
-    if (input.inReplyToMessageId) {
-      const replyTarget = await provider.getMessage(input.inReplyToMessageId);
-      inReplyToHeader = replyTarget.id;
-      referencesHeader = replyTarget.id;
-    }
-
     const attachmentIds = [
       ...new Set(
         [
@@ -83,6 +77,54 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
         ].filter(Boolean)
       ),
     ];
+
+    // Réécriture depuis l'assistant Mail : update du brouillon ouvert (conserve thread / inReplyTo).
+    const openDraftId = ctx.activeDraftId?.trim();
+    if (openDraftId) {
+      const existing = await getEmailDraftForUser(openDraftId, userId);
+      if (existing && existing.status !== "sent" && existing.status !== "cancelled") {
+        const updated = await updateEmailDraft(openDraftId, userId, {
+          to,
+          cc,
+          bcc,
+          subject: input.subject,
+          bodyText: input.bodyText,
+          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+        });
+        const preview = await toEmailDraftPreview(updated);
+        return {
+          ...preview,
+          attachedCount: preview.attachments?.length ?? 0,
+          notice:
+            "Brouillon mis à jour — le lien avec le fil mail est conservé.",
+        };
+      }
+    }
+
+    // Fil actif : ne jamais créer un brouillon orphelin sans threadId.
+    let threadId =
+      input.threadId?.trim() || ctx.activeMailThreadId?.trim() || undefined;
+    let inReplyToMessageId =
+      input.inReplyToMessageId?.trim() ||
+      ctx.activeMailInReplyToMessageId?.trim() ||
+      undefined;
+    if (threadId && !inReplyToMessageId) {
+      try {
+        const thread = await getMailThread(userId, threadId);
+        inReplyToMessageId = thread.messages.at(-1)?.id;
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    let inReplyToHeader: string | undefined;
+    let referencesHeader: string | undefined;
+
+    if (inReplyToMessageId) {
+      const replyTarget = await provider.getMessage(inReplyToMessageId);
+      inReplyToHeader = replyTarget.id;
+      referencesHeader = replyTarget.id;
+    }
 
     // PJ dans le raw Gmail dès la création — sinon validate recrée un 2e brouillon
     // et l’ancien reste visible (« Brouillon » + mail envoyé).
@@ -97,8 +139,8 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       bcc,
       subject: input.subject,
       bodyText: input.bodyText,
-      threadId: input.threadId,
-      inReplyToMessageId: input.inReplyToMessageId,
+      threadId,
+      inReplyToMessageId,
       inReplyToHeader,
       referencesHeader,
       attachments: outgoingAttachments,
@@ -107,7 +149,7 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
     const stored = await persistEmailDraft({
       userId,
       conversationId: ctx.conversationId,
-      threadId: draft.threadId ?? input.threadId ?? null,
+      threadId: draft.threadId ?? threadId ?? null,
       provider: "gmail",
       providerDraftId: draft.providerDraftId,
       to,
@@ -115,7 +157,7 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
       bcc,
       subject: input.subject,
       bodyText: input.bodyText,
-      inReplyToMessageId: input.inReplyToMessageId ?? null,
+      inReplyToMessageId: inReplyToMessageId ?? null,
       attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
     });
 

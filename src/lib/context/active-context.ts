@@ -3,6 +3,10 @@ import { cleanPlainText } from "@/lib/mail/html-utils";
 import { resolveFileReference } from "@/lib/files/resolve";
 import { getFileRoot } from "@/lib/files/roots";
 import { FilesError } from "@/lib/files/types";
+import {
+  extractTextFromFile,
+  guessMimeFromFilename,
+} from "@/lib/documents/extract";
 import type { NormalizedEmailThread } from "@/lib/integrations/email/types";
 
 /**
@@ -15,6 +19,8 @@ export type ActiveContextHint = {
   mailThreadId?: string;
   rootId?: string;
   label?: string;
+  /** Brouillon mail ouvert dans l’UI (réécriture in-place). */
+  draftId?: string;
 };
 
 export type ResolvedActiveContext = {
@@ -28,9 +34,13 @@ export type ResolvedActiveContext = {
     name: string;
     rootId: string;
     relativePath: string;
+    /** Contenu extrait pour le LLM (tronqué). */
+    contentForLlm?: string;
   };
   mail?: {
     threadId: string;
+    /** Id du dernier message — pour inReplyToMessageId sur email_create_draft. */
+    lastMessageId?: string;
     subject?: string;
     /** Contenu lisible pour le LLM (dernier message + contexte). */
     bodyForLlm?: string;
@@ -127,6 +137,25 @@ export async function resolveActiveContext(input: {
         rootId: resolved.rootId,
         relativePath: resolved.relativePath,
       };
+      try {
+        if (!resolved.isDirectory && resolved.absolutePath) {
+          const mime = guessMimeFromFilename(name);
+          const text = await extractTextFromFile(
+            resolved.absolutePath,
+            mime,
+            name
+          );
+          const trimmed = text.trim();
+          if (trimmed) {
+            file.contentForLlm =
+              trimmed.length > 8_000
+                ? `${trimmed.slice(0, 8_000)}…`
+                : trimmed;
+          }
+        }
+      } catch {
+        /* extraction best-effort */
+      }
       entityLabels.push(name);
     } catch (err) {
       const code = err instanceof FilesError ? err.code : "FORBIDDEN";
@@ -166,6 +195,7 @@ export async function resolveActiveContext(input: {
         .slice(0, 12);
       mail = {
         threadId: thread.id,
+        lastMessageId: last?.id,
         subject: thread.subject || last?.subject,
         bodyForLlm: formatMailThreadBodyForLlm(thread),
         from,
@@ -186,6 +216,7 @@ export async function resolveActiveContext(input: {
       mailThreadId: mail?.threadId,
       rootId: root?.rootId ?? hint.rootId,
       label: hint.label,
+      draftId: hint.draftId?.trim() || undefined,
     },
     resolved,
     ignoredReason: !resolved
@@ -206,14 +237,35 @@ export function formatActiveContextBlock(
 ): string | null {
   if (!ctx.resolved) return null;
   const lines: string[] = [];
+  if (ctx.hint.draftId?.trim()) {
+    lines.push(
+      `Brouillon ouvert: draftId=${ctx.hint.draftId.trim()} — pour réécrire, appelle email_create_draft (le serveur met à jour CE brouillon et conserve threadId / inReplyTo).`
+    );
+  }
   if (ctx.file) {
     lines.push(
       `Fichier actif: ${ctx.file.name} (fileId=${ctx.file.fileId}, path relatif=${ctx.file.relativePath})`
     );
+    if (ctx.file.contentForLlm) {
+      lines.push(
+        `<file_context untrusted="true">\n${ctx.file.contentForLlm}\n</file_context>`
+      );
+    }
   }
   if (ctx.mail) {
     lines.push(
-      `Fil mail actif: ${ctx.mail.subject ?? ctx.mail.threadId} (threadId=${ctx.mail.threadId})`
+      `Fil mail actif: ${ctx.mail.subject ?? ctx.mail.threadId} (threadId=${ctx.mail.threadId}${
+        ctx.mail.lastMessageId
+          ? `, lastMessageId=${ctx.mail.lastMessageId}`
+          : ""
+      })`
+    );
+    lines.push(
+      `Pour répondre à CE fil : passe TOUJOURS threadId=${ctx.mail.threadId}${
+        ctx.mail.lastMessageId
+          ? ` et inReplyToMessageId=${ctx.mail.lastMessageId}`
+          : ""
+      } à email_create_draft.`
     );
     if (ctx.mail.from) lines.push(`Expéditeur: ${ctx.mail.from}`);
     if (ctx.mail.recipients?.length) {

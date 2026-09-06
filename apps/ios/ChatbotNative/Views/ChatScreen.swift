@@ -844,19 +844,29 @@ struct ChatScreen: View {
 
     /// Réécrit le brouillon ouvert → met à jour la carte (pas une bulle chat).
     private func rewriteOpenDraft() async {
-        guard draftCardId != nil, !isSending else { return }
+        guard let draftId = draftCardId, !isSending else { return }
+        let threadId = forcedActiveContext?.mailThreadId
+        var linkage = ""
+        if let threadId, !threadId.isEmpty {
+            linkage = """
+
+            Fil mail actif threadId=\(threadId).
+            Passe OBLIGATOIREMENT threadId=\(threadId) à email_create_draft
+            (réponse au fil, pas un nouveau mail isolé).
+            """
+        }
         await send(
             forcedText: """
-            Réécris le corps de CE brouillon email de façon plus claire et naturelle.
+            Réécris le corps de CE brouillon email (draftId=\(draftId)) de façon plus claire et naturelle.
             Conserve le même destinataire et le même objet.
-            Appelle immédiatement l’outil email_create_draft avec to, subject et le nouveau bodyText.
+            Appelle immédiatement email_create_draft avec to, subject et le nouveau bodyText.
+            \(linkage)
             INTERDIT d’écrire le corps du mail dans le chat — la carte brouillon l’affiche.
             """,
             hideUserMessage: true,
             rewriteDraftCard: true
         )
     }
-
     private func runMailSummarizeProduct(threadId: String) async {
         guard !isSending else { return }
         isSending = true
@@ -909,7 +919,7 @@ struct ChatScreen: View {
         return error.localizedDescription
     }
 
-    private func runMailReplyProduct(threadId: String) async {
+    private func runMailReplyProduct(threadId: String, instruction: String? = nil) async {
         guard !isSending else { return }
         isSending = true
         error = nil
@@ -926,7 +936,7 @@ struct ChatScreen: View {
             draftCardStatus = "Brouillon"
         }
         do {
-            let result = try await client.streamSuggestMailReply(threadId: threadId) { token in
+            let result = try await client.streamSuggestMailReply(threadId: threadId, instruction: instruction) { token in
                 Task { @MainActor in
                     if self.thinkingKind != nil { self.thinkingKind = nil }
                     self.draftCardText += token
@@ -2241,6 +2251,13 @@ private var sendBlockedHint: String {
         }
     }
 
+    /// Détecte une demande de réponse au fil mail actif (texte libre).
+    private func isMailReplyIntent(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let keys = ["répond", "repond", "reply", "rédige une réponse", "redige une reponse", "écris une réponse", "ecris une reponse", "prépare une réponse", "prepare une reponse"]
+        return keys.contains { lower.contains($0) }
+    }
+
     private func regenerate() async {
         guard !isSending else { return }
         if let lastUser = messages.last(where: { $0.role == "user" }) {
@@ -2258,6 +2275,17 @@ private var sendBlockedHint: String {
         let isEdit = editingMessageId != nil
         guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
 
+        // Réponse au fil mail : API produit (contexte thread garanti), pas un brouillon orphelin.
+        if !rewriteDraftCard,
+           options?.regenerate != true,
+           editingMessageId == nil,
+           let threadId = forcedActiveContext?.mailThreadId,
+           !threadId.isEmpty,
+           isMailReplyIntent(rawText) {
+            await runMailReplyProduct(threadId: threadId, instruction: rawText)
+            return
+        }
+
         // Lock early (before optimistic UI / network) — double-tap & overlapping sends.
         isSending = true
         sendGeneration &+= 1
@@ -2270,7 +2298,7 @@ private var sendBlockedHint: String {
            !rawText.isEmpty {
             let bodySnippet = String(draftCardText.prefix(2500))
             let rewriteRule = rewriteDraftCard
-                ? "RÉÉCRITURE : appelle email_create_draft avec le même destinataire/objet et un bodyText réécrit. INTERDIT de coller le corps dans le chat."
+                ? "RÉÉCRITURE : appelle email_create_draft avec le même destinataire/objet, un bodyText réécrit, et le threadId du fil actif si fourni. INTERDIT de coller le corps dans le chat."
                 : "Réécris et mets à jour CE brouillon selon la demande (outil email_create_draft / draft_preview). Ne crée pas un fil séparé. Ne pose pas de question — applique directement le changement."
             text = """
             Brouillon email ouvert (draftId=\(draftId)).

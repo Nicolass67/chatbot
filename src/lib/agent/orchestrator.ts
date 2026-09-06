@@ -829,6 +829,12 @@ export async function runChatOrchestrator(
       hint: input.activeContext,
     });
 
+    toolCtxBase.activeMailThreadId =
+      resolvedActive.mail?.threadId ?? input.activeContext?.mailThreadId;
+    toolCtxBase.activeMailInReplyToMessageId =
+      resolvedActive.mail?.lastMessageId;
+    toolCtxBase.activeDraftId = input.activeContext?.draftId;
+
     const contextPlan = buildContextPlan({
       route,
       message: input.userContent,
