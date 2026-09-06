@@ -185,15 +185,35 @@ export function buildRouteDecision(params: {
     classification.knowledge === "current" ||
     (!ctx.webSearchEnabled && objective.explicitWebCommand);
   const webEnabled = ctx.webSearchEnabled;
-  const webMode = webEnabled ? classification.web.mode : "none";
-  const searchType = webEnabled ? classification.web.searchType : "none";
+  let webMode = webEnabled ? classification.web.mode : "none";
+  let searchType = webEnabled ? classification.web.searchType : "none";
+  let webReason = classification.reason;
+
+  // Toggle Web UI = interrupteur maître (Chat et Agent).
+  // Si le Web est activé et que le classifieur/fallback a laissé mode "none"
+  // sur un vrai message non historique, on force une recherche unique.
+  // Web OFF → tout reste "none" (branche ci-dessus).
+  if (
+    webEnabled &&
+    webMode === "none" &&
+    objective.trimmedMessage.length >= 3 &&
+    objective.temporal.scope !== "historical"
+  ) {
+    webMode = "required";
+    searchType = "single";
+    webReason =
+      "Web activé dans l'UI — recherche requise (Chat/Agent).";
+  }
+
   const mandatory = webMode === "required";
+  // Auto-search en Chat dès que le Web n'est pas fermé. L'Agent exécute
+  // via sa boucle d'outils quand mode === required.
   const autoSearch =
     webEnabled &&
-    mandatory &&
+    webMode !== "none" &&
+    searchType !== "none" &&
     ctx.chatMode === "chat" &&
-    ctx.imageCount === 0 &&
-    searchType !== "none";
+    ctx.imageCount === 0;
 
   const suggestAgent =
     ctx.chatMode === "chat" &&
@@ -208,11 +228,11 @@ export function buildRouteDecision(params: {
       enabled: webEnabled,
       mode: webMode,
       searchType,
-      wouldBeUseful: semanticWouldBeUseful,
+      wouldBeUseful: semanticWouldBeUseful || webMode !== "none",
       mandatory,
       autoSearch,
       searchQuery,
-      reason: classification.reason,
+      reason: webReason,
     },
     email,
     files,
@@ -228,8 +248,13 @@ export function buildRouteDecision(params: {
     temporal: objective.temporal,
     confidence: classification.confidence,
     source,
-    reason: classification.reason,
+    reason: webReason,
     latencyMs,
+    understanding: {
+      followUp: classification.followUp === true,
+      answerShape: classification.answerShape,
+      references: classification.references,
+    },
   };
 }
 

@@ -2488,12 +2488,25 @@ private var sendBlockedHint: String {
         shouldShowLiveAgentStrip
     }
 
-    /// Panel live pendant tout le run — ne pas basculer sur le chrome figé (sinon timer bloqué).
+    /// Panel agent live : uniquement si un vrai run Agent a démarré.
+    /// Chat + web search seul → ThinkingStatusView (pas « Préparation du plan… »).
     private var shouldShowLiveAgentStrip: Bool {
         guard !agentActivity.completed else { return false }
         return agentActivity.visible
-            || agentActivity.webPhase != .idle
-            || agentActivity.lastError != nil
+    }
+
+    /// Query outil depuis le payload SSE (`query` top-level ou `input.query`).
+    private func toolQuery(from obj: [String: Any]) -> String? {
+        if let q = obj["query"] as? String {
+            let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        if let input = obj["input"] as? [String: Any],
+           let q = input["query"] as? String {
+            let t = q.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        return nil
     }
 
     /// Attache / met à jour le panel agent sur le message assistant courant (persistance conversation).
@@ -2540,17 +2553,13 @@ private var sendBlockedHint: String {
         )
     }
 
-    /// Active l’étape `index` et marque les précédentes comme terminées.
+    /// Active l’étape `index` sans inventer de « done » sur les précédentes.
+    /// La clôture des étapes vient du backend (`agent_step_update` / plan final).
     private func activateAgentPlanStep(at index: Int) {
         guard !agentActivity.planSteps.isEmpty else { return }
         let idx = min(max(0, index), agentActivity.planSteps.count - 1)
         for i in agentActivity.planSteps.indices {
-            if i < idx {
-                let st = agentActivity.planSteps[i].status
-                if st == "running" || st == "pending" {
-                    agentActivity.planSteps[i].status = "done"
-                }
-            } else if i == idx {
+            if i == idx {
                 let st = agentActivity.planSteps[i].status
                 if st != "done" && st != "error" && st != "skipped" {
                     agentActivity.planSteps[i].status = "running"
@@ -2755,23 +2764,33 @@ private var sendBlockedHint: String {
             if agentActivity.visible {
                 agentActivity.currentStepTitle = AgentToolLabels.humanize(tool.isEmpty ? "outil" : tool)
                 agentActivity.phase = "executing"
+                if tool.lowercased().contains("search") {
+                    agentActivity.webPhase = .searching
+                    agentActivity.webQuery = toolQuery(from: obj) ?? agentActivity.webQuery
+                }
             } else if tool.lowercased().contains("search") {
-                agentActivity.webPhase = .searching
-                agentActivity.webQuery = (obj["query"] as? String) ?? tool
+                // Chat + web : indicateur léger, pas de panel agent/plan.
                 thinkingKind = .searching
             } else if let kind = ThinkingKind.fromSSE(type: type, message: tool) {
                 thinkingKind = kind
             }
         case "tool_done", "tool_result":
-            if agentActivity.webPhase == .searching || agentActivity.webPhase == .analyzing {
-                agentActivity.webPhase = .analyzing
-            }
             if agentActivity.visible {
+                if agentActivity.webPhase == .searching || agentActivity.webPhase == .analyzing {
+                    agentActivity.webPhase = .analyzing
+                }
                 if let summary = obj["summary"] as? String, !summary.isEmpty {
                     agentActivity.currentStepTitle = AgentToolLabels.humanize(summary)
                 }
             } else if !agentActivity.visible {
-                thinkingKind = .preparing
+                let count = (obj["sourceCount"] as? Int) ?? (obj["source_count"] as? Int)
+                if let count, count > 0 {
+                    thinkingKind = .custom(
+                        "Recherche · \(count) source\(count > 1 ? "s" : "")"
+                    )
+                } else {
+                    thinkingKind = .preparing
+                }
             }
         case "tool_error":
             let raw = (obj["message"] as? String) ?? (obj["error"] as? String)
@@ -2781,11 +2800,12 @@ private var sendBlockedHint: String {
                 thinkingKind = .custom(AgentToolLabels.friendlyError(raw))
             }
         case "web_search":
-            let q = (obj["query"] as? String) ?? (obj["message"] as? String) ?? "Recherche web…"
-            agentActivity.webQuery = q
-            agentActivity.webPhase = .searching
-            progressAgentPlanForWebPhase(.searching)
-            if !agentActivity.visible {
+            let q = toolQuery(from: obj) ?? (obj["message"] as? String) ?? "Recherche web…"
+            if agentActivity.visible {
+                agentActivity.webQuery = q
+                agentActivity.webPhase = .searching
+                progressAgentPlanForWebPhase(.searching)
+            } else {
                 thinkingKind = .searching
             }
         case "agent_start":
@@ -2844,12 +2864,7 @@ private var sendBlockedHint: String {
                     agentActivity.planSteps[i].title = AgentToolLabels.friendlyStepTitle(title)
                 }
                 agentActivity.currentStepTitle = agentActivity.planSteps[i].title
-                if st == "running" || st == "done" {
-                    for j in 0..<i where agentActivity.planSteps[j].status == "pending"
-                        || agentActivity.planSteps[j].status == "running" {
-                        if j < i { agentActivity.planSteps[j].status = "done" }
-                    }
-                }
+                // Ne pas forcer done sur les précédentes : le backend envoie skipped/done.
                 if st == "error" {
                     agentActivity.lastError = AgentToolLabels.friendlyError(obj["message"] as? String)
                 }
@@ -2957,8 +2972,10 @@ private var sendBlockedHint: String {
                 }
             }
         case "sources":
-            agentActivity.webPhase = .analyzing
-            progressAgentPlanForWebPhase(.analyzing)
+            if agentActivity.visible {
+                agentActivity.webPhase = .analyzing
+                progressAgentPlanForWebPhase(.analyzing)
+            }
             if let arr = obj["sources"] as? [[String: Any]] {
                 streamSources = arr.enumerated().compactMap { idx, s in
                     guard let url = s["url"] as? String else { return nil }
@@ -2974,14 +2991,18 @@ private var sendBlockedHint: String {
             if !streamSources.isEmpty {
                 let count = streamSources.count
                 let bit = "\(count) source\(count > 1 ? "s" : "")"
-                if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
-                    agentActivity.activitySummary = "\(base) · \(bit)"
-                } else if let q = agentActivity.webQuery, !q.isEmpty {
-                    agentActivity.activitySummary = "Recherche · \(q) · \(bit)"
-                } else if agentActivity.activitySummary == nil {
-                    agentActivity.activitySummary = bit
+                if agentActivity.visible {
+                    if let base = agentActivity.activitySummary, !base.isEmpty, !base.contains("source") {
+                        agentActivity.activitySummary = "\(base) · \(bit)"
+                    } else if let q = agentActivity.webQuery, !q.isEmpty {
+                        agentActivity.activitySummary = "Recherche · \(q) · \(bit)"
+                    } else if agentActivity.activitySummary == nil {
+                        agentActivity.activitySummary = bit
+                    }
+                    syncAgentChromeToStreamingMessage()
+                } else {
+                    thinkingKind = .custom("Recherche · \(bit)")
                 }
-                syncAgentChromeToStreamingMessage()
             }
         case "context_snapshot":
             if let snap = obj["snapshot"] as? [String: Any] {

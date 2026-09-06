@@ -37,6 +37,21 @@ export const semanticClassificationSchema = z.object({
   tools: z.object({ allowToolCalling: z.boolean() }),
   confidence: z.number().min(0).max(1),
   reason: z.string().min(1),
+  followUp: z.boolean().optional(),
+  answerShape: z
+    .enum([
+      "factual",
+      "recommendation",
+      "ranking",
+      "comparison",
+      "explanation",
+      "research",
+      "general",
+    ])
+    .optional(),
+  references: z
+    .enum(["none", "prior_topic", "mail", "file", "ambiguous"])
+    .optional(),
 });
 
 function extractJsonFromContent(content: string): unknown {
@@ -118,6 +133,18 @@ Files (documents locaux sur le PC de l'utilisateur — PAS le Web, PAS Gmail):
 - Si l'utilisateur demande internet / web / adresses / lieux publics : web.mode="required", files.intent="none".
 - Ne classifie PAS une mutation destructive (suppression) — non supportée; oriente vers search/organize sans delete.
 
+Contrainte CANAL UI (si fourni) :
+- Canal UI = web : ne pas activer email/files ; classifie seulement dans le web.
+- Canal UI = files : web.mode="none", email.intent="none" ; classifie files.* uniquement.
+- Canal UI = email : web.mode="none", files.intent="none" ; classifie email.* uniquement.
+- INTERDIT de changer de canal quand le canal UI est connu.
+- Tu peux résoudre follow-ups/références À L'INTÉRIEUR du canal courant.
+
+Champs optionnels :
+- followUp: true si suite conversationnelle (anaphore, contrainte ajoutée, « le précédent », « cherche les prix » après un sujet).
+- answerShape: factual|recommendation|ranking|comparison|explanation|research|general.
+- references: none|prior_topic|mail|file|ambiguous.
+
 Priorité de sécurité: en cas de doute sur une information actuelle, préférer web.mode "required" plutôt que "none".
 Ne confonds pas une question sur le CONCEPT d'un sujet (ex: "comment fonctionne X") avec une demande d'ÉTAT ACTUEL.
 
@@ -132,7 +159,10 @@ JSON attendu:
   "vision": { "required": false },
   "tools": { "allowToolCalling": false },
   "confidence": 0.0,
-  "reason": "..."
+  "reason": "...",
+  "followUp": false,
+  "answerShape": "general",
+  "references": "none"
 }`;
 }
 
@@ -162,6 +192,9 @@ export function buildClassifierUserPrompt(objective: ObjectiveContext): string {
     lines.push(`Contexte conversationnel récent:\n${objective.conversationalContext}`);
   }
 
+  if (objective.toolChannel) {
+    lines.push(`Canal UI forcé: ${objective.toolChannel} (ne pas changer de canal)`);
+  }
   lines.push("Classifie cette requête.");
   return lines.join("\n\n");
 }

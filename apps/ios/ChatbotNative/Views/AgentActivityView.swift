@@ -168,7 +168,19 @@ struct AgentActivityView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var doneCount: Int {
-        state.planSteps.filter { $0.status == "done" || $0.status == "skipped" }.count
+        state.planSteps.filter { $0.status == "done" }.count
+    }
+
+    private var skippedCount: Int {
+        state.planSteps.filter { $0.status == "skipped" }.count
+    }
+
+    private var stepsBadgeText: String {
+        let base = "\(min(doneCount, max(totalCount, 1)))/\(max(totalCount, 1))"
+        if skippedCount > 0 {
+            return "\(base) · \(skippedCount) ignorée\(skippedCount > 1 ? "s" : "")"
+        }
+        return base
     }
 
     private var totalCount: Int {
@@ -178,8 +190,9 @@ struct AgentActivityView: View {
     private var progressFraction: CGFloat {
         guard totalCount > 0 else { return state.completed ? 1 : 0 }
         if state.completed { return 1 }
+        let settled = doneCount + skippedCount
         let runningBoost: CGFloat = state.planSteps.contains(where: { $0.status == "running" }) ? 0.35 : 0
-        return min(1, (CGFloat(doneCount) + runningBoost) / CGFloat(totalCount))
+        return min(1, (CGFloat(settled) + runningBoost) / CGFloat(totalCount))
     }
 
     var body: some View {
@@ -305,7 +318,7 @@ struct AgentActivityView: View {
                     Text("Étapes")
                         .font(CNFont.callout.weight(.semibold))
                         .foregroundStyle(AppTheme.foreground)
-                    Text("\(min(doneCount, max(totalCount, 1)))/\(max(totalCount, 1))")
+                    Text(stepsBadgeText)
                         .font(.system(.caption, design: .rounded).weight(.semibold))
                         .foregroundStyle(AppTheme.accent)
                         .padding(.horizontal, 8)
@@ -336,14 +349,14 @@ struct AgentActivityView: View {
 
     private var pendingCard: some View {
         HStack(spacing: 10) {
-            Image(systemName: "sparkles")
+            Image(systemName: state.webPhase != .idle ? "globe" : "sparkles")
                 .foregroundStyle(AppTheme.accent)
                 .symbolEffect(
                     .pulse,
                     options: .repeating.speed(0.45),
                     isActive: !reduceMotion && !state.completed
                 )
-            Text(state.currentStepTitle.map(AgentToolLabels.friendlyStepTitle) ?? "Préparation du plan…")
+            Text(pendingCardTitle)
                 .font(CNFont.callout)
                 .foregroundStyle(AppTheme.foreground)
                 .lineLimit(3)
@@ -355,6 +368,23 @@ struct AgentActivityView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(AppTheme.surface.opacity(0.55))
         )
+    }
+
+    private var pendingCardTitle: String {
+        if let title = state.currentStepTitle, !title.isEmpty {
+            return AgentToolLabels.friendlyStepTitle(title)
+        }
+        switch state.webPhase {
+        case .searching: return "Recherche web…"
+        case .analyzing: return "Analyse des sources…"
+        case .done: return "Sources prêtes…"
+        case .idle: break
+        }
+        switch state.phase {
+        case "synthesis", "synthesizing": return "Rédaction de la réponse…"
+        case "executing": return "Exécution…"
+        default: return "Préparation du plan…"
+        }
     }
 
     private func stepRow(_ step: AgentPlanStep, isLast: Bool) -> some View {
@@ -420,6 +450,12 @@ struct AgentActivityView: View {
         }
         if let title = state.currentStepTitle, !title.isEmpty {
             return AgentToolLabels.friendlyStepTitle(title)
+        }
+        switch state.webPhase {
+        case .searching: return "Recherche web…"
+        case .analyzing: return "Analyse des sources…"
+        case .done: return "Sources collectées"
+        case .idle: break
         }
         switch state.phase {
         case "planning": return "Préparation du plan…"

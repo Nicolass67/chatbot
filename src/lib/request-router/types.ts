@@ -34,6 +34,21 @@ export type FileIntent =
 /** @deprecated Utiliser WebMode + WebSearchType */
 export type WebRouteMode = WebMode | "research";
 
+export type AnswerShapeHint =
+  | "factual"
+  | "recommendation"
+  | "ranking"
+  | "comparison"
+  | "explanation"
+  | "research"
+  | "general";
+
+export interface RequestUnderstanding {
+  followUp: boolean;
+  answerShape?: AnswerShapeHint;
+  references?: "none" | "prior_topic" | "mail" | "file" | "ambiguous";
+}
+
 export interface RouteDecision {
   knowledge: KnowledgeNeed;
   web: {
@@ -82,6 +97,7 @@ export interface RouteDecision {
   source: RouteSource;
   reason: string;
   latencyMs: number;
+  understanding?: RequestUnderstanding;
 }
 
 export interface RequestContext {
@@ -100,6 +116,8 @@ export interface RequestContext {
   clock?: RuntimeClock;
   signal?: AbortSignal;
   modelCapabilities?: ModelCapabilities;
+  /** Canal composer UI — source de vérité. */
+  toolChannel?: "web" | "files" | "email";
 }
 
 export interface ObjectiveContext {
@@ -122,6 +140,7 @@ export interface ObjectiveContext {
   emailConnected: boolean;
   filesEnabled: boolean;
   filesConfigured: boolean;
+  toolChannel?: "web" | "files" | "email";
 }
 
 export interface SemanticClassification {
@@ -147,6 +166,9 @@ export interface SemanticClassification {
   tools: { allowToolCalling: boolean };
   confidence: number;
   reason: string;
+  followUp?: boolean;
+  answerShape?: AnswerShapeHint;
+  references?: RequestUnderstanding["references"];
 }
 
 export interface FastPathResult {

@@ -64,14 +64,17 @@ export function conservativeFallback(
     };
   }
 
-  // Sans LLM : ne pas inventer d'outil via lexique — réponse directe.
+  // Web activé dans l'UI = intention utilisateur d'autoriser le live.
+  // Sans classifieur : on préfère une recherche unique plutôt que de bloquer
+  // le Web (Chat comme Agent). Le toggle OFF reste géré plus haut.
   return {
-    knowledge: "static",
-    web: { mode: "none", searchType: "none" },
-    execution: "direct",
+    knowledge: "current",
+    web: { mode: "required", searchType: "single" },
+    execution: "tool",
     vision: { required: false },
-    tools: { allowToolCalling: false },
-    confidence: 0.78,
-    reason: "Classifieur indisponible — aucun outil déclenché par défaut.",
+    tools: { allowToolCalling: true },
+    confidence: FALLBACK_CONFIDENCE,
+    reason:
+      "Classifieur indisponible — Web activé, recherche unique par défaut.",
   };
 }

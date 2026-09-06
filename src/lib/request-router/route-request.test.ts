@@ -83,10 +83,10 @@ describe("tryFastPath", () => {
 });
 
 describe("routeRequestSync — fallback objectif", () => {
-  it("capitale de France → no web", () => {
+  it("capitale de France → web required si Web UI ON (toggle maître)", () => {
     const decision = route("Quelle est la capitale de la France ?");
-    expect(decision.web.mode).toBe("none");
-    expect(decision.execution.mode).toBe("direct");
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(true);
   });
 
   it("météo demain → web required (portée temporelle)", () => {
@@ -95,9 +95,10 @@ describe("routeRequestSync — fallback objectif", () => {
     expect(decision.web.mandatory).toBe(true);
   });
 
-  it("explique DLSS → no web", () => {
+  it("explique DLSS → web required si Web UI ON (toggle maître)", () => {
     const decision = route("Explique le fonctionnement du DLSS.");
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(true);
   });
 
   it("prix RTX 5090 → web required (portée temporelle)", () => {
@@ -106,16 +107,16 @@ describe("routeRequestSync — fallback objectif", () => {
     expect(decision.web.autoSearch).toBe(true);
   });
 
-  it("cherche sur Internet → pas de fast path lexical (fallback sans LLM)", () => {
+  it("cherche sur Internet → web required quand Web UI ON (pas de blocage fallback)", () => {
     const decision = route("Cherche sur Internet qui a gagné le match.");
-    // Sans classifieur LLM, pas de déclenchement par mots-clés.
     expect(decision.source).toBe("fallback_conservative");
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(true);
   });
 
-  it("équation → no web", () => {
+  it("équation → web required si Web UI ON (toggle maître)", () => {
     const decision = route("Résous cette équation : 2x + 5 = 15");
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
   });
 
   it("Web OFF → jamais de recherche", () => {
@@ -126,7 +127,24 @@ describe("routeRequestSync — fallback objectif", () => {
     expect(decision.web.autoSearch).toBe(false);
   });
 
-  it("mode agent → execution agent", () => {
+  it("liens d'achat 4080 en Chat → autoSearch si Web ON", () => {
+    const decision = route(
+      "Tu peux me trouver des liens pour m’acheter ma 4080 super ? Le moins cher possible si tu peux trouver ça",
+      {
+        chatMode: "chat",
+        webSearchEnabled: true,
+        recentUserMessages: [
+          "Tu me conseille quelle carte graphique pour du gaming en 4k 120hz ?",
+          "Et avec une 4080 super c’est possible ?",
+        ],
+      }
+    );
+    expect(decision.web.enabled).toBe(true);
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(true);
+  });
+
+  it("mode agent + Web ON → web required (pas autoSearch Chat)", () => {
     const decision = routeRequestSync({
       message: "Compare les GPU actuels",
       webSearchEnabled: true,
@@ -137,31 +155,49 @@ describe("routeRequestSync — fallback objectif", () => {
       clock: SEPT_2026_CLOCK,
     });
     expect(decision.execution.mode).toBe("agent");
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(false);
   });
 
-  it("suivi conversationnel sans signal temporel → no web (LLM async décidera)", () => {
+  it("suivi conversationnel → web required si Web UI ON", () => {
     const decision = route("Et la 5080 ?", {
       recentUserMessages: ["Quel est le prix actuel de la RTX 5090 ?"],
     });
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
+    expect(decision.web.autoSearch).toBe(true);
   });
 
-  it("adversarial sondage conceptuel → no web", () => {
+  it("question conceptuelle → web required si Web UI ON (toggle maître)", () => {
     const decision = route("Explique-moi ce qu'est un sondage");
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
   });
 
-  it("adversarial météo concept → no web", () => {
+  it("question conceptuelle météo → web required si Web UI ON", () => {
     const decision = route("Comment fonctionne la météo ?");
-    expect(decision.web.mode).toBe("none");
+    expect(decision.web.mode).toBe("required");
   });
 });
 
 describe("conservativeFallback", () => {
-  it("sans signal temporel → NO_WEB", () => {
+  it("Web ON sans signal temporel → recherche unique par défaut", () => {
     const objective = buildObjectiveContext({
       message: "Pourquoi les GPU utilisent-ils de la VRAM ?",
       webSearchEnabled: true,
+      chatMode: "chat",
+      imageCount: 0,
+      attachmentCount: 0,
+      modelId: "",
+      clock: SEPT_2026_CLOCK,
+    });
+    const fb = conservativeFallback(objective);
+    expect(fb.web.mode).toBe("required");
+    expect(fb.web.searchType).toBe("single");
+  });
+
+  it("Web OFF → none", () => {
+    const objective = buildObjectiveContext({
+      message: "Pourquoi les GPU utilisent-ils de la VRAM ?",
+      webSearchEnabled: false,
       chatMode: "chat",
       imageCount: 0,
       attachmentCount: 0,
@@ -258,10 +294,9 @@ describe("evaluation dataset (mock classifier)", () => {
         testCase
       );
       const result = evaluateRouteDecision(testCase, decision);
-      if (id.startsWith("adversarial")) {
-        expect(decision.web.mode, id).toBe("none");
-      } else {
-        expect(decision.web.mode, id).toBe("required");
+      // Web UI ON = recherche même sur cas "adversariaux" conceptuels.
+      expect(decision.web.mode, id).toBe("required");
+      if (!id.startsWith("adversarial")) {
         expect(result.webFn, id).toBe(false);
       }
     }
@@ -279,7 +314,8 @@ describe("formatWebSearchFailureBlock", () => {
         status,
         `Échec ${status}`
       );
-      expect(block).toContain(`status="${status}"`);
+      expect(block).toContain(`statusCode="${status}"`);
+      expect(block).toContain('status="failure"');
       expect(block).toContain("Ne pas inventer");
     }
   });

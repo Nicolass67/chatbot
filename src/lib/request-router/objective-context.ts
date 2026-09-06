@@ -44,5 +44,6 @@ export function buildObjectiveContext(ctx: RequestContext): ObjectiveContext {
     emailConnected: ctx.emailConnected ?? false,
     filesEnabled: ctx.filesEnabled ?? false,
     filesConfigured: ctx.filesConfigured ?? false,
+    toolChannel: ctx.toolChannel,
   };
 }
