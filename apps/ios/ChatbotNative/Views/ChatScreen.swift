@@ -282,14 +282,15 @@ struct ChatScreen: View {
             if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id), !cached.isEmpty {
                 // Fenêtre récente seulement — pas tout le cache (RAM).
                 if cached.count > historyInitialPageSize {
-                    messages = Array(cached.suffix(historyInitialPageSize))
+                    messages = Self.withoutLeakedDraftControlMessages(Array(cached.suffix(historyInitialPageSize)))
                     hasMoreOlderMessages = true
                 } else {
-                    messages = cached
+                    messages = Self.withoutLeakedDraftControlMessages(cached)
                 }
             }
             // Toujours resync serveur (hasMore + page bornée).
             await loadMessages()
+            await restoreDraftCardFromServerIfNeeded()
             if !settingsHydrated {
                 await loadSettings()
             }
@@ -827,9 +828,9 @@ struct ChatScreen: View {
         case .summarize:
             prompt = "Résume ce mail de façon claire et concise."
         case .reply:
-            prompt = "Prépare une réponse professionnelle à ce mail et crée un brouillon via l’outil email_create_draft (sans narrer le brouillon)."
+            prompt = "Prépare une réponse professionnelle à ce mail et crée un brouillon."
         case .draft:
-            prompt = "Crée un nouveau brouillon d’email pour ce contexte via email_create_draft."
+            prompt = "Crée un nouveau brouillon d’email pour ce contexte."
         case .extractTasks:
             prompt = "Extrais les tâches et dates demandées dans ce mail."
         case .searchUnread:
@@ -837,32 +838,17 @@ struct ChatScreen: View {
                 ? "Résume mes mails non lus les plus importants."
                 : "Liste les fichiers pertinents pour mon contexte actuel."
         case .improve:
-            prompt = "Améliore le brouillon en cours pour le rendre plus clair et professionnel via les outils mail."
+            prompt = "Améliore le brouillon en cours pour le rendre plus clair et professionnel."
         }
         await send(forcedText: prompt, hideUserMessage: true)
     }
 
     /// Réécrit le brouillon ouvert → met à jour la carte (pas une bulle chat).
     private func rewriteOpenDraft() async {
-        guard let draftId = draftCardId, !isSending else { return }
-        let threadId = forcedActiveContext?.mailThreadId
-        var linkage = ""
-        if let threadId, !threadId.isEmpty {
-            linkage = """
-
-            Fil mail actif threadId=\(threadId).
-            Passe OBLIGATOIREMENT threadId=\(threadId) à email_create_draft
-            (réponse au fil, pas un nouveau mail isolé).
-            """
-        }
+        guard draftCardId != nil, !isSending else { return }
+        // Phrase courte seulement — le draftId part via activeContext (pas dans le message persisté).
         await send(
-            forcedText: """
-            Réécris le corps de CE brouillon email (draftId=\(draftId)) de façon plus claire et naturelle.
-            Conserve le même destinataire et le même objet.
-            Appelle immédiatement email_create_draft avec to, subject et le nouveau bodyText.
-            \(linkage)
-            INTERDIT d’écrire le corps du mail dans le chat — la carte brouillon l’affiche.
-            """,
+            forcedText: "Réécris ce brouillon de façon plus claire et naturelle.",
             hideUserMessage: true,
             rewriteDraftCard: true
         )
@@ -1274,6 +1260,7 @@ struct ChatScreen: View {
 
     private func discardDraftCard() {
         draftRecipientSuggestTask?.cancel()
+        let idToCancel = draftCardId
         draftCardId = nil
         draftCardText = ""
         draftCardTo = ""
@@ -1290,6 +1277,11 @@ struct ChatScreen: View {
         draftCardStatus = "Brouillon"
         ConversationSessionStore.clearDraftCard(conversationId: conversation.id)
         AppHaptics.light()
+        if let idToCancel, !idToCancel.isEmpty {
+            Task {
+                try? await client.cancelEmailDraft(id: idToCancel)
+            }
+        }
     }
 
     private func persistDraftCardSnapshot() {
@@ -1325,6 +1317,82 @@ struct ChatScreen: View {
         draftCardEditing = false
         if let id = snap.draftId, !id.isEmpty {
             Task { await refreshDraftCardAttachments(draftId: id) }
+        }
+    }
+
+    /// Réhydrate la carte depuis le serveur si absente en local (kill app / autre device).
+    private func restoreDraftCardFromServerIfNeeded() async {
+        guard draftCardId == nil, !draftCardStreaming, !draftCardSent else {
+            if let id = draftCardId, !id.isEmpty {
+                await refreshDraftCardAttachments(draftId: id)
+            }
+            return
+        }
+        do {
+            guard let detail = try await client.fetchActiveEmailDraft(conversationId: conversation.id) else {
+                return
+            }
+            draftCardId = detail.draftId
+            draftCardText = detail.bodyText
+            draftCardTo = detail.to.joined(separator: ", ")
+            draftCardSubject = detail.subject
+            draftCardAttachments = detail.attachments
+            draftCardStatus = "Brouillon"
+            draftCardSent = false
+            draftInConversation = true
+            draftCardEditing = false
+            persistDraftCardSnapshot()
+        } catch {
+            // Silencieux : pas de brouillon / email off.
+        }
+    }
+
+    /// Anciens messages où les consignes outil ont fuité dans le contenu user.
+    private static func isLeakedDraftControlMessage(_ content: String) -> Bool {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        let markers = [
+            "Brouillon email ouvert",
+            "Brouillon email ouvert",
+            "Demande de l’utilisateur:",
+            "Demande de l'utilisateur:",
+            "Appelle immédiatement",
+            "email_create_draft",
+            "email_create_draft",
+            "INTERDIT d",
+            "INTERDIT d’écrire le corps",
+            "INTERDIT d'écrire le corps",
+            "la carte brouillon l’affiche",
+            "la carte brouillon l'affiche",
+            "RÉÉCRITURE :",
+            "Réécris le corps de CE brouillon",
+            "draftId=",
+            "Corps actuel:",
+            "Destinataire:",
+            "outil email_create_draft",
+        ]
+        let hitCount = markers.reduce(0) { count, marker in
+            text.localizedCaseInsensitiveContains(marker) ? count + 1 : count
+        }
+        // Assez de marqueurs → litanie outil, pas un vrai message user.
+        if hitCount >= 2 { return true }
+        if text.localizedCaseInsensitiveContains("draftId=")
+            && text.localizedCaseInsensitiveContains("INTERDIT") {
+            return true
+        }
+        if text.localizedCaseInsensitiveContains("Brouillon email ouvert")
+            && text.localizedCaseInsensitiveContains("Demande de") {
+            return true
+        }
+        return false
+    }
+
+    private static func withoutLeakedDraftControlMessages(_ list: [MessageDTO]) -> [MessageDTO] {
+        list.filter { msg in
+            if msg.role == "user", isLeakedDraftControlMessage(msg.content) {
+                return false
+            }
+            return true
         }
     }
 
@@ -1589,10 +1657,12 @@ private var sendBlockedHint: String {
                 olderKept = Array(messages.prefix(cut))
             }
             let combined = olderKept + recent
-            messages = mergeMessages(
-                local: messages,
-                server: combined,
-                preserveAssistantId: preserveAssistantId
+            messages = Self.withoutLeakedDraftControlMessages(
+                mergeMessages(
+                    local: messages,
+                    server: combined,
+                    preserveAssistantId: preserveAssistantId
+                )
             )
             if olderKept.isEmpty {
                 hasMoreOlderMessages = page.hasMore
@@ -1649,7 +1719,7 @@ private var sendBlockedHint: String {
             }
             suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
             scrollAnchorAfterPrepend = oldestId
-            messages = older + messages
+            messages = Self.withoutLeakedDraftControlMessages(older + messages)
             hydrateChromeSources(from: older)
             pruneChromeOutsideWindow()
             let ids = older.flatMap { $0.attachments ?? [] }
@@ -2291,27 +2361,9 @@ private var sendBlockedHint: String {
         sendGeneration &+= 1
         let gen = sendGeneration
 
-        // Texte API : enrichi si un brouillon est ouvert (contexte pour peaufiner / réécrire).
-        var text = rawText
-        if let draftId = draftCardId,
-           !draftId.isEmpty,
-           !rawText.isEmpty {
-            let bodySnippet = String(draftCardText.prefix(2500))
-            let rewriteRule = rewriteDraftCard
-                ? "RÉÉCRITURE : appelle email_create_draft avec le même destinataire/objet, un bodyText réécrit, et le threadId du fil actif si fourni. INTERDIT de coller le corps dans le chat."
-                : "Réécris et mets à jour CE brouillon selon la demande (outil email_create_draft / draft_preview). Ne crée pas un fil séparé. Ne pose pas de question — applique directement le changement."
-            text = """
-            Brouillon email ouvert (draftId=\(draftId)).
-            Destinataire: \(draftCardTo.isEmpty ? "(inconnu)" : draftCardTo)
-            Objet: \(draftCardSubject.isEmpty ? "(aucun)" : draftCardSubject)
-            Corps actuel:
-            \(bodySnippet)
-
-            Demande de l’utilisateur: \(rawText)
-
-            \(rewriteRule)
-            """
-        }
+        // Ne JAMAIS injecter les consignes outil dans le message persisté.
+        // Le draftId / thread part via activeContext (system) — sinon l’historique affiche la litanie.
+        let text = rawText
 
         var opts = options ?? ChatSendOptions(attachmentIds: ids, mode: chatMode)
         opts.toolChannel = toolChannel.apiValue

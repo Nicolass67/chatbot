@@ -107,6 +107,23 @@ export async function getEmailDraftForUser(
   return draft ?? null;
 }
 
+/** Dernier brouillon ouvert (draft/validated) pour une conversation — hydrate la carte iOS. */
+export async function getOpenEmailDraftForConversation(
+  conversationId: string,
+  userId: string
+): Promise<EmailDraft | null> {
+  const db = getDb();
+  const draft = await db.query.emailDrafts.findFirst({
+    where: and(
+      eq(emailDrafts.conversationId, conversationId),
+      eq(emailDrafts.userId, userId),
+      inArray(emailDrafts.status, ["draft", "validated"])
+    ),
+    orderBy: (table, { desc }) => [desc(table.updatedAt)],
+  });
+  return draft ?? null;
+}
+
 export async function requireEmailDraftForUser(
   draftId: string,
   userId: string

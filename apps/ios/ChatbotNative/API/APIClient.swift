@@ -1243,6 +1243,41 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// Brouillon encore ouvert pour une conversation (status draft/validated).
+    func fetchActiveEmailDraft(conversationId: String) async throws -> EmailDraftDetail? {
+        if UITestMode.isActive { return nil }
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/email/drafts/active"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "conversationId", value: conversationId),
+        ]
+        let req = authorizedURLRequest(components.url!)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIClientError.decode
+        }
+        guard let draft = obj["draft"] as? [String: Any] else { return nil }
+        let draftId = (draft["draftId"] as? String) ?? ""
+        guard !draftId.isEmpty else { return nil }
+        return EmailDraftDetail(
+            draftId: draftId,
+            to: (draft["to"] as? [String]) ?? [],
+            subject: (draft["subject"] as? String) ?? "",
+            bodyText: (draft["bodyText"] as? String) ?? (draft["bodyText"] as? String) ?? "",
+            attachments: Self.parseDraftAttachments(draft["attachments"])
+        )
+    }
+
+    func cancelEmailDraft(id: String) async throws {
+        if UITestMode.isActive { return }
+        let req = authorizedRequest(path: "api/email/drafts/\(id)", method: "DELETE")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+    }
+
     func suggestMailRecipients(query: String, limit: Int = 8) async throws -> [MailRecipientSuggestion] {
         if UITestMode.isActive { return [] }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -122,7 +122,7 @@ enum ConversationSessionStore {
         return map
     }
 
-    // MARK: - Draft card snapshot (survit à la fermeture de l’assistant)
+    // MARK: - Draft card snapshot (survit au kill app via UserDefaults)
 
     struct DraftCardSnapshot: Codable, Equatable {
         var draftId: String?
@@ -134,18 +134,32 @@ enum ConversationSessionStore {
         var inConversation: Bool
     }
 
+    private static let draftCardDefaultsPrefix = "ctxchat.draftCard."
     private static var draftCardMemory: [String: DraftCardSnapshot] = [:]
 
+    private static func draftCardDefaultsKey(_ conversationId: String) -> String {
+        draftCardDefaultsPrefix + conversationId
+    }
+
     static func draftCard(conversationId: String) -> DraftCardSnapshot? {
-        draftCardMemory[conversationId]
+        if let mem = draftCardMemory[conversationId] { return mem }
+        guard let data = UserDefaults.standard.data(forKey: draftCardDefaultsKey(conversationId)),
+              let snap = try? JSONDecoder().decode(DraftCardSnapshot.self, from: data)
+        else { return nil }
+        draftCardMemory[conversationId] = snap
+        return snap
     }
 
     static func saveDraftCard(conversationId: String, _ snap: DraftCardSnapshot) {
         draftCardMemory[conversationId] = snap
+        if let data = try? JSONEncoder().encode(snap) {
+            UserDefaults.standard.set(data, forKey: draftCardDefaultsKey(conversationId))
+        }
     }
 
     static func clearDraftCard(conversationId: String) {
         draftCardMemory.removeValue(forKey: conversationId)
+        UserDefaults.standard.removeObject(forKey: draftCardDefaultsKey(conversationId))
     }
 }
 
