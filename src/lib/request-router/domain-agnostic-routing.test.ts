@@ -85,10 +85,12 @@ describe("domain-agnostic routing — données actuelles", () => {
 
 describe("domain-agnostic routing — questions historiques", () => {
   for (const pair of STATIC_CASES) {
-    it(`historique : ${pair.historical.slice(0, 50)}…`, () => {
+    it(`historique + Web ON : ${pair.historical.slice(0, 50)}… → recherche quand même`, () => {
       const decision = route(pair.historical);
       expect(decision.temporal.scope).toBe("historical");
-      expect(decision.web.mode).toBe("none");
+      // Toggle Web = interrupteur maître : pas d'exception historique.
+      expect(decision.web.mode).toBe("required");
+      expect(decision.web.autoSearch).toBe(true);
     });
   }
 });

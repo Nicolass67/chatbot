@@ -40,18 +40,8 @@ export function conservativeFallback(
     };
   }
 
-  if (objective.temporal.scope === "historical") {
-    return {
-      knowledge: "static",
-      web: { mode: "none", searchType: "none" },
-      execution: "direct",
-      vision: { required: false },
-      tools: { allowToolCalling: false },
-      confidence: HIGH_CONFIDENCE,
-      reason: "Demande historique explicite.",
-    };
-  }
-
+  // Même pour une portée historique : si le Web est ON, on cherche
+  // (le decision-builder force aussi required). Pas d'exception métier.
   if (temporalScopeNeedsWeb(objective.temporal.scope)) {
     return {
       knowledge: "current",

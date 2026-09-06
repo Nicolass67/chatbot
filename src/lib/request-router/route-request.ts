@@ -114,8 +114,8 @@ export async function resolveRouteDecision(
 export function routeToWebSearchIntent(route: RouteDecision) {
   return {
     settingEnabled: route.web.enabled,
-    queryUseful: route.web.wouldBeUseful,
-    allowed: route.web.enabled && route.web.wouldBeUseful,
+    queryUseful: route.web.wouldBeUseful || route.web.mode !== "none",
+    allowed: route.web.enabled && route.web.mode !== "none",
     autoSearch: route.web.autoSearch,
     searchQuery: route.web.searchQuery,
   };

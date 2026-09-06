@@ -73,6 +73,15 @@ describe("createFreshnessStateFromRoute", () => {
     expect(state.status).toBe("not_required");
   });
 
+  it("web required même si knowledge static → fresh required (toggle Web)", () => {
+    const state = createFreshnessStateFromRoute(
+      baseRoute({ knowledge: "static" }),
+      true
+    );
+    expect(state.requiresFreshWebData).toBe(true);
+    expect(state.status).toBe("required");
+  });
+
   it("web disabled in settings → failed", () => {
     const state = createFreshnessStateFromRoute(baseRoute(), false);
     expect(state.status).toBe("failed");

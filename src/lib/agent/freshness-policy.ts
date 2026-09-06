@@ -28,8 +28,9 @@ export function createFreshnessStateFromRoute(
   route: RouteDecision,
   webSearchEnabled: boolean
 ): FreshnessState {
-  const requiresFreshWebData =
-    route.web.mode === "required" && route.knowledge !== "static";
+  // mode required (dont forcé par toggle Web UI) ⇒ recherche obligatoire,
+  // indépendamment du label knowledge (static/current/unknown).
+  const requiresFreshWebData = route.web.mode === "required";
   const requiresResearchFlow =
     route.web.searchType === "research" && route.web.mode === "required";
 

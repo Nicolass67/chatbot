@@ -188,26 +188,28 @@ export function buildRouteDecision(params: {
   let webMode = webEnabled ? classification.web.mode : "none";
   let searchType = webEnabled ? classification.web.searchType : "none";
   let webReason = classification.reason;
+  let knowledge = classification.knowledge;
 
   // Toggle Web UI = interrupteur maître (Chat et Agent).
-  // Si le Web est activé et que le classifieur/fallback a laissé mode "none"
-  // sur un vrai message non historique, on force une recherche unique.
-  // Web OFF → tout reste "none" (branche ci-dessus).
-  if (
-    webEnabled &&
-    webMode === "none" &&
-    objective.trimmedMessage.length >= 3 &&
-    objective.temporal.scope !== "historical"
-  ) {
-    webMode = "required";
-    searchType = "single";
-    webReason =
-      "Web activé dans l'UI — recherche requise (Chat/Agent).";
+  // Web ON + message réel → toujours une recherche (required), sans exception
+  // historique / domaine / hardcode métier. Web OFF → tout reste "none".
+  if (webEnabled && objective.trimmedMessage.length >= 3) {
+    if (webMode !== "required") {
+      webMode = "required";
+      webReason =
+        "Web activé dans l'UI — recherche obligatoire (Chat/Agent).";
+    }
+    if (searchType === "none") {
+      searchType = "single";
+    }
+    if (knowledge === "static") {
+      knowledge = "current";
+    }
   }
 
   const mandatory = webMode === "required";
-  // Auto-search en Chat dès que le Web n'est pas fermé. L'Agent exécute
-  // via sa boucle d'outils quand mode === required.
+  // Auto-search Chat dès que le Web n'est pas fermé. L'Agent exécute via
+  // runMandatoryRouteWebSearch quand mode === required.
   const autoSearch =
     webEnabled &&
     webMode !== "none" &&
@@ -223,7 +225,7 @@ export function buildRouteDecision(params: {
   const searchQuery = resolveSearchQuery(ctx, classification);
 
   return {
-    knowledge: classification.knowledge,
+    knowledge,
     web: {
       enabled: webEnabled,
       mode: webMode,

@@ -176,6 +176,20 @@ describe("routeRequestSync — fallback objectif", () => {
     const decision = route("Comment fonctionne la météo ?");
     expect(decision.web.mode).toBe("required");
   });
+
+  it("Web ON → recherche obligatoire sans hardcode (recette, fiscalité, historique)", () => {
+    for (const message of [
+      "Tu peux me chercher une recette de gâteau vegan ?",
+      "Quels assos sont defiscalisable à 75% ?",
+      "Quel était le prix du bitcoin en 2019 ?",
+      "Explique-moi ce qu'est un sondage",
+    ]) {
+      const decision = route(message);
+      expect(decision.web.mode, message).toBe("required");
+      expect(decision.web.autoSearch, message).toBe(true);
+      expect(decision.web.searchQuery.length, message).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe("conservativeFallback", () => {
