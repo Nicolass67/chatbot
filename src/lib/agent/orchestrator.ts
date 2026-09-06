@@ -76,10 +76,12 @@ import { getLocalAIRuntime } from "@/lib/runtime/factory";
 import { applyMessageEdit } from "./edit-message";
 import {
   buildChatContext,
+  injectEmailListIntoContext,
   injectFileSearchIntoContext,
   injectTemporalIntoContext,
   injectWebSearchFailureIntoContext,
   injectWebSearchIntoContext,
+  type InjectedEmailHit,
   type InjectedFileSearchHit,
 } from "./context-builder";
 import type { ChatOrchestratorInput } from "./events";
@@ -257,6 +259,80 @@ async function runAutoFileSearchForChat(params: {
     };
   }
 }
+
+
+async function runAutoEmailListForChat(params: {
+  input: ChatOrchestratorInput;
+  query: string;
+  toolCtxBase: Omit<ToolContext, "signal">;
+}): Promise<{
+  ok: boolean;
+  query: string;
+  results: InjectedEmailHit[];
+  message?: string;
+}> {
+  const { input, query, toolCtxBase } = params;
+  const q = query.trim() || "INBOX";
+
+  input.onEvent({
+    type: "tool_start",
+    tool: "email_list",
+    input: { label: "INBOX", maxResults: 5, query: q },
+  });
+
+  try {
+    const raw = (await executeToolWithPolicy(
+      "email_list",
+      { label: "INBOX", maxResults: 5 },
+      {
+        ...toolCtxBase,
+        signal: input.signal ?? AbortSignal.timeout(30_000),
+      }
+    )) as {
+      messages?: Array<Record<string, unknown>>;
+    };
+
+    const results: InjectedEmailHit[] = (raw.messages ?? [])
+      .map((m) => ({
+        id: String(m.id ?? ""),
+        threadId: typeof m.threadId === "string" ? m.threadId : undefined,
+        from: typeof m.from === "string" ? m.from : undefined,
+        subject: typeof m.subject === "string" ? m.subject : undefined,
+        date: typeof m.date === "string" ? m.date : undefined,
+        snippet: typeof m.snippet === "string" ? m.snippet : undefined,
+        bodyPreview:
+          typeof m.bodyPreview === "string" ? m.bodyPreview : undefined,
+      }))
+      .filter((m) => m.id.length > 0)
+      .slice(0, 8);
+
+    input.onEvent({
+      type: "tool_done",
+      tool: "email_list",
+      summary:
+        results.length > 0
+          ? `${results.length} email(s) trouvé(s)`
+          : "Aucun email trouvé",
+      sourceCount: results.length,
+    });
+
+    return { ok: true, query: q, results };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    input.onEvent({
+      type: "tool_done",
+      tool: "email_list",
+      summary: `Erreur: ${errMsg}`,
+    });
+    return {
+      ok: false,
+      query: q,
+      results: [],
+      message: `Lecture boîte mail échouée: ${errMsg}`,
+    };
+  }
+}
+
 
 async function persistAssistantMessage(params: {
   input: ChatOrchestratorInput;
@@ -838,34 +914,49 @@ export async function runChatOrchestrator(
       !input.regenerate &&
       imageCount === 0;
 
-    const [builtContext, autoSearch, autoFileSearch] = await Promise.all([
-      buildChatContext({
-        conversationId: input.conversationId,
-        userContent: input.userContent,
-        settings,
-        pendingAttachments,
-        signal: input.signal,
-        allDbMessages,
-        convRow: convRow ?? null,
-        plan: contextPlan,
-        activeContext: resolvedActive,
-      }),
-      shouldAutoSearch
-        ? runAutoWebSearchForChat({
-            input,
-            settings,
-            query: route.web.searchQuery,
-            toolCtxBase,
-          })
-        : Promise.resolve(null),
-      shouldAutoFileSearch
-        ? runAutoFileSearchForChat({
-            input,
-            query: route.files.searchQuery!.trim(),
-            toolCtxBase,
-          })
-        : Promise.resolve(null),
-    ]);
+    const shouldAutoEmailList =
+      chatMode === "chat" &&
+      channel === "email" &&
+      channelResolved.emailEnabled &&
+      !input.regenerate &&
+      imageCount === 0;
+
+    const [builtContext, autoSearch, autoFileSearch, autoEmailList] =
+      await Promise.all([
+        buildChatContext({
+          conversationId: input.conversationId,
+          userContent: input.userContent,
+          settings,
+          pendingAttachments,
+          signal: input.signal,
+          allDbMessages,
+          convRow: convRow ?? null,
+          plan: contextPlan,
+          activeContext: resolvedActive,
+        }),
+        shouldAutoSearch
+          ? runAutoWebSearchForChat({
+              input,
+              settings,
+              query: route.web.searchQuery,
+              toolCtxBase,
+            })
+          : Promise.resolve(null),
+        shouldAutoFileSearch
+          ? runAutoFileSearchForChat({
+              input,
+              query: route.files.searchQuery!.trim(),
+              toolCtxBase,
+            })
+          : Promise.resolve(null),
+        shouldAutoEmailList
+          ? runAutoEmailListForChat({
+              input,
+              query: route.email.searchQuery?.trim() || input.userContent,
+              toolCtxBase,
+            })
+          : Promise.resolve(null),
+      ]);
 
     const {
       contextMessages,
@@ -951,6 +1042,14 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         contextMessages,
         autoFileSearch.query,
         autoFileSearch.results
+      );
+    }
+
+    if (autoEmailList) {
+      injectEmailListIntoContext(
+        contextMessages,
+        autoEmailList.query,
+        autoEmailList.results
       );
     }
 

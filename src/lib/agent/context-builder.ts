@@ -463,3 +463,56 @@ Réponds immédiatement à partir de ces résultats (chemins, noms, fileId).
 INTERDIT : demander confirmation, mot-clé, type de fichier, ou renvoyer vers l'onglet Files.
 Si aucun résultat : dis-le clairement sans inventer de fichier.`;
 }
+
+export interface InjectedEmailHit {
+  id: string;
+  threadId?: string;
+  from?: string;
+  subject?: string;
+  date?: string;
+  snippet?: string;
+  bodyPreview?: string;
+}
+
+/** Résultats email_list déjà exécutés (canal composer Email) — pas d'invention. */
+export function injectEmailListIntoContext(
+  contextMessages: ChatMessage[],
+  query: string,
+  results: InjectedEmailHit[]
+): void {
+  const systemMsg = contextMessages[0];
+  if (systemMsg?.role !== "system" || typeof systemMsg.content !== "string") {
+    return;
+  }
+  const lines =
+    results.length === 0
+      ? "(aucun email trouvé)"
+      : results
+          .slice(0, 8)
+          .map((r, i) => {
+            const from = r.from?.trim() ? ` de ${r.from.trim()}` : "";
+            const date = r.date?.trim() ? ` — ${r.date.trim()}` : "";
+            const subj = r.subject?.trim() || "(sans objet)";
+            const snip = (r.bodyPreview || r.snippet || "").trim();
+            const body = snip ? `\n  aperçu: ${snip.slice(0, 400)}` : "";
+            const ids = [
+              r.id ? `id=${r.id}` : "",
+              r.threadId ? `threadId=${r.threadId}` : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
+            return `${i + 1}. ${subj}${from}${date}${ids ? ` (${ids})` : ""}${body}`;
+          })
+          .join("\n");
+  systemMsg.content += `\n\n<email_inbox_results query=${JSON.stringify(query)}>
+${lines}
+</email_inbox_results>
+
+La boîte mail a DÉJÀ été interrogée (outil email_list). Ce sont des emails RÉELS.
+Réponds immédiatement à la demande utilisateur à partir de ces résultats uniquement.
+INTERDIT : inventer expéditeur, objet, date, contenu, ou placeholders du type « [Date récente] ».
+INTERDIT : demander confirmation, dossier, ou reformulation avant de répondre.
+Si la demande vise le dernier / plus récent : utilise le message n°1.
+Si aucun résultat : dis-le clairement sans inventer.`;
+}
+
