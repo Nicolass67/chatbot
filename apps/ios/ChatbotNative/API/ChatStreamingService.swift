@@ -104,7 +104,12 @@ actor ChatStreamingService {
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let session = URLSession(configuration: .default)
+        let config = URLSessionConfiguration.default
+        // SSE agent / chat longs : ne pas couper trop tôt si l’app est en arrière-plan bref.
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = true
+        let session = URLSession(configuration: config)
         urlSession = session
         defer {
             if urlSession === session {

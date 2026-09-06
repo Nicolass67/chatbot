@@ -52,7 +52,8 @@ struct ChatScreen: View {
     @State private var showDocImporter = false
     @State private var showTools = false
     @State private var quickLookURL: IdentifiedURL?
-    @State private var streamInterrupted = false
+    /// Garde le SSE vivant quand l’utilisateur passe une autre app (évite AbortSignal serveur).
+    @State private var chatBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     @State private var canRetrySend = false
 
     @State private var models: [ModelOptionDTO] = []
@@ -335,35 +336,25 @@ struct ChatScreen: View {
                 Task { await rehydrateMailStickyAttachments() }
             }
         }
-        // Ne pas annuler le stream sur changement d’onglet / preview fichier —
-        // seul le background (scenePhase) ou Stop explicite interrompt.
+        // Ne pas annuler le stream sur changement d’onglet / preview fichier.
+        // Arrière-plan : NE PAS cancel (sinon AbortSignal coupe le serveur) —
+        // demander du temps CPU/réseau via beginBackgroundTask, puis resync au retour.
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, isSending {
-                sendTask?.cancel()
-                Task { await streamingService.cancel() }
-                streamInterrupted = true
-                isSending = false
-                thinkingKind = nil
-                agentActivity = AgentActivityState()
-                if !streamAccum.text.isEmpty || !streamingText.isEmpty {
-                    let partial = (streamAccum.text.isEmpty ? streamingText : streamAccum.text)
-                        + "\n\n_(Interrompu — app en arrière-plan)_"
-                    messages.append(
-                        MessageDTO(
-                            id: "partial-\(UUID().uuidString)",
-                            role: "assistant",
-                            content: partial,
-                            createdAt: nil
-                        )
-                    )
-                    streamingText = ""
-                    streamAccum.text = ""
+                beginChatBackgroundTaskIfNeeded()
+            } else if phase == .active {
+                let hadBgTask = chatBackgroundTaskId != .invalid
+                endChatBackgroundTask()
+                if isSending {
+                    // Stream encore vivant : ne rien interrompre.
+                    return
                 }
-            } else if phase == .active, streamInterrupted {
-                streamInterrupted = false
-                Task {
-                    await loadMessages()
-                    runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
+                // Coupure possible pendant l’absence : récupérer la réponse déjà persistée.
+                if hadBgTask || messages.last?.role == "user" {
+                    Task {
+                        await loadMessages()
+                        runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
+                    }
                 }
             }
         }
@@ -2504,10 +2495,11 @@ private var sendBlockedHint: String {
                 return
             }
             if Task.isCancelled {
-                // Stop / arrière-plan : finalizeStoppedStream (ou scenePhase) a déjà géré le partial.
+                // Stop utilisateur : finalizeStoppedStream a déjà géré le partial.
                 thinkingKind = nil
                 isSending = false
                 sendTask = nil
+                endChatBackgroundTask()
                 await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
                 return
             }
@@ -2638,6 +2630,11 @@ private var sendBlockedHint: String {
             if Self.isUserCancellation(error) {
                 runtimeStatus = "READY"
                 await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
+            } else if Self.isTransientNetworkDrop(error) {
+                // Souvent : app en arrière-plan — le serveur a pu finir quand même.
+                runtimeStatus = "READY"
+                await loadMessages()
+                await finishDraftRewriteIfNeeded(appliedViaPreview: draftPreviewReceivedThisTurn, fallbackText: streamingText)
             } else {
                 self.error = friendlyChatSendError(error)
                 canRetrySend = true
@@ -2656,6 +2653,26 @@ private var sendBlockedHint: String {
             isSending = false
             sendTask = nil
         }
+        endChatBackgroundTask()
+    }
+
+    private func beginChatBackgroundTaskIfNeeded() {
+        guard chatBackgroundTaskId == .invalid else { return }
+        chatBackgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "chat-sse") {
+            Task { @MainActor in
+                // Expiration iOS : libérer le slot, sans cancel du stream serveur.
+                if chatBackgroundTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(chatBackgroundTaskId)
+                    chatBackgroundTaskId = .invalid
+                }
+            }
+        }
+    }
+
+    private func endChatBackgroundTask() {
+        guard chatBackgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(chatBackgroundTaskId)
+        chatBackgroundTaskId = .invalid
     }
 
     private func friendlyChatSendError(_ error: Error) -> String {
@@ -2686,6 +2703,30 @@ private var sendBlockedHint: String {
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return true }
         let msg = error.localizedDescription.lowercased()
         return msg == "cancelled" || msg == "canceled" || msg.contains("annul")
+    }
+
+    /// Coupure réseau typique quand iOS suspend l’app — resync plutôt qu’alerter.
+    private static func isTransientNetworkDrop(_ error: Error) -> Bool {
+        if let url = error as? URLError {
+            switch url.code {
+            case .networkConnectionLost, .timedOut, .notConnectedToInternet,
+                 .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff:
+                return true
+            default:
+                break
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut,
+                 NSURLErrorNotConnectedToInternet, NSURLErrorCannotConnectToHost:
+                return true
+            default:
+                break
+            }
+        }
+        return false
     }
 
     /// « à moi » / « a moi » en frontières de mots — évite « à moins ».
