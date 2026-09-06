@@ -14,7 +14,7 @@ private struct ChatScrollMetrics: Equatable {
     var distanceToBottom: CGFloat
 }
 
-/// Dégradé bas : teinte ambient, dense surtout sous le composer / tab bar (pas de voile gris haut).
+/// Fade viewport : calque indépendant du scroll, ancré au bas physique de l’écran.
 private struct ComposerBottomBlurFade: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
@@ -22,17 +22,14 @@ private struct ComposerBottomBlurFade: View {
     var body: some View {
         let base = AppTheme.background
         let peak: Double = reduceTransparency
-            ? (colorScheme == .dark ? 0.9 : 0.8)
-            : (colorScheme == .dark ? 0.78 : 0.65)
+            ? (colorScheme == .dark ? 0.92 : 0.82)
+            : (colorScheme == .dark ? 0.82 : 0.7)
         LinearGradient(
             stops: [
-                // Haut (au-dessus des quick controls) : totalement transparent.
                 .init(color: base.opacity(0), location: 0),
-                .init(color: base.opacity(0), location: 0.2),
-                // Derrière Disponible / composer : léger.
-                .init(color: base.opacity(peak * 0.22), location: 0.48),
-                .init(color: base.opacity(peak * 0.5), location: 0.72),
-                // Sous le composer + derrière Chat/Mail/Files : plus dense.
+                .init(color: base.opacity(peak * 0.08), location: 0.28),
+                .init(color: base.opacity(peak * 0.35), location: 0.58),
+                .init(color: base.opacity(peak * 0.62), location: 0.82),
                 .init(color: base.opacity(peak), location: 1)
             ],
             startPoint: .top,
@@ -119,11 +116,9 @@ struct ChatScreen: View {
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
-    /// Hauteur totale du chrome flottant (bannières + PJ + flou + composer) pour le padding du fil.
+    /// Hauteur totale du chrome flottant pour le padding du fil.
     @State private var floatingChromeHeight: CGFloat = 168
-    /// Hauteur mesurée des quick controls + composer (sans lift tab bar).
-    @State private var chromeContentHeight: CGFloat = 96
-    /// Safe area bas (tab bar + home indicator) — pour pousser le composer ET étendre le fondu dessous.
+    /// Safe area bas (tab bar + home indicator) — lift du composer au-dessus de Chat/Mail/Files.
     @State private var bottomSafeInset: CGFloat = 83
     /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
     @State private var keyboardLiftActive = false
@@ -189,10 +184,12 @@ struct ChatScreen: View {
 
     var body: some View {
         let _ = themeRevision
-        ZStack {
+        // Stacking écran (pas le scroll) :
+        // messages → fade viewport → chrome interactif.
+        ZStack(alignment: .bottom) {
             AmbientBackground()
-                // Même plan que le fil : pas de bande noire sous la tab bar.
-                .ignoresSafeArea(.container, edges: .bottom)
+                .ignoresSafeArea()
+
             VStack(spacing: 0) {
                 if let scope = forcedScope, scope == .mail {
                     PersistentProductActionsBar(
@@ -205,23 +202,21 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                    // Fil jusqu’en bas d’écran (sous tab bar) ; le clavier reste respecté.
+                    // Fil jusqu’au bas physique ; pas de fade ici (sinon coupé par le stacking).
                     .ignoresSafeArea(.container, edges: .bottom)
-                    .overlay(alignment: .bottom) {
-                        // Couche 1 : fondu jusqu’au bas physique (derrière Chat/Mail/Files).
-                        ComposerBottomBlurFade()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: blurBandTotalHeight)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                            .ignoresSafeArea(.container, edges: .bottom)
-                    }
-                    .overlay(alignment: .bottom) {
-                        // Couche 2 : composer / chrome au-dessus du fondu.
-                        composerFloatingChrome
-                            .ignoresSafeArea(.container, edges: .bottom)
-                    }
             }
+
+            // Calque fade : ancré au bas du viewport, indépendant du contenu / scroll.
+            ComposerBottomBlurFade()
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.bottomFadeHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .ignoresSafeArea(.container, edges: .bottom)
+
+            // Contrôles au-dessus du fade (cliquables).
+            composerFloatingChrome
+                .ignoresSafeArea(.container, edges: .bottom)
         }
         .background {
             GeometryReader { geo in
@@ -1456,7 +1451,10 @@ struct ChatScreen: View {
         return t
     }
 
-    /// Hauteur réservée en bas du fil pour l’overlay (PJ + flou + composer + tab bar).
+    /// Hauteur du fade viewport (bas physique), indépendante du contenu scrollé.
+    private static let bottomFadeHeight: CGFloat = 220
+
+    /// Hauteur réservée en bas du fil pour le chrome flottant.
     private var composerChromeScrollPadding: CGFloat {
         max(floatingChromeHeight, 140) + 8
     }
@@ -1473,18 +1471,13 @@ struct ChatScreen: View {
         draftCardCollapsed && !draftCardSent && draftCardId != nil
     }
 
-    /// Lift au-dessus de Chat / Mail / Files (toute la safe area bas, pas un demi-espace).
+    /// Lift au-dessus de Chat / Mail / Files (toute la safe area bas).
     private var tabBarOverlayLift: CGFloat {
         if keyboardLiftActive { return AppTheme.space8 }
         return max(bottomSafeInset, 72)
     }
 
-    /// Fondu = quick controls + composer + zone jusqu’au bas d’écran (sous la tab bar).
-    private var blurBandTotalHeight: CGFloat {
-        max(chromeContentHeight, 72) + tabBarOverlayLift
-    }
-
-    /// Composer + chrome en surimpression (le fondu est une couche séparée derrière).
+    /// Composer + chrome : calque au-dessus du fade (pas d’arrière-plan de bande opaque).
     @ViewBuilder
     private var composerFloatingChrome: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1592,13 +1585,6 @@ struct ChatScreen: View {
                 }
 
                 composer
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.height
-            } action: { _, height in
-                guard height > 1, abs(height - chromeContentHeight) > 0.5 else { return }
-                chromeContentHeight = height
             }
             .padding(.bottom, tabBarOverlayLift)
         }
