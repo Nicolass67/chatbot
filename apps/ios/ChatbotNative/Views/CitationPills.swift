@@ -23,25 +23,30 @@ enum CitationSegment: Hashable {
 // MARK: - Parser
 
 enum CitationParser {
-    /// `(Digitiz, web_1)`, `(olud.ai, web_3)`, `[web_1]`, `(web_2)`.
-    private static let namedWebRegex = try! NSRegularExpression(
-        pattern: #"\(([^)\n]{1,80}?),\s*web_(\d+)\)"#,
+    /// Toute parenthèse contenant au moins un `web_N` :
+    /// `(Digitiz, web_1)`, `(voir web_3, web_8)`, `(web_13)`, `(voir web_15, web_17, web_13)`.
+    private static let parenGroupRegex = try! NSRegularExpression(
+        pattern: #"\(([^)\n]*\bweb_\d+\b[^)\n]*)\)"#,
         options: [.caseInsensitive]
     )
     private static let bracketWebRegex = try! NSRegularExpression(
         pattern: #"\[web_(\d+)\]"#,
         options: [.caseInsensitive]
     )
-    private static let parenWebRegex = try! NSRegularExpression(
-        pattern: #"\(\s*web_(\d+)\s*\)"#,
+    private static let bareWebRegex = try! NSRegularExpression(
+        pattern: #"(?<![\w/])web_(\d+)(?!\w)"#,
+        options: [.caseInsensitive]
+    )
+    private static let webIndexRegex = try! NSRegularExpression(
+        pattern: #"\bweb_(\d+)\b"#,
         options: [.caseInsensitive]
     )
 
     static func containsMarker(_ text: String) -> Bool {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return namedWebRegex.firstMatch(in: text, range: range) != nil
+        return parenGroupRegex.firstMatch(in: text, range: range) != nil
             || bracketWebRegex.firstMatch(in: text, range: range) != nil
-            || parenWebRegex.firstMatch(in: text, range: range) != nil
+            || bareWebRegex.firstMatch(in: text, range: range) != nil
     }
 
     static func segments(in text: String, sources: [SearchSourceDTO]) -> [CitationSegment] {
@@ -49,54 +54,51 @@ enum CitationParser {
 
         struct Hit {
             let range: Range<String.Index>
-            let citation: InlineCitation
+            let citations: [InlineCitation]
         }
 
         var hits: [Hit] = []
         let full = NSRange(text.startIndex..<text.endIndex, in: text)
 
-        namedWebRegex.enumerateMatches(in: text, range: full) { match, _, _ in
-                guard let match,
-                      let fullRange = Range(match.range, in: text),
-                      let labelRange = Range(match.range(at: 1), in: text),
-                      let numRange = Range(match.range(at: 2), in: text),
-                      let webIndex = Int(text[numRange])
-                else { return }
-                let hint = String(text[labelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard let source = source(atWebIndex: webIndex, sources: sources)
-                    ?? source(matchingHint: hint, sources: sources)
-                else { return }
-                hits.append(
-                    Hit(
-                        range: fullRange,
-                        citation: InlineCitation(
-                            id: "\(source.id)-n\(webIndex)-\(match.range.location)",
-                            source: source,
-                            label: displayLabel(hint: hint, source: source)
-                        )
-                    )
-                )
+        parenGroupRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  let fullRange = Range(match.range, in: text),
+                  let innerRange = Range(match.range(at: 1), in: text)
+            else { return }
+            let inner = String(text[innerRange])
+            let citations = citations(fromWebRefsIn: inner, sources: sources, location: match.range.location)
+            // Toujours consommer le marqueur — même si aucun index n’est résolu (évite le texte brut).
+            hits.append(Hit(range: fullRange, citations: citations))
         }
 
-        for regex in [bracketWebRegex, parenWebRegex] {
-            regex.enumerateMatches(in: text, range: full) { match, _, _ in
-                guard let match,
-                      let fullRange = Range(match.range, in: text),
-                      let numRange = Range(match.range(at: 1), in: text),
-                      let webIndex = Int(text[numRange]),
-                      let source = source(atWebIndex: webIndex, sources: sources)
-                else { return }
-                hits.append(
-                    Hit(
-                        range: fullRange,
-                        citation: InlineCitation(
-                            id: "\(source.id)-w\(webIndex)-\(match.range.location)",
-                            source: source,
-                            label: displayLabel(hint: nil, source: source)
-                        )
-                    )
+        bracketWebRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  let fullRange = Range(match.range, in: text),
+                  let numRange = Range(match.range(at: 1), in: text),
+                  let webIndex = Int(text[numRange])
+            else { return }
+            if hits.contains(where: { $0.range.overlaps(fullRange) }) { return }
+            hits.append(
+                Hit(
+                    range: fullRange,
+                    citations: citations(forIndices: [webIndex], sources: sources, location: match.range.location)
                 )
-            }
+            )
+        }
+
+        bareWebRegex.enumerateMatches(in: text, range: full) { match, _, _ in
+            guard let match,
+                  let fullRange = Range(match.range, in: text),
+                  let numRange = Range(match.range(at: 1), in: text),
+                  let webIndex = Int(text[numRange])
+            else { return }
+            if hits.contains(where: { $0.range.overlaps(fullRange) }) { return }
+            hits.append(
+                Hit(
+                    range: fullRange,
+                    citations: citations(forIndices: [webIndex], sources: sources, location: match.range.location)
+                )
+            )
         }
 
         hits.sort { $0.range.lowerBound < $1.range.lowerBound }
@@ -116,7 +118,9 @@ enum CitationParser {
                 let chunk = String(text[idx..<hit.range.lowerBound])
                 if !chunk.isEmpty { out.append(.text(chunk)) }
             }
-            out.append(.citation(hit.citation))
+            for cite in hit.citations {
+                out.append(.citation(cite))
+            }
             idx = hit.range.upperBound
         }
         if idx < text.endIndex {
@@ -126,7 +130,6 @@ enum CitationParser {
         return mergeAdjacent(out)
     }
 
-    /// Texte nettoyé + pastilles (pour un rendu simple et stable).
     static func splitContent(in text: String, sources: [SearchSourceDTO]) -> (text: String, citations: [InlineCitation]) {
         let parts = segments(in: text, sources: sources)
         let cleaned = parts.compactMap { seg -> String? in
@@ -143,6 +146,74 @@ enum CitationParser {
             return nil
         }
         return (cleaned, citations)
+    }
+
+    // MARK: Resolve
+
+    private static func citations(fromWebRefsIn inner: String, sources: [SearchSourceDTO], location: Int) -> [InlineCitation] {
+        let indices = extractWebIndices(from: inner)
+        let hint = namedDomainHint(from: inner, indices: indices)
+        return citations(forIndices: indices, sources: sources, location: location, hint: hint)
+    }
+
+    private static func citations(
+        forIndices indices: [Int],
+        sources: [SearchSourceDTO],
+        location: Int,
+        hint: String? = nil
+    ) -> [InlineCitation] {
+        var seenURLs = Set<String>()
+        var out: [InlineCitation] = []
+        for (offset, webIndex) in indices.enumerated() {
+            guard let source = resolveSource(webIndex: webIndex, sources: sources) else { continue }
+            if seenURLs.contains(source.url) { continue }
+            seenURLs.insert(source.url)
+            out.append(
+                InlineCitation(
+                    id: "\(source.id)-w\(webIndex)-\(location)-\(offset)",
+                    source: source,
+                    label: displayLabel(hint: offset == 0 ? hint : nil, source: source)
+                )
+            )
+        }
+        return out
+    }
+
+    private static func extractWebIndices(from text: String) -> [Int] {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var indices: [Int] = []
+        webIndexRegex.enumerateMatches(in: text, range: range) { match, _, _ in
+            guard let match,
+                  let numRange = Range(match.range(at: 1), in: text),
+                  let value = Int(text[numRange])
+            else { return }
+            indices.append(value)
+        }
+        return indices
+    }
+
+    /// `(Digitiz, web_1)` → `"Digitiz"`. Ignore `voir web_3, web_8`.
+    private static func namedDomainHint(from inner: String, indices: [Int]) -> String? {
+        guard indices.count == 1, let only = indices.first else { return nil }
+        let pattern = #"^\s*(.+?)\s*,\s*web_"# + String(only) + #"\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(inner.startIndex..<inner.endIndex, in: inner)
+        guard let match = regex.firstMatch(in: inner, range: range),
+              let labelRange = Range(match.range(at: 1), in: inner)
+        else { return nil }
+        let hint = String(inner[labelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return isUsableHint(hint) ? hint : nil
+    }
+
+    private static func isUsableHint(_ hint: String) -> Bool {
+        let lower = hint.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower.isEmpty { return false }
+        if lower.contains("web_") { return false }
+        if lower.hasPrefix("voir") { return false }
+        if lower == "source" || lower == "sources" { return false }
+        return true
     }
 
     private static func mergeAdjacent(_ segments: [CitationSegment]) -> [CitationSegment] {
@@ -163,28 +234,15 @@ enum CitationParser {
         return out
     }
 
-    private static func source(atWebIndex webIndex: Int, sources: [SearchSourceDTO]) -> SearchSourceDTO? {
+    private static func resolveSource(webIndex: Int, sources: [SearchSourceDTO]) -> SearchSourceDTO? {
+        guard !sources.isEmpty else { return nil }
         let i = webIndex - 1
         guard i >= 0, i < sources.count else { return nil }
         return sources[i]
     }
 
-    private static func source(matchingHint hint: String, sources: [SearchSourceDTO]) -> SearchSourceDTO? {
-        let needle = hint.lowercased()
-            .replacingOccurrences(of: "https://", with: "")
-            .replacingOccurrences(of: "http://", with: "")
-            .replacingOccurrences(of: "www.", with: "")
-        guard !needle.isEmpty else { return nil }
-        return sources.first { src in
-            let domain = (src.domain ?? URL(string: src.url)?.host ?? "").lowercased()
-                .replacingOccurrences(of: "www.", with: "")
-            let title = src.title.lowercased()
-            return domain.contains(needle) || needle.contains(domain) || title.contains(needle)
-        }
-    }
-
     private static func displayLabel(hint: String?, source: SearchSourceDTO) -> String {
-        if let hint, !hint.isEmpty {
+        if let hint, isUsableHint(hint) {
             var cleaned = hint
             if cleaned.lowercased().hasPrefix("https://") {
                 cleaned = String(cleaned.dropFirst(8))
@@ -204,7 +262,11 @@ enum CitationParser {
             let d = host.lowercased().hasPrefix("www.") ? String(host.dropFirst(4)) : host
             return truncate(d, max: 28)
         }
-        return truncate(source.title, max: 28)
+        let title = source.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty, isUsableHint(title) {
+            return truncate(title, max: 28)
+        }
+        return "Source"
     }
 
     private static func truncate(_ value: String, max: Int) -> String {
@@ -352,7 +414,7 @@ struct CitationFlowLayout: Layout {
 
 // MARK: - Inline block
 
-/// Remplace `(source, web_N)` par des pastilles cliquables sous/à côté du texte.
+/// Remplace `(source, web_N)` / `(voir web_N, …)` par des pastilles cliquables.
 struct CitationAwareInlineText: View {
     let text: String
     let sources: [SearchSourceDTO]
