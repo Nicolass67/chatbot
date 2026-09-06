@@ -217,43 +217,12 @@ struct ChatToolsSheet: View {
     let onReasoningChange: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    @State private var localMode: String = "chat"
-    @State private var localWeb = false
     @State private var localModel = ""
     @State private var localReasoning = ""
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Picker("Mode", selection: Binding(
-                        get: { localMode },
-                        set: { next in
-                            localMode = next
-                            AppHaptics.selection()
-                            onModeChange(next)
-                        }
-                    )) {
-                        Text("Chat").tag("chat")
-                        Text("Agent").tag("agent")
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(AppTheme.surface)
-
-                    Toggle("Recherche web", isOn: Binding(
-                        get: { localWeb },
-                        set: { next in
-                            localWeb = next
-                            AppHaptics.selection()
-                            onWebChange(next)
-                        }
-                    ))
-                    .tint(AppTheme.accent)
-                    .listRowBackground(AppTheme.surface)
-                } header: {
-                    Text("Conversation")
-                }
-
                 Section {
                     if modelSwitching {
                         HStack(spacing: AppTheme.space8) {
@@ -308,7 +277,7 @@ struct ChatToolsSheet: View {
                             .listRowBackground(AppTheme.surface)
                         }
                     } header: {
-                        Text("Raisonnement")
+                        Text("Raisonnement (détail)")
                     }
                 }
             }
@@ -328,13 +297,14 @@ struct ChatToolsSheet: View {
                 }
             }
             .onAppear {
-                localMode = chatMode
-                localWeb = webSearchEnabled
+                // Conservés pour compat API ComposerCapsule (mode/web sont sur la barre rapide).
+                _ = onModeChange
+                _ = onWebChange
+                _ = chatMode
+                _ = webSearchEnabled
                 localModel = selectedModelName
                 localReasoning = reasoningEffort
             }
-            .onChange(of: chatMode) { _, v in localMode = v }
-            .onChange(of: webSearchEnabled) { _, v in localWeb = v }
             .onChange(of: selectedModelName) { _, v in localModel = v }
             .onChange(of: reasoningEffort) { _, v in localReasoning = v }
         }

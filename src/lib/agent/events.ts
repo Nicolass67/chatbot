@@ -121,6 +121,8 @@ export interface ChatOrchestratorInput {
   regenerate?: boolean;
   editMessageId?: string;
   mode?: "chat" | "agent";
+  /** Force un canal d’outil (composer iOS) — web | files | email. */
+  toolChannel?: "web" | "files" | "email";
   /** Client hint only — server resolves + authorizes (never trust as auth). */
   activeContext?: ActiveContextHint;
   onEvent: (event: OrchestratorEvent) => void;

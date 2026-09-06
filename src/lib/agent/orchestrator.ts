@@ -12,9 +12,15 @@ import {
 } from "@/lib/attachments/service";
 import { snapshotFromMessages } from "@/lib/context/builder";
 import { resolveActiveContext } from "@/lib/context/active-context";
+import { assembleContextPacket } from "@/lib/context/assembly";
+import { randomUUID } from "crypto";
 import { isContextDebugEnabled } from "@/lib/context/debug-trace";
+import { buildCompressedHistoryPacket } from "@/lib/context/history-compression";
 import { buildContextPlan } from "@/lib/context/plan";
-import { maybeSummarizeConversation } from "@/lib/context/summarizer";
+import {
+  loadConversationSummary,
+  maybeSummarizeConversation,
+} from "@/lib/context/summarizer";
 import { maybeGenerateConversationTitle } from "@/lib/conversation/title-generator";
 import { getDb } from "@/lib/db";
 import {
@@ -26,6 +32,11 @@ import {
 import type { MemoryIntentDecision } from "@/lib/memory/intent-classifier";
 import { awaitMemoryPostProcessAfterDone } from "@/lib/memory/post-processor";
 import { analyzeRequest, type RouteDecision } from "@/lib/request-router";
+import { applyToolChannel, parseToolChannel } from "@/lib/agent/tool-channel";
+import {
+  resolveConversationalWebRoute,
+  rewriteMisroutedFileSearchCalls,
+} from "@/lib/context/conversational-web-resolution";
 import {
   buildMailHandoffUrl,
   handoffMessageForIntent,
@@ -326,7 +337,7 @@ async function finalizeStreamedAssistant(params: {
   if (collectedSources.length > 0) {
     input.onEvent({
       type: "sources",
-      sources: dedupeAndCapSources(collectedSources, 20),
+      sources: dedupeAndCapSources(collectedSources, 25),
     });
   }
 
@@ -336,7 +347,7 @@ async function finalizeStreamedAssistant(params: {
       settings,
       assistantId,
       fullContent,
-      collectedSources: dedupeAndCapSources(collectedSources, 20),
+      collectedSources: dedupeAndCapSources(collectedSources, 25),
       pendingAttachments,
     });
   } catch (error) {
@@ -563,16 +574,45 @@ export async function runChatOrchestrator(
       .filter((m) => m.role === "user")
       .map((m) => contentToPlainText(m.content));
     const priorUserMsgs = priorUserMessages(allUserPlain, input.userContent);
-    const agentConversationHistory = formatAgentConversationHistory(
-      allDbMessages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({
-          role: m.role as "user" | "assistant",
-          text: contentToPlainText(m.content),
-        }))
-        .filter((t) => t.text.trim().length > 0)
-        .slice(0, -1)
-    );
+
+    const historyMessages = allDbMessages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: contentToPlainText(m.content),
+      }))
+      .filter((t) => t.content.trim().length > 0);
+    // Exclure le tour courant (dernier user) de l'historique agent.
+    const priorHistoryMessages =
+      historyMessages.length > 0 &&
+      historyMessages[historyMessages.length - 1]?.role === "user"
+        ? historyMessages.slice(0, -1)
+        : historyMessages;
+
+    const persistedSummary = await loadConversationSummary(input.conversationId);
+    const compressedHistory = buildCompressedHistoryPacket({
+      allMessages: priorHistoryMessages,
+      summary: persistedSummary,
+      recentLimit: settings.recentMessagesCount,
+    });
+    const agentConversationHistory = compressedHistory.recentHistoryText;
+    const agentConversationSummary = compressedHistory.summaryBlock || null;
+    const summarizationTrace = {
+      summaryTriggered: compressedHistory.trace.summaryTriggered,
+      summaryVersion: compressedHistory.trace.summaryVersion,
+      summaryCoverage: compressedHistory.trace.summaryCoverage,
+      estimatedRawHistoryTokens:
+        compressedHistory.trace.estimatedRawHistoryTokens,
+      estimatedSummaryTokens: compressedHistory.trace.estimatedSummaryTokens,
+      estimatedRecentHistoryTokens:
+        compressedHistory.trace.estimatedRecentHistoryTokens,
+      estimatedTotalContextTokens:
+        compressedHistory.trace.estimatedTotalContextTokens,
+      historicalMessagesCompressed:
+        compressedHistory.trace.historicalMessagesCompressed,
+      criticalContentDropped: compressedHistory.trace.criticalContentDropped,
+    };
 
     const analysis = await analyzeRequest(
       {
@@ -592,7 +632,26 @@ export async function runChatOrchestrator(
       },
       { memoryEnabled: settings.memoryEnabled }
     );
-    const route = analysis.route;
+    const routed = resolveConversationalWebRoute({
+      route: analysis.route,
+      userMessage: input.userContent,
+      priorUserMessages: priorUserMsgs.slice(-3),
+      priorWebUsed: allDbMessages.some(
+        (m) =>
+          m.role === "assistant" &&
+          typeof m.content === "string" &&
+          /web_search|web_sources|<web_/i.test(m.content)
+      ),
+    });
+    const channel = parseToolChannel(input.toolChannel);
+    const channelResolved = applyToolChannel(routed, channel, {
+      webSearchAllowed: settings.webSearchEnabled || channel === "web",
+      emailConnected: emailPolicyContext.emailConnected,
+      emailFeatureEnabled: emailEnabled,
+      filesConfigured: Boolean(emailPolicyContext.hasConfiguredRoots),
+      filesFeatureEnabled: filesEnabled,
+    });
+    const route = channelResolved.route;
     input.onEvent({ type: "route_decision", decision: route });
     input.onEvent({ type: "memory_intent", decision: analysis.memory });
 
@@ -614,19 +673,26 @@ export async function runChatOrchestrator(
     const emailIntent = route.email.intent;
     const isMailScopedConversation = convRow?.scope === "mail";
     const hasActiveMail = Boolean(resolvedActive.mail);
-    const mailAssistantActive = isMailScopedConversation || hasActiveMail;
+    const mailAssistantActive =
+      isMailScopedConversation ||
+      hasActiveMail ||
+      (channelResolved.emailEnabled && channelResolved.emailToolCandidates.length > 0);
 
-    const mailToolCandidates = mailAssistantActive
-      ? [
-          "email_get_thread",
-          "email_create_draft",
-          "email_list",
-          "email_search",
-          "email_analyze",
-        ]
-      : [];
+    const mailToolCandidates =
+      channelResolved.emailToolCandidates.length > 0
+        ? channelResolved.emailToolCandidates
+        : mailAssistantActive
+          ? [
+              "email_get_thread",
+              "email_create_draft",
+              "email_list",
+              "email_search",
+              "email_analyze",
+            ]
+          : [];
 
     const shouldHandoffToMail =
+      !channelResolved.suppressMailHandoff &&
       emailEnabled &&
       emailPolicyContext.emailConnected &&
       emailIntent !== "none" &&
@@ -701,6 +767,7 @@ export async function runChatOrchestrator(
       documentContext: builtDocumentContext,
       debugTrace,
     } = builtContext;
+    debugTrace.summarization = summarizationTrace;
 
     let documentContext = builtDocumentContext;
     let mailAccountEmail: string | null = null;
@@ -803,6 +870,41 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
     }
 
     if (chatMode === "agent" && imageCount === 0) {
+            // P0: injecter contexte actif + références dans le paquet agent
+      const contextRequestId = randomUUID();
+      const assemblyScope =
+        convRow?.scope === "mail"
+          ? "mail"
+          : convRow?.scope === "files"
+            ? "files"
+            : "general";
+      const assembled = assembleContextPacket({
+        requestId: contextRequestId,
+        conversationId: input.conversationId,
+        scope: assemblyScope,
+        userMessage: input.userContent,
+        active: resolvedActive,
+        documentContext,
+        conversationHistory: agentConversationHistory,
+        conversationSummary: agentConversationSummary,
+        recentEntityLabels: resolvedActive.entityLabels,
+      });
+      documentContext = assembled.agentDocumentContext;
+      if (isContextDebugEnabled()) {
+        input.onEvent({
+          type: "context_debug",
+          trace: {
+            ...debugTrace,
+            assembly: assembled.trace,
+            references: {
+              count: assembled.references.referents.length,
+              needsClarification: assembled.references.needsClarification,
+              groundedQuery: assembled.references.groundedQuery,
+            },
+          },
+        });
+      }
+
       await runAgentLoop({
         conversationId: input.conversationId,
         userContent: input.userContent,
@@ -819,16 +921,64 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         userId,
         toolCtxBase,
         emailEnabled:
-          emailEnabled &&
-          emailPolicyContext.emailConnected &&
-          mailAssistantActive,
+          (emailEnabled &&
+            emailPolicyContext.emailConnected &&
+            mailAssistantActive) ||
+          channelResolved.emailEnabled,
         emailToolCandidates: mailToolCandidates,
         accountEmail: mailAccountEmail,
         filesEnabled:
-          filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots),
-        fileToolCandidates: route.files.suggestedTools,
+          (filesEnabled && Boolean(emailPolicyContext.hasConfiguredRoots)) ||
+          channelResolved.filesEnabled,
+        fileToolCandidates:
+          channelResolved.fileToolCandidates.length > 0
+            ? channelResolved.fileToolCandidates
+            : route.files.suggestedTools,
       });
       return;
+    }
+
+    // chat path context assembly — mêmes invariants de références que l'agent
+    {
+      const chatRequestId = randomUUID();
+      const chatScope =
+        convRow?.scope === "mail"
+          ? "mail"
+          : convRow?.scope === "files"
+            ? "files"
+            : "general";
+      const chatAssembled = assembleContextPacket({
+        requestId: chatRequestId,
+        conversationId: input.conversationId,
+        scope: chatScope,
+        userMessage: input.userContent,
+        active: resolvedActive,
+        documentContext: "",
+        recentEntityLabels: resolvedActive.entityLabels,
+      });
+      if (chatAssembled.references.contextBlock) {
+        const sys = contextMessages[0];
+        if (sys?.role === "system" && typeof sys.content === "string") {
+          const block = chatAssembled.references.contextBlock;
+          if (block && !sys.content.includes(block.slice(0, 32))) {
+            sys.content += `\n\n${block}`;
+          }
+        }
+      }
+      if (isContextDebugEnabled()) {
+        input.onEvent({
+          type: "context_debug",
+          trace: {
+            ...debugTrace,
+            assembly: chatAssembled.trace,
+            references: {
+              count: chatAssembled.references.referents.length,
+              needsClarification: chatAssembled.references.needsClarification,
+              groundedQuery: chatAssembled.references.groundedQuery,
+            },
+          },
+        });
+      }
     }
 
     await runChatMode({
@@ -846,17 +996,20 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
       routeDecision: route,
       toolCtxBase,
       emailEnabled: Boolean(
-        emailEnabled &&
+        (emailEnabled &&
           emailPolicyContext.emailConnected &&
-          mailAssistantActive
+          mailAssistantActive) ||
+          channelResolved.emailEnabled
       ),
       emailToolCandidates: mailToolCandidates,
       filesEnabled: Boolean(
-        filesEnabled && emailPolicyContext.hasConfiguredRoots
+        (filesEnabled && emailPolicyContext.hasConfiguredRoots) ||
+          channelResolved.filesEnabled
       ),
-      fileToolCandidates: route.tools.candidates.filter((c) =>
-        c.startsWith("file_")
-      ),
+      fileToolCandidates:
+        channelResolved.fileToolCandidates.length > 0
+          ? channelResolved.fileToolCandidates
+          : route.tools.candidates.filter((c) => c.startsWith("file_")),
     });
   } catch (error) {
     if (isAbortLikeError(error) || input.signal?.aborted) {
@@ -1007,10 +1160,30 @@ async function runChatMode(params: {
         });
       }
 
+      const rewrittenToolCalls = rewriteMisroutedFileSearchCalls(
+        turn.toolCalls.map((tc) => {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = JSON.parse(tc.arguments || "{}") as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            parsed = {};
+          }
+          return { tool: tc.name, input: parsed, id: tc.id };
+        }),
+        input.userContent
+      ).map((call) => ({
+        id: call.id as string,
+        name: call.tool,
+        arguments: JSON.stringify(call.input ?? {}),
+      }));
+
       contextMessages.push({
         role: "assistant",
         content: turn.content || null,
-        tool_calls: turn.toolCalls.map((tc) => ({
+        tool_calls: rewrittenToolCalls.map((tc) => ({
           id: tc.id,
           type: "function" as const,
           function: { name: tc.name, arguments: tc.arguments },
@@ -1018,7 +1191,7 @@ async function runChatMode(params: {
       });
 
       const toolResults = await Promise.all(
-        turn.toolCalls.map(async (tc) => {
+        rewrittenToolCalls.map(async (tc) => {
           totalToolCalls++;
           const sameCount = (toolCallCounts.get(tc.name) ?? 0) + 1;
           toolCallCounts.set(tc.name, sameCount);
@@ -1343,7 +1516,7 @@ async function streamFinalResponse(params: {
   }
 
   if (collectedSources.length > 0) {
-    const capped = dedupeAndCapSources(collectedSources, 20);
+    const capped = dedupeAndCapSources(collectedSources, 25);
     input.onEvent({ type: "sources", sources: capped });
   }
 
@@ -1353,7 +1526,7 @@ async function streamFinalResponse(params: {
       settings,
       assistantId,
       fullContent,
-      collectedSources: dedupeAndCapSources(collectedSources, 20),
+      collectedSources: dedupeAndCapSources(collectedSources, 25),
       pendingAttachments,
     });
   } catch (error) {

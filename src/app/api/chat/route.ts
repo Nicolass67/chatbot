@@ -24,6 +24,7 @@ const chatSchema = z
     regenerate: z.boolean().optional(),
     editMessageId: z.string().optional(),
     mode: z.enum(["chat", "agent"]).optional(),
+    toolChannel: z.enum(["web", "files", "email"]).optional(),
     activeContext: activeContextSchema,
   })
   .refine(
@@ -129,6 +130,7 @@ export async function POST(request: Request) {
           regenerate: body.regenerate,
           editMessageId: body.editMessageId,
           mode: body.mode,
+          toolChannel: body.toolChannel,
           activeContext: body.activeContext,
           signal: abortSignal,
           onEvent: (event) => send(event),

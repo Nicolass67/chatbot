@@ -4,6 +4,7 @@ import { formatTemporalContextBlock, resolveEffectiveScope } from "./temporal";
 import { formatResearchBlockForDecider } from "./research-flow";
 import { formatFreshnessBlock } from "./freshness-policy";
 import { RESPONSE_FORMAT_INSTRUCTIONS } from "@/lib/prompts/response-format";
+import { formatToolResultWithProvenance } from "@/lib/context/assembly";
 
 export function buildPlannerSystemPrompt(temporal: TemporalContext): string {
   const temporalBlock = formatTemporalContextBlock(temporal);
@@ -138,7 +139,8 @@ Règles temporelles :
 - Vérifier la cohérence temporelle des requêtes web avant de les proposer
 
 Règles générales :
-- Utilise web_search pour toute information factuelle externe
+- Utilise web_search pour toute information factuelle externe (adresses, restaurants, lieux, actualités, prix)
+- INTERDIT : file_search / file_list pour une recherche Internet ou des faits publics — réserve les outils fichiers aux documents locaux (PDF, facture, dossier) explicitement demandés
 - Préfère 1 recherche ciblée ; 2 maximum si la première est clairement insuffisante
 - Interdit : enchaîner plus de 3 recherches web_search pour une question ordinaire
 - Dès que tu as plusieurs sources distinctes et pertinentes : appelle finish
@@ -177,7 +179,8 @@ export function buildDeciderUserPrompt(ctx: AgentExecutionContext): string {
       ? `\nRecherches déjà effectuées (ne pas relancer) :\n${ctx.executedQueries.map((q) => `- ${q}`).join("\n")}`
       : "";
 
-  return `Objectif : ${ctx.goal}
+  const appCtx = ctx.applicationContext?.trim();
+  return `Objectif : ${ctx.goal}${appCtx ? `\n\nContexte applicatif (ressource active / sources web persistées) :\n${appCtx}` : ""}
 ${temporalBlock ? `\n${temporalBlock}\n` : ""}
 ${researchBlock ? `\n${researchBlock}\n` : ""}
 ${freshnessBlock ? `\nPolitique de fraîcheur (serveur) :\n${freshnessBlock}\n` : ""}
@@ -201,6 +204,7 @@ export function buildSynthesisSystemPrompt(
     currentDataVerified: boolean;
     forceHonestResponse: boolean;
     userGoal?: string;
+    applicationContext?: string;
   }
 ): string {
   const temporalBlock = formatTemporalContextBlock(temporal);
@@ -224,6 +228,7 @@ ATTENTION — Données partiellement vérifiées :
 Contexte temporel :
 ${temporalBlock}
 ${honestyBlock}
+${options?.applicationContext?.trim() ? `\n<application_context>\n${options.applicationContext.trim()}\n</application_context>\n` : ""}
 ${researchContextBlock ? `\n${researchContextBlock}\n` : ""}
 ${observations ? `Observations de l'agent :\n${observations}\n` : ""}
 ${sourcesBlock ? `${sourcesBlock}\n` : ""}
@@ -231,13 +236,15 @@ ${freshnessNotes ? `${freshnessNotes}\n` : ""}
 
 Vérification finale obligatoire :
 - Les informations utilisées correspondent-elles à la période demandée ?
-- Si les données sont anciennes ou contradictoires : le dire explicitement
+- Si les données sont anciennes ou contradictoires : le dire explicitement et conserver les divergences
 - Ne cite pas d'année passée comme référence actuelle sauf si l'utilisateur l'a demandée
-- Appuie-toi uniquement sur les sources Web fournies
+- Priorise les blocs <web_evidence> / packets (faits condensés) sur tout texte brut résiduel
+- N'invente aucune valeur absente des preuves ; si une info manque : le dire sans affirmer une absence absolue mondiale
+- Appuie-toi uniquement sur les preuves et sources fournies — ne refais pas la recherche
 
 Produis une réponse finale **complète** en français :
 - Structure claire (titres, listes à puces, sous-sections)
-- Cite les sources avec des liens
+- Cite les sources avec des liens (url / sourceId)
 - Conclusion si demandée et SI les données le permettent
 - Ne mentionne pas le fonctionnement interne de l'agent
 
@@ -263,11 +270,16 @@ function formatPlanForPrompt(plan: AgentPlan): string {
 export function formatObservationsForSynthesis(
   observations: AgentExecutionContext["observations"]
 ): string {
-  const recent = observations.slice(-6);
+  const recent = observations.slice(-8);
   return recent
-    .map(
-      (o) =>
-        `- ${o.tool}: ${o.summary}\n  Résultat: ${JSON.stringify(o.output).slice(0, 400)}`
+    .map((o, idx) =>
+      formatToolResultWithProvenance({
+        toolCallId: o.stepId ?? `obs-${idx}`,
+        tool: o.tool,
+        summary: o.summary,
+        output: o.output,
+        maxChars: 1200,
+      })
     )
     .join("\n");
 }

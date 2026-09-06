@@ -42,4 +42,26 @@ describe("tool registry V2", () => {
     }).map((t) => t.name);
     expect(names).not.toContain("email_send");
   });
+
+  it("n'expose plus les file tools au LLM sans candidats", () => {
+    const tools = getRegisteredTools({
+      webSearchEnabled: true,
+      filesEnabled: true,
+    }).map((t) => t.name);
+
+    expect(tools).toEqual(["web_search"]);
+    expect(tools).not.toContain("file_search");
+  });
+
+  it("expose file_search uniquement via candidats explicites", () => {
+    const tools = getRegisteredTools({
+      webSearchEnabled: true,
+      filesEnabled: true,
+      fileToolCandidates: ["file_search"],
+    }).map((t) => t.name);
+
+    expect(tools).toContain("web_search");
+    expect(tools).toContain("file_search");
+    expect(tools).not.toContain("file_list");
+  });
 });

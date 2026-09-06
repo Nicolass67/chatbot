@@ -54,6 +54,8 @@ struct ChatSendOptions: Sendable {
     var regenerate: Bool = false
     var editMessageId: String? = nil
     var mode: String = "chat"
+    /// Canal d’outil forcé : web | files | email
+    var toolChannel: String? = nil
     var activeContext: ActiveContextHint? = nil
 }
 

@@ -39,6 +39,7 @@ struct ChatScreen: View {
     @State private var uploading = false
     @State private var chatMode: String = "chat"
     @State private var webSearchEnabled = false
+    @AppStorage("composerToolChannel") private var toolChannelRaw: String = ComposerToolChannel.web.rawValue
     @State private var editingMessageId: String?
     @State private var lightbox: LightboxItem?
     @State private var conversationTitle: String = ""
@@ -145,24 +146,33 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                    .overlay(alignment: .bottomLeading) {
-                        // Texte au-dessus du fil (pas de bandeau opaque entre scroll et composer).
-                        if !isSending {
-                            HStack(spacing: 8) {
-                                RuntimeStatusPill(status: displayRuntimeStatus)
-                                if !assistantReadyForSend {
-                                    Text(sendBlockedHint)
-                                        .font(CNFont.caption2)
-                                        .foregroundStyle(AppTheme.mutedForeground)
-                                        .lineLimit(1)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, AppTheme.space16)
-                            .padding(.bottom, 2)
-                            .allowsHitTesting(false)
+                // Contrôles composer + statut — interactifs, au-dessus de la zone d’écriture.
+                if !isSending {
+                    HStack(spacing: 8) {
+                        ComposerQuickControls(
+                            thinkingEnabled: isThinkingEnabled,
+                            chatMode: chatMode,
+                            toolChannel: toolChannel,
+                            thinkingAvailable: thinkingToggleAvailable,
+                            onToggleThinking: { toggleThinking() },
+                            onToggleMode: {
+                                applyMode(chatMode == "agent" ? "chat" : "agent")
+                            },
+                            onCycleTool: { cycleToolChannel() }
+                        )
+                        RuntimeStatusPill(status: displayRuntimeStatus)
+                        if !assistantReadyForSend {
+                            Text(sendBlockedHint)
+                                .font(CNFont.caption2)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                                .lineLimit(1)
                         }
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, AppTheme.space16)
+                    .padding(.bottom, 4)
+                    .padding(.top, 2)
+                }
                 if let pendingFileAction {
                     FileActionPendingCard(
                         op: pendingFileAction.op,
@@ -1388,6 +1398,55 @@ struct ChatScreen: View {
         return runtimeStatus
     }
 
+    private var toolChannel: ComposerToolChannel {
+        ComposerToolChannel(rawValue: toolChannelRaw) ?? .web
+    }
+
+    private var isThinkingEnabled: Bool {
+        let e = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !e.isEmpty && e != "off" && e != "none"
+    }
+
+    private var thinkingToggleAvailable: Bool {
+        !reasoningModes.isEmpty || !reasoningEffort.isEmpty
+    }
+
+    private var thinkingOffModeId: String {
+        if let off = reasoningModes.first(where: {
+            let id = $0.id.lowercased()
+            return id == "off" || id == "none"
+        }) {
+            return off.id
+        }
+        return "off"
+    }
+
+    private var thinkingOnModeId: String {
+        if let on = reasoningModes.first(where: {
+            let id = $0.id.lowercased()
+            return id != "off" && id != "none"
+        }) {
+            return on.id
+        }
+        return reasoningModes.first?.id ?? "medium"
+    }
+
+    private func toggleThinking() {
+        if isThinkingEnabled {
+            applyReasoning(thinkingOffModeId)
+        } else {
+            applyReasoning(thinkingOnModeId)
+        }
+    }
+
+    private func cycleToolChannel() {
+        var next = toolChannel
+        next.cycle()
+        toolChannelRaw = next.rawValue
+        // Aligne le réglage web global avec le canal choisi.
+        applyWeb(next == .web)
+    }
+
     private var sendBlockedHint: String {
         switch displayRuntimeStatus.uppercased() {
         case "OFFLINE": return "Choisis un modèle"
@@ -2056,6 +2115,7 @@ struct ChatScreen: View {
         }
 
         var opts = options ?? ChatSendOptions(attachmentIds: ids, mode: chatMode)
+        opts.toolChannel = toolChannel.rawValue
         if let editId = editingMessageId {
             opts.editMessageId = editId
         }

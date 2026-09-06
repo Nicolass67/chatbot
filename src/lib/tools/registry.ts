@@ -49,14 +49,16 @@ export function getRegisteredTools(options: {
     }
     if (t.name === "web_search") return options.webSearchEnabled;
     if (FILE_READ_ONLY.has(t.name) || FILE_MUTATION_PROPOSE.has(t.name)) {
+      // Comme email : pas de candidats → pas d'outils fichiers au LLM.
+      // Évite file_search quand le routeur n'a pas classé d'intent files.
       if (!options.filesEnabled) return false;
       if (
-        options.fileToolCandidates &&
-        options.fileToolCandidates.length > 0
+        !options.fileToolCandidates ||
+        options.fileToolCandidates.length === 0
       ) {
-        return options.fileToolCandidates.includes(t.name);
+        return false;
       }
-      return FILE_READ_ONLY.has(t.name);
+      return options.fileToolCandidates.includes(t.name);
     }
     return true;
   });

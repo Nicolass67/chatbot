@@ -112,7 +112,10 @@ Files (documents locaux sur le PC de l'utilisateur — PAS le Web, PAS Gmail):
 - files.intent "organize": renommer, déplacer, créer un dossier (organisation).
 - files.searchQuery: reformulation courte pour recherche locale si intent=search.
 - Distingue clairement: question conceptuelle vs document personnel local vs email vs actualité web.
-- Si files.intent ≠ "none", mets généralement web.mode="none" et tools.allowToolCalling=true.
+- CRITIQUE — « rechercher / recherches / cherche » SANS mot fichier/PDF/dossier/document/facture = Web, PAS files. Ex. « recherches les adresses des restaurants à Strasbourg » → files.intent="none", web.mode="required".
+- files.intent ≠ "none" UNIQUEMENT si l'utilisateur parle explicitement de fichiers/documents locaux sur son PC.
+- Si files.intent ≠ "none" ET qu'il n'y a PAS de demande web/internet/adresses publiques, mets web.mode="none" et tools.allowToolCalling=true.
+- Si l'utilisateur demande internet / web / adresses / lieux publics : web.mode="required", files.intent="none".
 - Ne classifie PAS une mutation destructive (suppression) — non supportée; oriente vers search/organize sans delete.
 
 Priorité de sécurité: en cas de doute sur une information actuelle, préférer web.mode "required" plutôt que "none".

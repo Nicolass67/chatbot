@@ -10,7 +10,7 @@ const ANAPHORA_RE =
   /\b(ça|cela|celui|celle|ceux|celles|leur|leurs|en|y|pareil|idem|modèles?|models?|marques?|options?|ceux[- ]là|celles[- ]là|celui[- ]là|celle[- ]là|maintenant|aussi|également|lesquels|lesquelles|lequel|laquelle|combien|dessus|ci[- ]dessus|précédent|précédente|mentionné|mentionnée|évoqué|évoquée|pareils?|ci[- ]avant)\b/i;
 
 const IMPERATIVE_FOLLOW_UP_RE =
-  /^(donne|dis|montre|liste|cite|compare|détaille|detaille|explique|trouve|propose|indique|sélectionne|selectionne|reprends?|continue|fais|fait)\b/i;
+  /^(oui\s+)?(donne|dis|montre|liste|cite|compare|détaille|detaille|explique|trouve|propose|indique|sélectionne|selectionne|reprends?|continue|fais|fait|recherche|recherches|cherche|cherches)\b/i;
 
 const EXPLICIT_FOLLOW_UP_RE =
   /^(et (lui|elle|eux|ça|cela|le|la|les|mon|ma|mes|celui|celle|ceux)\b|fais pareil|pareil|idem|envoie[- ]?le|vérifie(\s|$)|le deuxième|la deuxième|et pour moi)\b/i;
@@ -70,6 +70,9 @@ const AMBIGUOUS_TOKEN_SET = new Set(
     "besoin",
     "recherche",
     "rechercher",
+    "recherches",
+    "cherche",
+    "cherches",
     "internet",
     "maintenant",
     "aussi",

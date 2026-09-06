@@ -1,3 +1,9 @@
+import { deepenSearchResults } from "@/lib/tools/web-search/fetch-page";
+import {
+  formatWebSourcesForContext,
+  isSnippetInsufficient,
+  searchResultsToWebSources,
+} from "@/lib/context/web-provenance";
 import { z } from "zod";
 import type { Tool } from "../types";
 import { logWebSearchDebug } from "./debug";
@@ -47,7 +53,7 @@ export const webSearchTool: Tool<
 > = {
   name: "web_search",
   description:
-    "Recherche des informations actuelles sur Internet. Utilise cet outil pour les questions nécessitant des données récentes ou vérifiables en ligne.",
+    "Recherche des informations actuelles sur Internet (adresses, lieux, restaurants, actualités, prix, faits externes). À utiliser dès que l'utilisateur demande de rechercher / vérifier en ligne — pas file_search.",
   inputSchema: webSearchInputSchema,
   preferredRuntime: "either",
   async execute(input, ctx) {
@@ -84,7 +90,28 @@ export const webSearchTool: Tool<
         );
       }
 
-      return toToolOutput(input.query, result);
+      const pageContents = await deepenSearchResults({
+        query: input.query,
+        results: result.results.map((r) => ({
+          title: r.title,
+          url: r.url,
+          snippet: r.snippet ?? "",
+        })),
+        maxPages: 2,
+        signal: ctx.signal,
+        snippetInsufficient: isSnippetInsufficient,
+      });
+      const output = toToolOutput(input.query, result);
+      if (Object.keys(pageContents).length > 0) {
+        output.pageContents = pageContents;
+        output.groundedContext = formatWebSourcesForContext(
+          searchResultsToWebSources(input.query, result.results, {
+            provider: result.provider,
+            pageContents,
+          })
+        );
+      }
+      return output;
     } catch (error) {
       if (error instanceof WebSearchError) {
         throw error;

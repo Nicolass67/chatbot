@@ -96,6 +96,9 @@ actor ChatStreamingService {
         ]
         if options.regenerate { body["regenerate"] = true }
         if let editId = options.editMessageId { body["editMessageId"] = editId }
+        if let channel = options.toolChannel, !channel.isEmpty {
+            body["toolChannel"] = channel
+        }
         if let ctx = options.activeContext, !ctx.isEmpty {
             body["activeContext"] = ctx.asDictionary()
         }
