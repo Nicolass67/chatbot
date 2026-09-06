@@ -14,6 +14,58 @@ private struct ChatScrollMetrics: Equatable {
     var distanceToBottom: CGFloat
 }
 
+private struct FloatingChromeHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct BlurBandHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Dégradé de flou : opaque en bas, transparent en haut (s’arrête pile au-dessus des quick controls).
+private struct ComposerBottomBlurFade: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                LinearGradient(
+                    colors: [
+                        AppTheme.background.opacity(0),
+                        AppTheme.background.opacity(0.55),
+                        AppTheme.background.opacity(0.88)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .black.opacity(0.45), location: 0.28),
+                                .init(color: .black.opacity(0.85), location: 0.62),
+                                .init(color: .black, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -88,6 +140,14 @@ struct ChatScreen: View {
     @State private var agentActivity = AgentActivityState()
     @State private var runtimeStatus: String = "…"
     @State private var showScrollDown = false
+    /// Hauteur totale du chrome flottant (bannières + PJ + flou + composer) pour le padding du fil.
+    @State private var floatingChromeHeight: CGFloat = 168
+    /// Hauteur de la zone floutée (quick controls + composer + lift tab bar).
+    @State private var blurBandHeight: CGFloat = 120
+    /// Safe area bas (tab bar + home indicator) capturée hors clavier.
+    @State private var bottomChromeInset: CGFloat = 83
+    /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
+    @State private var keyboardLiftActive = false
     /// Collé en bas → suivi auto du stream. Remontée utilisateur → false.
     @State private var isPinnedToBottom = true
     /// Pendant un scroll programmé (envoi / stream / bouton), ignore les pics de distance.
@@ -164,52 +224,26 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
+                    // Fil jusqu’en bas d’écran (sous tab bar) ; le clavier reste respecté.
+                    .ignoresSafeArea(.container, edges: .bottom)
                     .overlay(alignment: .bottom) {
-                        // Transparent : le fil continue derrière. Pas de bande / material.
-                        composerChromeOverlay
+                        composerFloatingChrome
                     }
-                if let pendingFileAction {
-                    FileActionPendingCard(
-                        op: pendingFileAction.op,
-                        detail: pendingFileAction.detail,
-                        expiresAt: pendingFileAction.expiresAt,
-                        confirming: confirmingFileAction,
-                        onConfirm: { Task { await resolveFileAction(confirm: true) } },
-                        onCancel: { Task { await resolveFileAction(confirm: false) } }
-                    )
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-                }
-                if let memoryNotice {
-                    MemorySavedNotice(text: memoryNotice) {
-                        self.memoryNotice = nil
-                        nav.openMemory()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-                }
-                if let error {
-                    SoftErrorBanner(message: error, retryTitle: canRetrySend ? "Réessayer" : "OK") {
-                        if canRetrySend {
-                            canRetrySend = false
-                            self.error = nil
-                            sendTask = Task { await send(options: ChatSendOptions(regenerate: true, mode: chatMode)) }
-                        } else {
-                            self.error = nil
-                        }
-                    }
-                    .padding(.horizontal, AppTheme.space16)
-                    .padding(.vertical, AppTheme.space8)
-                }
-                if let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
-                    Task { await infra.repairService(id: serviceId) }
-                }) {
-                    banner
-                        .padding(.horizontal, AppTheme.space12)
-                        .padding(.bottom, AppTheme.space4)
-                }
-                composer
             }
+        }
+        .background {
+            GeometryReader { geo in
+                let inset = geo.safeAreaInsets.bottom
+                Color.clear
+                    .onAppear { updateBottomChromeInset(inset) }
+                    .onChange(of: inset) { _, value in updateBottomChromeInset(value) }
+            }
+        }
+        .onPreferenceChange(FloatingChromeHeightKey.self) { height in
+            if height > 0 { floatingChromeHeight = height }
+        }
+        .onPreferenceChange(BlurBandHeightKey.self) { height in
+            if height > 0 { blurBandHeight = height }
         }
         .navigationTitle(
             forcedScope != nil
@@ -546,7 +580,7 @@ struct ChatScreen: View {
                             )
                             .id("conversation-draft")
                         }
-                        // Espace pour scroller sous l’overlay PJ / Disponible / boutons.
+                        // Espace pour scroller sous l’overlay flottant (flou + composer + tab bar).
                         Color.clear
                             .frame(height: composerChromeScrollPadding)
                             .id("bottom")
@@ -1435,22 +1469,53 @@ struct ChatScreen: View {
         return t
     }
 
-    /// Hauteur réservée en bas du fil pour l’overlay transparent (PJ + statut + boutons).
+    /// Hauteur réservée en bas du fil pour l’overlay (PJ + flou + composer + tab bar).
     private var composerChromeScrollPadding: CGFloat {
-        var height: CGFloat = 48
-        if !pendingAttachments.isEmpty {
-            height += 118
-        }
-        if !isSending {
-            height += 4
-        }
-        return height
+        max(floatingChromeHeight, 160) + 12
     }
 
-    /// PJ + Disponible + quick controls — flottants, sans fond, alignés à gauche pour les PJ.
+    /// Composer + chrome en surimpression ; flou du bas jusqu’au-dessus des 3 boutons.
     @ViewBuilder
-    private var composerChromeOverlay: some View {
+    private var composerFloatingChrome: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let pendingFileAction {
+                FileActionPendingCard(
+                    op: pendingFileAction.op,
+                    detail: pendingFileAction.detail,
+                    expiresAt: pendingFileAction.expiresAt,
+                    confirming: confirmingFileAction,
+                    onConfirm: { Task { await resolveFileAction(confirm: true) } },
+                    onCancel: { Task { await resolveFileAction(confirm: false) } }
+                )
+                .padding(.horizontal, 14)
+            }
+            if let memoryNotice {
+                MemorySavedNotice(text: memoryNotice) {
+                    self.memoryNotice = nil
+                    nav.openMemory()
+                }
+                .padding(.horizontal, 14)
+            }
+            if let error {
+                SoftErrorBanner(message: error, retryTitle: canRetrySend ? "Réessayer" : "OK") {
+                    if canRetrySend {
+                        canRetrySend = false
+                        self.error = nil
+                        sendTask = Task { await send(options: ChatSendOptions(regenerate: true, mode: chatMode)) }
+                    } else {
+                        self.error = nil
+                    }
+                }
+                .padding(.horizontal, AppTheme.space16)
+            }
+            if let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
+                Task { await infra.repairService(id: serviceId) }
+            }) {
+                banner
+                    .padding(.horizontal, AppTheme.space12)
+            }
+
+            // PJ au-dessus de la zone de flou (texte net derrière).
             if !pendingAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
@@ -1465,34 +1530,65 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if !isSending {
-                HStack(spacing: 8) {
-                    RuntimeStatusPill(status: displayRuntimeStatus)
-                    if !assistantReadyForSend {
-                        Text(sendBlockedHint)
-                            .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.mutedForeground)
-                            .lineLimit(1)
+            // Flou : du bas d’écran jusqu’au sommet de Disponible + 3 boutons.
+            ZStack(alignment: .bottom) {
+                ComposerBottomBlurFade()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(blurBandHeight, 1))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    if !isSending {
+                        HStack(spacing: 8) {
+                            RuntimeStatusPill(status: displayRuntimeStatus)
+                            if !assistantReadyForSend {
+                                Text(sendBlockedHint)
+                                    .font(CNFont.caption2)
+                                    .foregroundStyle(AppTheme.mutedForeground)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            ComposerQuickControls(
+                                thinkingEnabled: isThinkingEnabled,
+                                chatMode: chatMode,
+                                toolChannel: toolChannel,
+                                thinkingAvailable: thinkingToggleAvailable,
+                                showsToolChannel: showsToolChannelPicker,
+                                onToggleThinking: { toggleThinking() },
+                                onToggleMode: {
+                                    applyMode(chatMode == "agent" ? "chat" : "agent")
+                                },
+                                onCycleTool: { cycleToolChannel() }
+                            )
+                        }
+                        .padding(.horizontal, AppTheme.space16)
                     }
-                    Spacer(minLength: 0)
-                    ComposerQuickControls(
-                        thinkingEnabled: isThinkingEnabled,
-                        chatMode: chatMode,
-                        toolChannel: toolChannel,
-                        thinkingAvailable: thinkingToggleAvailable,
-                        showsToolChannel: showsToolChannelPicker,
-                        onToggleThinking: { toggleThinking() },
-                        onToggleMode: {
-                            applyMode(chatMode == "agent" ? "chat" : "agent")
-                        },
-                        onCycleTool: { cycleToolChannel() }
-                    )
+
+                    composer
                 }
-                .padding(.horizontal, AppTheme.space16)
+                .padding(.bottom, keyboardLiftActive ? AppTheme.space8 : max(bottomChromeInset, 49))
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(key: BlurBandHeightKey.self, value: geo.size.height)
+                    }
+                }
             }
         }
-        .padding(.bottom, 2)
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(key: FloatingChromeHeightKey.self, value: geo.size.height)
+            }
+        }
         .allowsHitTesting(true)
+    }
+
+    private func updateBottomChromeInset(_ inset: CGFloat) {
+        // Tab bar ≈ 49–100 ; clavier typiquement > 200.
+        if inset > 0 && inset < 140 {
+            bottomChromeInset = inset
+            keyboardLiftActive = false
+        } else if inset >= 140 {
+            keyboardLiftActive = true
+        }
     }
 
     private var composer: some View {
@@ -1527,7 +1623,6 @@ struct ChatScreen: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            // Capsule seule en bas — le chrome (PJ / Disponible / boutons) est en overlay transparent.
             ComposerCapsule(
                 draft: $draft,
                 photoItem: $photoItem,
@@ -1578,7 +1673,7 @@ struct ChatScreen: View {
                 }
             )
             .padding(.horizontal, AppTheme.space12)
-            .padding(.bottom, AppTheme.space12)
+            .padding(.bottom, AppTheme.space4)
             .padding(.top, AppTheme.space4)
         }
     }

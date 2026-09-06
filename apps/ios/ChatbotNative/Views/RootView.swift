@@ -180,6 +180,17 @@ struct MainTabView: View {
         .tint(AppTheme.accent)
         .animation(.easeInOut(duration: 0.2), value: themeRevision)
         .tabBarMinimizeBehavior(.onScrollDown)
+        // Tab bar en surimpression : pas de bandeau opaque derrière Chat / Mail / Files.
+        .toolbarBackground(.hidden, for: .tabBar)
+        .onAppear {
+            let appearance = UITabBarAppearance()
+            appearance.configureWithTransparentBackground()
+            appearance.backgroundColor = .clear
+            appearance.shadowColor = .clear
+            UITabBar.appearance().standardAppearance = appearance
+            UITabBar.appearance().scrollEdgeAppearance = appearance
+            UITabBar.appearance().isTranslucent = true
+        }
         .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
