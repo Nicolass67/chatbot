@@ -1184,13 +1184,16 @@ struct MailThreadView: View {
                         },
                         onEditToggle: {
                             editingDraft.toggle()
-                            if editingDraft {
-                                scheduleReplyRecipientSuggestions(query: replyDraftTo)
+                            if !editingDraft {
+                                replyRecipientSuggestions = []
                             } else {
                                 replyRecipientSuggestions = []
                             }
                         },
-                        onRetry: { Task { await runSuggest() } },
+                        onRetry: {
+                            // Même esprit Améliorer : prépare une consigne dans le flux suggest.
+                            Task { await runSuggest() }
+                        },
                         onSend: { confirmSend = true },
                         onCommitHeaders: {
                             Task { await commitReplyDraftHeaders() }

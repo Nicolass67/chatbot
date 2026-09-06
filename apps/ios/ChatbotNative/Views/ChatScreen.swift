@@ -123,7 +123,9 @@ struct ChatScreen: View {
     @State private var streamingService = ChatStreamingService()
     /// Quand draft/files_found = résultat principal : ne pas promouvoir la narration textuelle.
     @State private var suppressAssistantNarration = false
-    /// Bouton Réécrire / Améliorer : le résultat doit aller dans la carte, pas le chat.
+    /// Bouton Améliorer : le prochain envoi composer = conseil pour le brouillon.
+    @State private var draftImprovePending = false
+    /// Le résultat d’amélioration doit aller dans la carte, pas le chat.
     @State private var awaitingDraftRewrite = false
     @State private var draftPreviewReceivedThisTurn = false
     @State private var settingsHydrated = false
@@ -504,11 +506,11 @@ struct ChatScreen: View {
                                 isSent: draftCardSent,
                                 attachments: draftCardAttachments,
                                 recipientSuggestions: draftRecipientSuggestions,
-                                candidates: draftCardCandidates,
-                                onSelectCandidate: { email in
+                                candidates: [],
+                                onSelectCandidate: { _ in
                                     draftCardCandidates = []
                                     draftRecipientSuggestions = []
-                                    Task { await commitDraftHeaders(preferTo: [email]) }
+                                    Task { await commitDraftHeaders() }
                                 },
                                 onSelectSuggestion: { _ in
                                     draftCardCandidates = []
@@ -520,13 +522,14 @@ struct ChatScreen: View {
                                 onEditToggle: {
                                     draftCardEditing.toggle()
                                     if draftCardEditing {
-                                        scheduleRecipientSuggestions(query: draftCardTo)
+                                        // Ne pas requêter avec la liste complète — attendre la frappe.
+                                        draftRecipientSuggestions = []
                                     } else {
                                         draftRecipientSuggestions = []
                                     }
                                 },
                                 onRetry: {
-                                    Task { await rewriteOpenDraft() }
+                                    beginDraftImproveFromComposer()
                                 },
                                 onSend: {
                                     confirmSendDraft = true
@@ -767,7 +770,7 @@ struct ChatScreen: View {
         if draftCardId != nil {
             switch action {
             case .improve:
-                await rewriteOpenDraft()
+                beginDraftImproveFromComposer()
                 return
             case .extractTasks:
                 showDocImporter = true
@@ -812,12 +815,21 @@ struct ChatScreen: View {
         await send(forcedText: prompt, hideUserMessage: true)
     }
 
-    /// Réécrit le brouillon ouvert → met à jour la carte (pas une bulle chat).
-    private func rewriteOpenDraft() async {
+    /// Active le mode « conseil » : l’utilisateur écrit dans le composer (ex. plus formel).
+    private func beginDraftImproveFromComposer() {
         guard draftCardId != nil, !isSending else { return }
-        // Phrase courte seulement — le draftId part via activeContext (pas dans le message persisté).
+        draftImprovePending = true
+        draft = ""
+        AppHaptics.selection()
+    }
+
+    /// Réécrit le brouillon ouvert avec une consigne (cachée) → met à jour la carte.
+    private func rewriteOpenDraft(instruction: String? = nil) async {
+        guard draftCardId != nil, !isSending else { return }
+        let text = (instruction?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? "Réécris ce brouillon de façon plus claire et naturelle."
         await send(
-            forcedText: "Réécris ce brouillon de façon plus claire et naturelle.",
+            forcedText: text,
             hideUserMessage: true,
             rewriteDraftCard: true
         )
@@ -1241,6 +1253,7 @@ struct ChatScreen: View {
         draftCardStreaming = false
         draftCardSent = false
         draftInConversation = false
+        draftImprovePending = false
         awaitingDraftRewrite = false
         draftPreviewReceivedThisTurn = false
         draftCardStatus = "Brouillon"
@@ -1483,51 +1496,91 @@ struct ChatScreen: View {
     }
 
     private var composer: some View {
-        // Capsule seule en bas — le chrome (PJ / Disponible / boutons) est en overlay transparent.
-        ComposerCapsule(
-            draft: $draft,
-            photoItem: $photoItem,
-            showTools: $showTools,
-            placeholder: editingMessageId == nil ? "Message" : "Modifier le message…",
-            canSend: canSend,
-            isSending: isSending,
-            uploading: uploading,
-            editing: editingMessageId != nil,
-            chatMode: chatMode,
-            webSearchEnabled: webSearchEnabled,
-            selectedModelName: selectedModel,
-            reasoningModes: reasoningModes,
-            reasoningEffort: reasoningEffort,
-            models: models,
-            modelSwitching: modelSwitching,
-            thinkingEnabled: isThinkingEnabled,
-            thinkingAvailable: thinkingToggleAvailable,
-            toolChannel: toolChannel,
-            showsToolChannelPicker: showsToolChannelPicker,
-            onModeChange: { mode in applyMode(mode) },
-            onWebChange: { enabled in applyWeb(enabled) },
-            onModelChange: { modelId in Task { await applyModel(modelId) } },
-            onReasoningChange: { mode in applyReasoning(mode) },
-            onToggleThinking: { toggleThinking() },
-            onSelectToolChannel: { channel in selectToolChannel(channel) },
-            onSend: {
-                sendTask = Task { await send() }
-            },
-            onStop: {
-                sendTask?.cancel()
-                sendTask = nil
-                Task { await streamingService.cancel() }
-                finalizeStoppedStream()
-            },
-            onPickDoc: { showDocImporter = true },
-            onCancelEdit: {
-                editingMessageId = nil
-                draft = ""
+        VStack(alignment: .leading, spacing: 8) {
+            if draftImprovePending, draftCardId != nil {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AppTheme.mailAccent)
+                    Text("Amélioration du brouillon — décris ce que tu veux changer")
+                        .font(CNFont.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.foreground)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Button {
+                        draftImprovePending = false
+                        AppHaptics.light()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .frame(width: 28, height: 28)
+                            .background(AppTheme.surfaceElevated.opacity(0.7), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Annuler l’amélioration")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(AppTheme.mailAccent.opacity(0.12), in: Capsule())
+                .padding(.horizontal, AppTheme.space12)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-        )
-        .padding(.horizontal, AppTheme.space12)
-        .padding(.bottom, AppTheme.space12)
-        .padding(.top, AppTheme.space4)
+
+            // Capsule seule en bas — le chrome (PJ / Disponible / boutons) est en overlay transparent.
+            ComposerCapsule(
+                draft: $draft,
+                photoItem: $photoItem,
+                showTools: $showTools,
+                placeholder: {
+                    if draftImprovePending {
+                        return "Ex. plus formel, ajoute cette info…"
+                    }
+                    if editingMessageId != nil {
+                        return "Modifier le message…"
+                    }
+                    return "Message"
+                }(),
+                canSend: canSend,
+                isSending: isSending,
+                uploading: uploading,
+                editing: editingMessageId != nil,
+                chatMode: chatMode,
+                webSearchEnabled: webSearchEnabled,
+                selectedModelName: selectedModel,
+                reasoningModes: reasoningModes,
+                reasoningEffort: reasoningEffort,
+                models: models,
+                modelSwitching: modelSwitching,
+                thinkingEnabled: isThinkingEnabled,
+                thinkingAvailable: thinkingToggleAvailable,
+                toolChannel: toolChannel,
+                showsToolChannelPicker: showsToolChannelPicker,
+                onModeChange: { mode in applyMode(mode) },
+                onWebChange: { enabled in applyWeb(enabled) },
+                onModelChange: { modelId in Task { await applyModel(modelId) } },
+                onReasoningChange: { mode in applyReasoning(mode) },
+                onToggleThinking: { toggleThinking() },
+                onSelectToolChannel: { channel in selectToolChannel(channel) },
+                onSend: {
+                    sendTask = Task { await send() }
+                },
+                onStop: {
+                    sendTask?.cancel()
+                    sendTask = nil
+                    Task { await streamingService.cancel() }
+                    finalizeStoppedStream()
+                },
+                onPickDoc: { showDocImporter = true },
+                onCancelEdit: {
+                    editingMessageId = nil
+                    draft = ""
+                }
+            )
+            .padding(.horizontal, AppTheme.space12)
+            .padding(.bottom, AppTheme.space12)
+            .padding(.top, AppTheme.space4)
+        }
     }
 
     private var canSend: Bool {
@@ -2401,12 +2454,23 @@ private var sendBlockedHint: String {
             opts.activeContext = ctx
         }
 
-        awaitingDraftRewrite = rewriteDraftCard
+        // Améliorer via composer : le message = consigne pour peaufiner CE brouillon.
+        var effectiveRewrite = rewriteDraftCard
+        if !effectiveRewrite,
+           draftImprovePending,
+           draftCardId != nil,
+           forcedText == nil,
+           options?.regenerate != true {
+            effectiveRewrite = true
+            draftImprovePending = false
+        }
+
+        awaitingDraftRewrite = effectiveRewrite
         draftPreviewReceivedThisTurn = false
-        suppressAssistantNarration = rewriteDraftCard
-        if rewriteDraftCard {
+        suppressAssistantNarration = effectiveRewrite
+        if effectiveRewrite {
             draftCardStreaming = true
-            draftCardStatus = "Réécriture…"
+            draftCardStatus = "Amélioration…"
             draftCardEditing = false
         }
 
@@ -2418,7 +2482,7 @@ private var sendBlockedHint: String {
             || forcedActiveContext?.mailThreadId != nil
             || (forcedActiveContext?.label?.localizedCaseInsensitiveContains("mail") == true)
         if draftCardId != nil {
-            immediateThinking = .custom(rewriteDraftCard ? "Réécriture du brouillon…" : "Amélioration du brouillon…")
+            immediateThinking = .custom(effectiveRewrite ? "Amélioration du brouillon…" : "Mise à jour du brouillon…")
         } else if inMailFlow, Self.containsMailRecipientPhrase(lower) {
             immediateThinking = .custom("Recherche du destinataire…")
         } else if inMailFlow,

@@ -13,7 +13,7 @@ struct MailRecipientSuggestion: Identifiable, Hashable {
     let displayName: String?
 }
 
-/// Carte brouillon mail — PJ visibles, objet/destinataires éditables, suggestions live.
+/// Carte brouillon mail — PJ visibles, objet/destinataires (puces façon Gmail), suggestions live.
 struct MailDraftProposal: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -29,22 +29,28 @@ struct MailDraftProposal: View {
     var isSent: Bool = false
     var attachments: [EmailDraftAttachmentChip] = []
     var recipientSuggestions: [MailRecipientSuggestion] = []
+    /// @deprecated — ne plus afficher de liste « de base » hors frappe.
     var candidates: [String] = []
 
     var onSelectCandidate: ((String) -> Void)? = nil
     var onSelectSuggestion: ((MailRecipientSuggestion) -> Void)? = nil
     var onRecipientQueryChanged: ((String) -> Void)? = nil
     var onEditToggle: () -> Void
+    /// Améliorer : le parent active le composer pour un conseil (pas une réécriture auto).
     var onRetry: () -> Void
     var onSend: () -> Void
     var onAttach: (() -> Void)? = nil
     var onDiscard: (() -> Void)? = nil
     var onCommitHeaders: (() -> Void)? = nil
 
+    /// Fragment en cours de saisie (pas encore confirmé en puce).
+    @State private var typingQuery = ""
+    @FocusState private var toFieldFocused: Bool
+
     private var sendDisabled: Bool {
         isSent || busy || isStreaming
             || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || toText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || confirmedRecipients.isEmpty
             || draftId == nil
     }
 
@@ -52,9 +58,24 @@ struct MailDraftProposal: View {
         isSent ? AppTheme.success : AppTheme.mailAccent
     }
 
-    private var suggestionRows: [MailRecipientSuggestion] {
-        if !recipientSuggestions.isEmpty { return recipientSuggestions }
-        return candidates.map { MailRecipientSuggestion(email: $0, displayName: nil) }
+    private var confirmedRecipients: [String] {
+        Self.parseRecipients(toText)
+    }
+
+    /// Suggestions API uniquement pendant la frappe — jamais les candidates « de base ».
+    private var filteredSuggestions: [MailRecipientSuggestion] {
+        let q = typingQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard q.count >= 1 else { return [] }
+        let confirmed = Set(confirmedRecipients.map { $0.lowercased() })
+        return recipientSuggestions
+            .filter { !confirmed.contains($0.email.lowercased()) }
+            .filter { row in
+                let email = row.email.lowercased()
+                let name = (row.displayName ?? "").lowercased()
+                return email.contains(q) || name.contains(q)
+            }
+            .prefix(6)
+            .map { $0 }
     }
 
     var body: some View {
@@ -109,6 +130,17 @@ struct MailDraftProposal: View {
                     lineWidth: 1
                 )
         )
+        .onChange(of: isEditing) { _, editing in
+            if editing {
+                typingQuery = ""
+                toFieldFocused = true
+                onRecipientQueryChanged?("")
+            } else {
+                commitTypingQueryIfEmail()
+                typingQuery = ""
+                onRecipientQueryChanged?("")
+            }
+        }
         .accessibilityIdentifier(A11yID.Mail.draft)
     }
 
@@ -147,11 +179,18 @@ struct MailDraftProposal: View {
 
     private var readOnlyHeaders: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !toText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Label("À : \(toText)", systemImage: "person.fill")
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.muted)
-                    .lineLimit(2)
+            if !confirmedRecipients.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(AppTheme.muted)
+                        .padding(.top, 6)
+                    FlowRecipientChips(
+                        emails: confirmedRecipients,
+                        removable: false,
+                        onRemove: { _ in }
+                    )
+                }
             }
             if !subjectText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Label("Objet : \(subjectText)", systemImage: "text.alignleft")
@@ -159,62 +198,74 @@ struct MailDraftProposal: View {
                     .foregroundStyle(AppTheme.muted)
                     .lineLimit(2)
             }
-            if !suggestionRows.isEmpty && !isSent {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Destinataires suggérés")
-                        .font(CNFont.caption2.weight(.semibold))
-                        .foregroundStyle(AppTheme.foreground)
-                    ForEach(suggestionRows.prefix(5)) { item in
-                        Button {
-                            applySuggestion(item)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 1) {
-                                if let name = item.displayName, !name.isEmpty {
-                                    Text(name).font(CNFont.caption.weight(.semibold))
-                                }
-                                Text(item.email).font(CNFont.caption)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
         }
     }
 
     private var editableHeaders: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("À")
                     .font(CNFont.caption2.weight(.semibold))
                     .foregroundStyle(AppTheme.mutedForeground)
-                TextField("destinataire@email.com", text: $toText)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.emailAddress)
-                    .autocorrectionDisabled()
-                    .font(CNFont.callout)
-                    .padding(10)
-                    .background(AppTheme.surface.opacity(0.55))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                    .onChange(of: toText) { _, newValue in
-                        onRecipientQueryChanged?(recipientQuery(from: newValue))
-                    }
-                    .accessibilityLabel("Destinataires")
+
+                // Zone type Gmail : puces confirmées + champ de frappe.
+                VStack(alignment: .leading, spacing: 8) {
+                    FlowRecipientChips(
+                        emails: confirmedRecipients,
+                        removable: true,
+                        onRemove: { email in
+                            removeRecipient(email)
+                        }
+                    )
+
+                    TextField("Ajouter un destinataire", text: $typingQuery)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                        .font(CNFont.callout)
+                        .focused($toFieldFocused)
+                        .submitLabel(.done)
+                        .onSubmit {
+                            commitTypingQueryIfEmail()
+                        }
+                        .onChange(of: typingQuery) { _, newValue in
+                            handleTypingChange(newValue)
+                        }
+                        .accessibilityLabel("Ajouter un destinataire")
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.surface.opacity(0.55))
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                        .stroke(
+                            toFieldFocused ? AppTheme.mailAccent.opacity(0.45) : AppTheme.glassBorder,
+                            lineWidth: toFieldFocused ? 1.2 : 0.8
+                        )
+                )
             }
 
-            if !suggestionRows.isEmpty {
+            if !filteredSuggestions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Suggestions")
                         .font(CNFont.caption2.weight(.semibold))
                         .foregroundStyle(AppTheme.mutedForeground)
-                    ForEach(suggestionRows.prefix(6)) { item in
+                    ForEach(filteredSuggestions) { item in
                         Button {
-                            applySuggestion(item)
+                            addRecipient(item.email)
+                            onSelectSuggestion?(item)
+                            onSelectCandidate?(item.email)
                         } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "person.crop.circle")
-                                    .foregroundStyle(AppTheme.mailAccent)
+                            HStack(spacing: 10) {
+                                ZStack {
+                                    Circle()
+                                        .fill(AppTheme.mailAccent.opacity(0.16))
+                                        .frame(width: 32, height: 32)
+                                    Text(avatarLetter(for: item))
+                                        .font(CNFont.caption.weight(.bold))
+                                        .foregroundStyle(AppTheme.mailAccent)
+                                }
                                 VStack(alignment: .leading, spacing: 1) {
                                     if let name = item.displayName, !name.isEmpty {
                                         Text(name)
@@ -226,17 +277,20 @@ struct MailDraftProposal: View {
                                         .foregroundStyle(AppTheme.mutedForeground)
                                 }
                                 Spacer(minLength: 0)
-                                Image(systemName: "plus.circle.fill")
+                                Image(systemName: "plus")
+                                    .font(.system(size: 12, weight: .bold))
                                     .foregroundStyle(AppTheme.mailAccent)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)
-                            .background(AppTheme.surfaceElevated.opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .background(AppTheme.surfaceElevated.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Ajouter \(item.displayName ?? item.email)")
                     }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -326,6 +380,7 @@ struct MailDraftProposal: View {
                 disabled: isStreaming
             ) {
                 if isEditing {
+                    commitTypingQueryIfEmail()
                     onCommitHeaders?()
                 }
                 onEditToggle()
@@ -342,8 +397,8 @@ struct MailDraftProposal: View {
             }
 
             draftGlassChip(
-                title: "Réécrire",
-                systemImage: "arrow.triangle.2.circlepath",
+                title: "Améliorer",
+                systemImage: "sparkles",
                 disabled: busy || isStreaming,
                 action: onRetry
             )
@@ -384,27 +439,72 @@ struct MailDraftProposal: View {
         .accessibilityIdentifier(A11yID.Mail.send)
     }
 
-    private func applySuggestion(_ item: MailRecipientSuggestion) {
-        let parts = toText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        var next = parts
-        if let last = parts.last, !last.contains("@") {
-            next = Array(parts.dropLast())
+    // MARK: - Recipients
+
+    private func handleTypingChange(_ raw: String) {
+        // Virgule / point-virgule → confirmer le fragment précédent.
+        if raw.contains(",") || raw.contains(";") {
+            let separators = CharacterSet(charactersIn: ",;")
+            let parts = raw.components(separatedBy: separators)
+            let head = parts.dropLast().joined()
+            let tail = parts.last ?? ""
+            let candidate = head.trimmingCharacters(in: .whitespacesAndNewlines)
+            if looksLikeEmail(candidate) {
+                addRecipient(candidate)
+            }
+            typingQuery = tail.trimmingCharacters(in: .whitespaces)
+            onRecipientQueryChanged?(typingQuery)
+            return
         }
-        if !next.contains(where: { $0.caseInsensitiveCompare(item.email) == .orderedSame }) {
-            next.append(item.email)
+        onRecipientQueryChanged?(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func commitTypingQueryIfEmail() {
+        let q = typingQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard looksLikeEmail(q) else { return }
+        addRecipient(q)
+    }
+
+    private func addRecipient(_ email: String) {
+        let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        var next = confirmedRecipients
+        if !next.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) {
+            next.append(normalized)
+            toText = next.joined(separator: ", ")
+            AppHaptics.selection()
         }
-        toText = next.joined(separator: ", ")
-        onSelectSuggestion?(item)
-        onSelectCandidate?(item.email)
+        typingQuery = ""
         onRecipientQueryChanged?("")
     }
 
-    private func recipientQuery(from raw: String) -> String {
-        let parts = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        return parts.last ?? ""
+    private func removeRecipient(_ email: String) {
+        let next = confirmedRecipients.filter {
+            $0.caseInsensitiveCompare(email) != .orderedSame
+        }
+        toText = next.joined(separator: ", ")
+        AppHaptics.light()
+    }
+
+    private func looksLikeEmail(_ value: String) -> Bool {
+        let v = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard v.count >= 5, v.contains("@") else { return false }
+        let parts = v.split(separator: "@")
+        guard parts.count == 2, !parts[0].isEmpty, parts[1].contains(".") else { return false }
+        return true
+    }
+
+    private static func parseRecipients(_ raw: String) -> [String] {
+        raw
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.contains("@") }
+    }
+
+    private func avatarLetter(for item: MailRecipientSuggestion) -> String {
+        let source = (item.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? item.email
+        return String(source.prefix(1)).uppercased()
     }
 
     private func attachmentIcon(_ att: EmailDraftAttachmentChip) -> String {
@@ -455,5 +555,113 @@ struct MailDraftProposal: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityLabel(title)
+    }
+}
+
+// MARK: - Flow chips (destinataires)
+
+private struct FlowRecipientChips: View {
+    let emails: [String]
+    var removable: Bool
+    var onRemove: (String) -> Void
+
+    var body: some View {
+        // Wrapping simple via LazyVGrid flexible — lisible et tactile.
+        FlexibleChipWrap(spacing: 6) {
+            ForEach(emails, id: \.self) { email in
+                HStack(spacing: 4) {
+                    Text(shortLabel(for: email))
+                        .font(CNFont.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.foreground)
+                        .lineLimit(1)
+                    if removable {
+                        Button {
+                            onRemove(email)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(AppTheme.mutedForeground)
+                                .frame(width: 18, height: 18)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Retirer \(email)")
+                    }
+                }
+                .padding(.leading, 10)
+                .padding(.trailing, removable ? 4 : 10)
+                .padding(.vertical, 6)
+                .background(AppTheme.mailAccent.opacity(0.16), in: Capsule())
+                .overlay(Capsule().stroke(AppTheme.mailAccent.opacity(0.28), lineWidth: 0.8))
+                .accessibilityLabel(email)
+            }
+        }
+    }
+
+    private func shortLabel(for email: String) -> String {
+        let local = email.split(separator: "@").first.map(String.init) ?? email
+        return local.count > 18 ? String(local.prefix(16)) + "…" : local
+    }
+}
+
+/// Wrap horizontal qui passe à la ligne (esprit Gmail, sans layout engine lourd).
+private struct FlexibleChipWrap<Content: View>: View {
+    var spacing: CGFloat = 6
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        // iOS 16+ : Layout That Fits via ViewThatFits is awkward for chips;
+        // use a simple wrapping layout.
+        ChipFlowLayout(spacing: spacing) {
+            content()
+        }
+    }
+}
+
+private struct ChipFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                y += rowHeight + spacing
+                x = 0
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            totalWidth = max(totalWidth, x - spacing)
+            totalHeight = y + rowHeight
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : totalWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX, x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            sub.place(
+                at: CGPoint(x: x, y: y),
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
