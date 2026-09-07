@@ -716,6 +716,18 @@ final class APIClient: @unchecked Sendable {
         throw APIClientError.decode
     }
 
+    /// Worker `/api/status` — backend online/offline sans dépendre de Next.
+    func fetchWorkerBackendOnline() async throws -> Bool {
+        if UITestMode.isActive { return true }
+        let req = authorizedRequest(path: "api/status")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return (obj["backend"] as? String) == "online"
+    }
+
     /// PC déjà allumé : demande KV de démarrage stack (sans WoL). Consommée par ChatbotBootPoll.
     @discardableResult
     func startServices() async throws -> PowerStatusDTO {

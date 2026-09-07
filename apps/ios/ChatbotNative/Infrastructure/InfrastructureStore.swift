@@ -220,13 +220,50 @@ final class InfrastructureStore: ObservableObject {
     }
 
     func wake() async {
-        guard let client else { return }
+        // 1) Magic packet local d’abord (comme les apps WoL du téléphone).
+        await WakeOnLanSender.sendConfigured()
+        guard let client else {
+            lastRepairMessage = "WoL local envoyé — reconnecte-toi pour le réveil distant Freebox."
+            return
+        }
         do {
+            // 2) Freebox distant via Worker + demande boot KV (comme l’ancien site web).
             let power = try await client.wakePc()
-            lastRepairMessage = power.message.isEmpty ? "Signal de réveil envoyé" : power.message
-            await refresh()
+            lastRepairMessage = power.message.isEmpty
+                ? "Réveil local + Freebox envoyés"
+                : power.message
+            // 3) Poll court comme la page offline web (attendre le retour du PC).
+            await pollUntilReachable(timeoutSeconds: 90)
         } catch {
-            publishAlert(error.localizedDescription)
+            // Même si le Worker échoue, le packet local peut suffire sur le LAN.
+            lastRepairMessage =
+                "WoL local envoyé. Distant : \(error.localizedDescription)"
+            await pollUntilReachable(timeoutSeconds: 60)
+            if status == nil || isPcConfirmedOffline {
+                publishAlert(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Attend que le Worker voie le backend (ou que le status infra réponde).
+    private func pollUntilReachable(timeoutSeconds: Double) async {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var attempt = 0
+        while Date() < deadline {
+            attempt += 1
+            if let client {
+                if let online = try? await client.fetchWorkerBackendOnline(), online {
+                    lastRepairMessage = "PC en ligne (vérification \(attempt))"
+                    await refresh()
+                    return
+                }
+            }
+            await refresh()
+            if isPcOnline || chatbotAvailability == .available {
+                lastRepairMessage = "PC en ligne"
+                return
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
         }
     }
 

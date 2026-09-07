@@ -14,7 +14,7 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
     PRODUCT_BUNDLE_IDENTIFIER: fr.nicolazer.chatbot.native
     MARKETING_VERSION: "3.0.0"
-    CURRENT_PROJECT_VERSION: "30"
+    CURRENT_PROJECT_VERSION: "200"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Manual
     CODE_SIGNING_ALLOWED: "NO"
@@ -61,10 +61,15 @@ targets:
               - chatbot-native
         NSPhotoLibraryUsageDescription: Joindre des images aux messages du chat.
         NSFaceIDUsageDescription: Verrouiller l’accès local à Chatbot sur cet iPhone.
+        NSLocalNetworkUsageDescription: Envoyer un signal Wake-on-LAN au PC sur le réseau local Freebox.
+        NSBonjourServices:
+          - _chatbot-wol._udp
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
         # Origin publique — surchargée par Local.xcconfig / Flash.xcconfig / CI.
         ChatbotPublicBaseURL: "$(CHATBOT_PUBLIC_BASE_URL)"
+        ChatbotWolMacAddresses: "9C:69:B4:60:70:6B,E8:BF:B8:5A:20:76,D8:43:AE:1E:09:56"
+        ChatbotWolBroadcastHosts: "255.255.255.255,192.168.1.255,192.168.8.255,192.168.0.255,192.168.1.168"
   ChatbotWidgets:
     type: app-extension
     platform: iOS
@@ -78,7 +83,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         CODE_SIGN_ENTITLEMENTS: ChatbotWidgets/ChatbotWidgets.entitlements
         MARKETING_VERSION: "3.0.0"
-        CURRENT_PROJECT_VERSION: "30"
+        CURRENT_PROJECT_VERSION: "200"
         TARGETED_DEVICE_FAMILY: "1"
         IPHONEOS_DEPLOYMENT_TARGET: "26.0"
         LD_RUNPATH_SEARCH_PATHS:

@@ -80,7 +80,7 @@ const worker = {
         );
       }
 
-      if (url.pathname === "/status") {
+      if (url.pathname === "/status" || url.pathname === "/api/status") {
         if (request.method !== "GET") {
           return json({ error: "method_not_allowed" }, 405);
         }
