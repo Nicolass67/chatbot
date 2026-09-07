@@ -425,7 +425,14 @@ struct ChatScreen: View {
                             emptyThread
                         }
                         ForEach(messages) { msg in
-                            messageRow(msg)
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Marge sous la nav quand ce message est ancré en haut.
+                                if msg.id == pinToTopMessageId {
+                                    Color.clear.frame(height: 22)
+                                }
+                                messageRow(msg)
+                            }
+                            .id(msg.id)
                         }
                         // Live agent — dans le fil, au-dessus de la réponse (pas du composer).
                         if shouldShowLiveAgentStrip {
@@ -602,6 +609,11 @@ struct ChatScreen: View {
                     if stickBottomThroughKeyboard {
                         return
                     }
+                    // Pin message user en haut : le slack bas est volontaire → pas de bouton « descendre ».
+                    if pinToTopMessageId != nil {
+                        if showScrollDown { showScrollDown = false }
+                        return
+                    }
                     if distanceToBottom > scrollShowButtonThreshold {
                         if isPinnedToBottom { isPinnedToBottom = false }
                         if !showScrollDown {
@@ -665,14 +677,16 @@ struct ChatScreen: View {
                 .onChange(of: pinToTopToken) { _, _ in
                     guard let id = pinToTopMessageId else { return }
                     isPinnedToBottom = false
+                    showScrollDown = false
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.55)
-                    // Laisser le layout (spacer + bulle) se poser avant l’ancre .top.
+                    // .top sur le wrapper (spacer 22 + bulle) → marge sous le header.
                     DispatchQueue.main.async {
                         withAnimation(.easeOut(duration: 0.35)) {
                             proxy.scrollTo(id, anchor: .top)
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                             proxy.scrollTo(id, anchor: .top)
+                            showScrollDown = false
                         }
                     }
                 }
@@ -708,7 +722,7 @@ struct ChatScreen: View {
                 }
             }
 
-            if showScrollDown {
+            if showScrollDown, pinToTopMessageId == nil {
                 // Au-dessus de l’overlay PJ / Disponible / boutons.
                 ScrollToBottomButton {
                     AppHaptics.light()
@@ -787,7 +801,6 @@ struct ChatScreen: View {
             },
             isLiveStreaming: liveStreaming
         )
-        .id(msg.id)
     }
 
     @ViewBuilder
@@ -1615,31 +1628,29 @@ Corps actuel:
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                if !isSending {
-                    HStack(spacing: 8) {
-                        RuntimeStatusPill(status: displayRuntimeStatus)
-                        if !assistantReadyForSend {
-                            Text(sendBlockedHint)
-                                .font(CNFont.caption2)
-                                .foregroundStyle(AppTheme.mutedForeground)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        ComposerQuickControls(
-                            thinkingEnabled: isThinkingEnabled,
-                            chatMode: chatMode,
-                            toolChannel: toolChannel,
-                            thinkingAvailable: thinkingToggleAvailable,
-                            showsToolChannel: showsToolChannelPicker,
-                            onToggleThinking: { toggleThinking() },
-                            onToggleMode: {
-                                applyMode(chatMode == "agent" ? "chat" : "agent")
-                            },
-                            onCycleTool: { cycleToolChannel() }
-                        )
+                HStack(spacing: 8) {
+                    RuntimeStatusPill(status: displayRuntimeStatus)
+                    if !assistantReadyForSend {
+                        Text(sendBlockedHint)
+                            .font(CNFont.caption2)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                            .lineLimit(1)
                     }
-                    .padding(.horizontal, AppTheme.space16)
+                    Spacer(minLength: 0)
+                    ComposerQuickControls(
+                        thinkingEnabled: isThinkingEnabled,
+                        chatMode: chatMode,
+                        toolChannel: toolChannel,
+                        thinkingAvailable: thinkingToggleAvailable,
+                        showsToolChannel: showsToolChannelPicker,
+                        onToggleThinking: { toggleThinking() },
+                        onToggleMode: {
+                            applyMode(chatMode == "agent" ? "chat" : "agent")
+                        },
+                        onCycleTool: { cycleToolChannel() }
+                    )
                 }
+                .padding(.horizontal, AppTheme.space16)
 
                 composer
             }
@@ -1665,9 +1676,11 @@ Corps actuel:
             }
         } else if inset >= 140 {
             if !keyboardLiftActive {
-                // Capturer AVANT que la géométrie ne croie qu’on a remonté.
-                stickBottomThroughKeyboard =
-                    isPinnedToBottom && pinToTopMessageId == nil
+                // Fallback si willShow n’a pas tourné : capturer l’état pin.
+                if !stickBottomThroughKeyboard {
+                    stickBottomThroughKeyboard =
+                        isPinnedToBottom && pinToTopMessageId == nil && !showScrollDown
+                }
             }
             keyboardLiftActive = true
         }
