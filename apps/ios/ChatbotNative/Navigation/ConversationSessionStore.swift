@@ -231,12 +231,24 @@ enum ConversationSessionStore {
     }
 
     /// Extrait des indices fichiers depuis le texte assistant (labels FR/EN, pas de domaine métier).
+    /// Tolère le markdown gras du type `**ID du fichier :** abc123` (les `*` entre label et `:`).
     static func extractFilesFoundHints(from content: String) -> [FilesFoundFileDTO] {
-        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count >= 12 else { return [] }
+        let raw = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.count >= 12 else { return [] }
 
-        let idPattern = #"(?i)(?:id\s*(?:du\s*)?fichier|file\s*id|fileid)\s*[:：]\s*([A-Za-z0-9_-]{6,})"#
-        let namePattern = #"(?i)(?:nom\s*(?:du\s*)?fichier|file\s*name|filename)\s*[:：]\s*(.+)$"#
+        // Normalise : retire emphase markdown / NBSP qui cassent `fichier :` → `fichier :**`.
+        let text = raw
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(
+                of: #"\*+|_+"#,
+                with: "",
+                options: .regularExpression
+            )
+
+        // Marqueurs optionnels entre label et valeur (au cas où du markdown reste).
+        let glue = #"\s*[*_~`]*\s*[:：]\s*[*_~`]*\s*"#
+        let idPattern = #"(?i)(?:id\s*(?:du\s*)?fichier|file\s*id|fileid)"# + glue + #"([A-Za-z0-9_-]{6,})"#
+        let namePattern = #"(?i)(?:nom\s*(?:du\s*)?fichier|file\s*name|filename)"# + glue + #"(.+)$"#
 
         var ids: [String] = []
         if let re = try? NSRegularExpression(pattern: idPattern) {
@@ -257,9 +269,10 @@ enum ConversationSessionStore {
                       let r = Range(match.range(at: 1), in: text) else { continue }
                 var name = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
                 // Coupe un éventuel suffixe markdown / ponctuation collée.
-                if let cut = name.firstIndex(where: { $0 == "\n" || $0 == "*" }) {
+                if let cut = name.firstIndex(where: { $0 == "\n" || $0 == "*" || $0 == "`" }) {
                     name = String(name[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+                name = name.trimmingCharacters(in: CharacterSet(charactersIn: "*_`"))
                 if !name.isEmpty { names.append(name) }
             }
         }

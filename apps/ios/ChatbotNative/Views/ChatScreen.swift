@@ -1932,7 +1932,9 @@ private var sendBlockedHint: String {
                     onto: messages
                 )
                 // Chrome souvent sous asst-* pendant files_found — remonter aussi ces ancres.
-                for tempId in chromeById.keys where tempId.hasPrefix("asst-") || tempId.hasPrefix("local-") {
+                let tempIds = ConversationSessionStore.chrome(for: conversation.id).keys
+                    .filter { $0.hasPrefix("asst-") || $0.hasPrefix("local-") }
+                for tempId in tempIds {
                     chromeById = ConversationSessionStore.remountChrome(
                         conversationId: conversation.id,
                         from: tempId,
@@ -2912,6 +2914,11 @@ private var sendBlockedHint: String {
                 if finalMail != nil { meta.mailHandoff = finalMail }
                 if finalFiles != nil { meta.filesHandoff = finalFiles }
                 if !finalFound.isEmpty { meta.filesFound = finalFound }
+                // SSE files_found manquant : reconstruire la carte depuis « ID / Nom du fichier ».
+                if meta.filesFound.isEmpty {
+                    let hints = ConversationSessionStore.extractFilesFoundHints(from: finalText)
+                    if !hints.isEmpty { meta.filesFound = hints }
+                }
                 chromeById[promoteId] = meta
                 ConversationSessionStore.setChrome(
                     meta,
@@ -2934,6 +2941,11 @@ private var sendBlockedHint: String {
                 return
             }
             suppressAssistantNarration = false
+            // Hydrate toutes les bulles (réouverture mid-session / SSE perdu).
+            chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                conversationId: conversation.id,
+                messages: messages
+            )
             // Toujours dédupliquer les cartes fichiers (asst-* + id serveur).
             if !finalFound.isEmpty {
                 dedupeAssistantMessagesSharing(
@@ -2974,6 +2986,10 @@ private var sendBlockedHint: String {
                     if meta.mailHandoff == nil { meta.mailHandoff = finalMail }
                     if meta.filesHandoff == nil { meta.filesHandoff = finalFiles }
                     if meta.filesFound.isEmpty { meta.filesFound = finalFound }
+                    if meta.filesFound.isEmpty {
+                        let hints = ConversationSessionStore.extractFilesFoundHints(from: last.content)
+                        if !hints.isEmpty { meta.filesFound = hints }
+                    }
                     if meta.agentRun == nil {
                         meta.agentRun = chromeById[promoteId]?.agentRun
                     }
@@ -2984,6 +3000,10 @@ private var sendBlockedHint: String {
                         messageId: last.id
                     )
                 }
+                chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                    conversationId: conversation.id,
+                    messages: messages
+                )
                 if isPinnedToBottom {
                     scrollToken += 1
                 }
@@ -3835,40 +3855,41 @@ private var sendBlockedHint: String {
                 rootId: obj["rootId"] as? String
             )
         case "files_found":
-            if let arr = obj["files"] as? [[String: Any]] {
-                var seen = Set<String>()
-                let parsed: [FilesFoundFileDTO] = arr.compactMap { f in
-                    guard let id = f["fileId"] as? String, !id.isEmpty else { return nil }
-                    guard seen.insert(id).inserted else { return nil }
-                    return FilesFoundFileDTO(
-                        id: id,
-                        filename: (f["filename"] as? String) ?? "fichier",
-                        relativePath: f["relativePath"] as? String,
-                        rootId: f["rootId"] as? String,
-                        sizeBytes: f["sizeBytes"] as? Int,
-                        mtimeMs: f["mtimeMs"] as? Double,
-                        extensionHint: f["extension"] as? String
-                    )
-                }
-                guard !parsed.isEmpty else { return }
-                streamFilesFound = parsed
-                suppressAssistantNarration = true
-                thinkingKind = nil
-
-                // Une seule bulle pour ces fichiers — réutilise l’ancre existante.
-                let anchorId = ensureSingleFilesFoundAnchor(for: parsed)
-                streamingAssistantId = anchorId
-                var chrome = chromeById[anchorId] ?? MessageChromeMeta()
-                chrome.filesFound = mergeFilesFound(chrome.filesFound, parsed)
-                chromeById[anchorId] = chrome
-                ConversationSessionStore.mergeChrome(
-                    chrome,
-                    conversationId: conversation.id,
-                    messageId: anchorId
+            let rawFiles = (obj["files"] as? [Any]) ?? []
+            var seen = Set<String>()
+            let parsed: [FilesFoundFileDTO] = rawFiles.compactMap { item in
+                guard let f = item as? [String: Any] else { return nil }
+                let id = ((f["fileId"] as? String) ?? (f["id"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !id.isEmpty, seen.insert(id).inserted else { return nil }
+                return FilesFoundFileDTO(
+                    id: id,
+                    filename: (f["filename"] as? String) ?? (f["name"] as? String) ?? "fichier",
+                    relativePath: f["relativePath"] as? String,
+                    rootId: f["rootId"] as? String,
+                    sizeBytes: f["sizeBytes"] as? Int,
+                    mtimeMs: f["mtimeMs"] as? Double,
+                    extensionHint: f["extension"] as? String
                 )
-                // Purge toute autre bulle qui afficherait la même CI.
-                dedupeAssistantMessagesSharing(fileIds: Set(parsed.map(\.id)), keepId: anchorId)
             }
+            guard !parsed.isEmpty else { return }
+            streamFilesFound = mergeFilesFound(streamFilesFound, parsed)
+            // Ne pas suppress les tokens : MessageBubble masque déjà la narration si carte présente.
+            thinkingKind = nil
+
+            // Une seule bulle pour ces fichiers — réutilise l’ancre existante.
+            let anchorId = ensureSingleFilesFoundAnchor(for: parsed)
+            streamingAssistantId = anchorId
+            var chrome = chromeById[anchorId] ?? MessageChromeMeta()
+            chrome.filesFound = mergeFilesFound(chrome.filesFound, parsed)
+            chromeById[anchorId] = chrome
+            ConversationSessionStore.mergeChrome(
+                chrome,
+                conversationId: conversation.id,
+                messageId: anchorId
+            )
+            // Purge toute autre bulle qui afficherait la même CI.
+            dedupeAssistantMessagesSharing(fileIds: Set(parsed.map(\.id)), keepId: anchorId)
         case "draft_preview":
             if let draft = obj["draft"] as? [String: Any] {
                 let id = (draft["id"] as? String) ?? (draft["draftId"] as? String)
