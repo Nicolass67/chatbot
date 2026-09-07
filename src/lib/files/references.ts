@@ -42,7 +42,7 @@ export async function mintFileReference(input: {
     void purgeExpiredFileReferences(now).catch(() => undefined);
   }
 
-  // Réutilise une ref non expirée pour stabiliser `file=` dans l'URL (F5 / partage).
+  // Réutilise une ref existante (même expirée) pour stabiliser `fileId` dans le chat / URLs.
   const existing = await db.query.fileReferences.findFirst({
     where: and(
       eq(fileReferences.userId, input.userId),
@@ -52,7 +52,7 @@ export async function mintFileReference(input: {
     orderBy: (t, { desc }) => [desc(t.createdAt)],
   });
 
-  if (existing && new Date(existing.expiresAt).getTime() > now) {
+  if (existing) {
     await db
       .update(fileReferences)
       .set({
@@ -114,6 +114,20 @@ export async function getFileReference(
   return row ? mapRef(row) : null;
 }
 
+/** Prolonge le TTL d’une ref (accès chat / content) — fileId reste stable. */
+export async function refreshFileReferenceExpiry(
+  fileId: string,
+  ttlMs = FILE_REF_TTL_MS
+): Promise<string> {
+  const db = getDb();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  await db
+    .update(fileReferences)
+    .set({ expiresAt })
+    .where(eq(fileReferences.id, fileId));
+  return expiresAt;
+}
+
 export async function purgeExpiredFileReferences(
   now = Date.now()
 ): Promise<number> {
@@ -172,7 +186,8 @@ export async function mintFileReferencesBatch(
   const out = [];
   for (const it of normalized) {
     const existing = bestByPath.get(it.relativePath);
-    if (existing && new Date(existing.expiresAt).getTime() > now) {
+    // Réutilise l’id même si expiré — cartes chat / handoffs restent valides.
+    if (existing) {
       await db
         .update(fileReferences)
         .set({

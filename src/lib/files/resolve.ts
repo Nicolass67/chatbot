@@ -3,7 +3,7 @@ import path from "node:path";
 import { classifyRelativePathAccess } from "./access";
 import { isFilesFeatureEnabled } from "./feature";
 import { resolveUnderRoot, toPosixRelative } from "./path-guard";
-import { getFileReference } from "./references";
+import { getFileReference, refreshFileReferenceExpiry } from "./references";
 import { getFileRoot, listEnabledFileRoots } from "./roots";
 import {
   FilesError,
@@ -32,10 +32,6 @@ export async function resolveFileReference(
     );
   }
 
-  if (new Date(ref.expiresAt).getTime() <= Date.now()) {
-    throw new FilesError("STALE_REFERENCE", "Référence fichier expirée.");
-  }
-
   const root = await getFileRoot(userId, ref.rootId);
   if (!root || !root.enabled) {
     throw new FilesError("ROOT_DENIED", "Root inactive ou introuvable.");
@@ -49,6 +45,13 @@ export async function resolveFileReference(
 
   if (!fs.existsSync(absolutePath)) {
     throw new FilesError("NOT_FOUND", "Fichier introuvable sur le disque.");
+  }
+
+  // Ref encore en base mais TTL dépassé : prolonger si le fichier existe toujours.
+  // Les cartes chat / handoffs gardent le même fileId au-delà de 2h.
+  if (new Date(ref.expiresAt).getTime() <= Date.now()) {
+    const expiresAt = await refreshFileReferenceExpiry(ref.id);
+    ref.expiresAt = expiresAt;
   }
 
   const st = fs.lstatSync(absolutePath);
