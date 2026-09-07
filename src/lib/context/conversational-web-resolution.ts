@@ -3,12 +3,15 @@
  * Pas de hardcode métier (prix/CPU…) : canal Web + anaphore uniquement.
  *
  * Garde-fou : « rechercher / recherches » sans marqueur fichier local ≠ file_search.
+ * Canal UI (toolChannel) = source de vérité : ne jamais forcer web↔files↔email
+ * contre le canal explicitement choisi dans le composer.
  */
 
 import {
   groundSearchQueryWithContext,
   isFollowUpTurn,
 } from "@/lib/context/conversation-continuity";
+import type { ToolChannel } from "@/lib/agent/tool-channel";
 import type { RouteDecision } from "@/lib/request-router/types";
 
 /** Inclut conjugaisons FR courantes : recherches, cherches, etc. */
@@ -35,11 +38,14 @@ export function hasExplicitLocalFilesIntent(message: string): boolean {
 /**
  * Si l'utilisateur demande clairement le Web / une info externe et ne parle pas
  * de fichiers locaux, retire files.* pour éviter file_search à la place de web_search.
+ * No-op si le canal UI files/email est forcé.
  */
 export function clearMisroutedFilesIntent(
   route: RouteDecision,
-  userMessage: string
+  userMessage: string,
+  toolChannel?: ToolChannel
 ): RouteDecision {
+  if (toolChannel === "files" || toolChannel === "email") return route;
   if (!route.web.enabled) return route;
   if (route.files.intent === "none") return route;
   if (hasExplicitLocalFilesIntent(userMessage)) return route;
@@ -70,10 +76,12 @@ export function clearMisroutedFilesIntent(
 
 /**
  * Réécrit file_search → web_search quand le message est clairement une recherche externe.
+ * INTERDIT si toolChannel = files|email (canal UI = source de vérité).
  */
 export function rewriteMisroutedFileSearchCalls<
   T extends { tool: string; input: Record<string, unknown> },
->(calls: T[], userMessage: string): T[] {
+>(calls: T[], userMessage: string, toolChannel?: ToolChannel): T[] {
+  if (toolChannel === "files" || toolChannel === "email") return calls;
   if (!hasWebChannelIntent(userMessage)) return calls;
   if (hasExplicitLocalFilesIntent(userMessage)) return calls;
 
@@ -97,13 +105,28 @@ export function resolveConversationalWebRoute(params: {
   route: RouteDecision;
   userMessage: string;
   priorUserMessages: string[];
+  /** Derniers tours assistant (entités déjà citées pour ancrer les follow-ups). */
+  recentAssistantExcerpts?: string[];
   priorWebUsed?: boolean;
+  /** Canal composer UI — source de vérité ; ne pas reclasser Chat/Mail/Files. */
+  toolChannel?: ToolChannel;
+  /** Signal LLM optionnel (même modèle) : follow-up sémantique ambigu. */
+  llmFollowUp?: boolean;
 }): RouteDecision {
-  const priors = params.priorUserMessages.map((m) => m.trim()).filter(Boolean);
-  let route = clearMisroutedFilesIntent(params.route, params.userMessage);
+  const channel = params.toolChannel;
 
-  if (priors.length === 0) {
-    // Premier tour : canal web explicite → forcer web même si le classifieur a mis none.
+  // Canal UI files/email : ne jamais forcer le Web ni retirer files/email.
+  if (channel === "files" || channel === "email") {
+    return params.route;
+  }
+
+  const priors = params.priorUserMessages.map((m) => m.trim()).filter(Boolean);
+  const assistantExcerpts = (params.recentAssistantExcerpts ?? [])
+    .map((m) => m.trim())
+    .filter(Boolean);
+  let route = clearMisroutedFilesIntent(params.route, params.userMessage, channel);
+
+  if (priors.length === 0 && assistantExcerpts.length === 0) {
     if (
       route.web.enabled &&
       hasWebChannelIntent(params.userMessage) &&
@@ -136,12 +159,13 @@ export function resolveConversationalWebRoute(params: {
     return route;
   }
 
-  const followUp = isFollowUpTurn(params.userMessage, true);
-  const channel = hasWebChannelIntent(params.userMessage);
+  const followUp =
+    isFollowUpTurn(params.userMessage, true) || params.llmFollowUp === true;
+  const webIntent = hasWebChannelIntent(params.userMessage);
   const forceWeb =
     route.web.enabled &&
     followUp &&
-    (channel ||
+    (webIntent ||
       (params.priorWebUsed === true &&
         isEllipticalFollowUp(params.userMessage)));
 
@@ -154,6 +178,7 @@ export function resolveConversationalWebRoute(params: {
         searchQuery: groundSearchQueryWithContext({
           query: route.web.searchQuery,
           recentUserMessages: priors,
+          recentAssistantExcerpts: assistantExcerpts,
         }),
       },
     };
@@ -163,6 +188,7 @@ export function resolveConversationalWebRoute(params: {
   const grounded = groundSearchQueryWithContext({
     query: base,
     recentUserMessages: priors,
+    recentAssistantExcerpts: assistantExcerpts,
     force: true,
   });
 
@@ -193,13 +219,21 @@ export function resolveConversationalWebRoute(params: {
     },
   };
 
-  return clearMisroutedFilesIntent(route, params.userMessage);
+  return clearMisroutedFilesIntent(route, params.userMessage, channel);
 }
 
 function isEllipticalFollowUp(message: string): boolean {
   const words = message.trim().split(/\s+/).filter(Boolean);
   if (words.length <= 8) return true;
-  return /\b(ça|cela|ceux|celles|leur|leurs|en|y|idem|pareil|ceux[- ]là|mentionné|mentionnée|avant|précédemment)\b/i.test(
-    message
+  if (
+    /\b(ça|cela|ceux|celles|il|elle|lui|eux|elles|leur|leurs|en|y|idem|pareil|ceux[- ]là|mentionné|mentionnée|avant|précédemment|qu['’]il|qu['’]elle)\b/i.test(
+      message
+    )
+  ) {
+    return true;
+  }
+  return (
+    /\b(entre\s+\d+|\d+\s*(€|euros?)|budget|prix|co[uû]te)\b/i.test(message) &&
+    words.length <= 18
   );
 }

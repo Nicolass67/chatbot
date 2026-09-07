@@ -138,6 +138,7 @@ export type WebEvidencePipelineInput = {
   maxFollowUpPasses?: number;
   maxPageCharsForAnalysis?: number;
   conversationPriorUserMessages?: string[];
+  conversationPriorAssistantExcerpts?: string[];
   analyzeSource?: (args: {
     question: string;
     needSummaries: string[];

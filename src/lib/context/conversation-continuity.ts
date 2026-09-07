@@ -7,7 +7,14 @@
  */
 
 const ANAPHORA_RE =
-  /\b(ça|cela|celui|celle|ceux|celles|leur|leurs|en|y|pareil|idem|modèles?|models?|marques?|options?|ceux[- ]là|celles[- ]là|celui[- ]là|celle[- ]là|maintenant|aussi|également|lesquels|lesquelles|lequel|laquelle|combien|dessus|ci[- ]dessus|précédent|précédente|mentionné|mentionnée|évoqué|évoquée|pareils?|ci[- ]avant)\b/i;
+  /\b(ça|cela|celui|celle|ceux|celles|il|elle|lui|eux|elles|leur|leurs|en|y|pareil|idem|modèles?|models?|marques?|options?|ceux[- ]là|celles[- ]là|celui[- ]là|celle[- ]là|maintenant|aussi|également|lesquels|lesquelles|lequel|laquelle|combien|dessus|ci[- ]dessus|précédent|précédente|mentionné|mentionnée|évoqué|évoquée|pareils?|ci[- ]avant|qu['’]il|qu['’]elle)\b/i;
+
+/**
+ * Affinage de contrainte (prix / budget / taille…) sans nouveau sujet métier.
+ * Ex. « entre 200 et 300 € », « plutôt silencieux », « sous 150 euros ».
+ */
+const CONSTRAINT_REFINEMENT_RE =
+  /\b(entre\s+\d+|\d+\s*(€|euros?|eur)\b|sous\s+\d+|moins\s+de\s+\d+|budget|prix|co[uû]te|co[uû]ter|co[uû]tent|environ\s+\d+|fourchette|gamme\s+de\s+prix)\b/i;
 
 const IMPERATIVE_FOLLOW_UP_RE =
   /^(oui\s+)?(donne|dis|montre|liste|cite|compare|détaille|detaille|explique|trouve|propose|indique|sélectionne|selectionne|reprends?|continue|fais|fait|recherche|recherches|cherche|cherches)\b/i;
@@ -83,6 +90,31 @@ const AMBIGUOUS_TOKEN_SET = new Set(
     "merci",
     "bonjour",
     "salut",
+    // contraintes / mots fonction (ne définissent pas un domaine)
+    "entre",
+    "budget",
+    "prix",
+    "coute",
+    "couter",
+    "coutent",
+    "coute",
+    "aimerai",
+    "aimerais",
+    "voudrais",
+    "veux",
+    "possible",
+    "euros",
+    "euro",
+    "fourchette",
+    "environ",
+    "moins",
+    "sous",
+    "plutot",
+    "plutôt",
+    "cherche",
+    "chercher",
+    "disponible",
+    "disponibles",
   ].join(" ").split(/\s+/)
 );
 
@@ -124,7 +156,18 @@ export function isFollowUpTurn(
   if (RANKING_FOLLOW_UP_RE.test(t) && AMBIGUOUS_SUBJECT_RE.test(t)) return true;
   if (RANKING_FOLLOW_UP_RE.test(t) && !hasConcreteDomain(t)) return true;
 
+  // Affinage prix/contrainte sans nouveau sujet métier = suite (ex. « entre 200 et 300 € »).
+  if (isConstraintOnlyRefinement(t)) return true;
+
   return false;
+}
+
+/** True si le message affine budget/contrainte sans introduire de nouveau domaine. */
+export function isConstraintOnlyRefinement(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (!CONSTRAINT_REFINEMENT_RE.test(t)) return false;
+  return !hasConcreteDomain(t);
 }
 
 function hasConcreteDomain(text: string): boolean {
@@ -140,7 +183,53 @@ function significantTokens(text: string): string[] {
     .replace(/\p{M}/gu, "")
     .split(/[^a-z0-9àâäéèêëïîôùûüç]+/i)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 4);
+    .filter((t) => {
+      if (t.length >= 4) return true;
+      // Codes courts avec chiffre (5070, r5…) — utiles pour ancrer un follow-up.
+      return t.length >= 3 && /\d/.test(t);
+    });
+}
+
+/**
+ * Entités produit-like domaine-agnostiques (lettres + chiffres).
+ * Ex. « RTX 5070 », « iPhone 16 Pro », « 7800X3D » — pas de whitelist métier.
+ */
+export function extractTopicEntityHints(text: string, max = 6): string[] {
+  const raw = text.slice(0, 8_000);
+  const found: string[] = [];
+
+  const spaced =
+    raw.match(
+      /\b[A-Za-z][A-Za-z0-9]{1,24}(?:[\s\-][A-Za-z0-9]{1,16}){0,3}\s+\d{2,5}[A-Za-z0-9]{0,10}(?:\s+(?:Ti|Pro|Max|Ultra|Super|XT|X3D|Plus|Mini|Air|SE))?\b/gi
+    ) ?? [];
+  const compact =
+    raw.match(/\b[A-Za-z]{2,14}[\-]?\d{2,5}[A-Za-z0-9]{0,10}\b/g) ?? [];
+
+  for (const m of [...spaced, ...compact]) {
+    const t = m.replace(/\s+/g, " ").trim();
+    if (t.length < 4) continue;
+    if (/^\d{4}$/.test(t)) continue;
+    if (/^(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)$/i.test(t)) {
+      continue;
+    }
+    found.push(t);
+  }
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  // Préférer les formes longues (RTX 5070 avant 5070 seul).
+  found.sort((a, b) => b.length - a.length);
+  for (const item of found) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    if (out.some((o) => o.toLowerCase().includes(key) && o.length > item.length)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(item);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 /** True si la requête web est trop vague pour se passer de l’historique. */
@@ -149,31 +238,108 @@ export function isAmbiguousSearchQuery(query: string): boolean {
   if (!t) return false;
   if (AMBIGUOUS_SUBJECT_RE.test(t) && !hasConcreteDomain(t)) return true;
   if (RANKING_FOLLOW_UP_RE.test(t) && !hasConcreteDomain(t)) return true;
+  if (isConstraintOnlyRefinement(t)) return true;
+  if (ANAPHORA_RE.test(t) && !hasConcreteDomain(t)) return true;
   return false;
+}
+
+function uniqPreserveOrder(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 /** Ancre une requête web avec le contexte récent si le tour est un follow-up. */
 export function groundSearchQueryWithContext(params: {
   query: string;
   recentUserMessages: string[];
+  /** Tours assistant récents — porte les entités déjà citées (ex. 3 modèles). */
+  recentAssistantExcerpts?: string[];
   force?: boolean;
 }): string {
   const query = params.query.trim();
   if (!query) return query;
   const priors = params.recentUserMessages.map((m) => m.trim()).filter(Boolean);
-  if (priors.length === 0) return query;
+  const assistantExcerpts = (params.recentAssistantExcerpts ?? [])
+    .map((m) => m.trim())
+    .filter(Boolean);
+  if (priors.length === 0 && assistantExcerpts.length === 0) return query;
 
+  const hasHistory = priors.length > 0 || assistantExcerpts.length > 0;
   const shouldGround =
     params.force === true ||
-    isFollowUpTurn(query, true) ||
+    isFollowUpTurn(query, hasHistory) ||
     isAmbiguousSearchQuery(query);
   if (!shouldGround) return query;
 
-  const priorText = priors.slice(-2).join(" ");
-  const priorTokens = significantTokens(priorText);
-  if (priorTokens.length === 0) return query;
-
   const queryLower = query.toLowerCase();
+
+  // 1) Entités de la dernière réponse assistant (priorité) — évite « 3 models » → Tesla.
+  const assistantEntities = uniqPreserveOrder(
+    assistantExcerpts.flatMap((t) => extractTopicEntityHints(t, 8))
+  ).slice(0, 6);
+  const missingAssistant = assistantEntities.filter(
+    (e) => !queryLower.includes(e.toLowerCase())
+  );
+
+  if (missingAssistant.length > 0) {
+    // Sujet ambigu (« modèles ») + entités résolues → réécriture intent + entités.
+    if (AMBIGUOUS_SUBJECT_RE.test(query) || missingAssistant.length >= 2) {
+      const priceIntent = /\b(prix|tarif|co[uû]te|co[uû]ter|budget|combien)\b/i.test(
+        query
+      );
+      if (priceIntent) {
+        return `prix ${missingAssistant.join(" ")}`
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 220);
+      }
+      return `${query} — sujets: ${missingAssistant.join(", ")}`
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 220);
+    }
+    return `${query} — sujets: ${missingAssistant.join(", ")}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 220);
+  }
+
+  // 2) Entités / tokens des messages user antérieurs.
+  const userEntities = uniqPreserveOrder(
+    priors.flatMap((t) => extractTopicEntityHints(t, 4))
+  ).slice(0, 4);
+  const missingUserEntities = userEntities.filter(
+    (e) => !queryLower.includes(e.toLowerCase())
+  );
+  if (missingUserEntities.length > 0 && AMBIGUOUS_SUBJECT_RE.test(query)) {
+    return `${query} — sujets: ${missingUserEntities.join(", ")}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 220);
+  }
+
+  if (priors.length === 0) return query;
+
+  const priorText = priors.slice(-2).join(" ");
+  const priorTokens = significantTokens(priorText).filter(
+    (t) => !AMBIGUOUS_TOKEN_SET.has(t)
+  );
+
+  // Ne plus no-op silencieux : même sans token « long », ancrer sur le message prior.
+  if (priorTokens.length === 0) {
+    const anchor = priors[priors.length - 1]!.slice(0, 180);
+    return `${query} — contexte conversation: ${anchor}`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   const missing = priorTokens
     .filter((t) => !queryLower.includes(t))
     .slice(0, 6);

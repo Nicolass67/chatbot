@@ -211,6 +211,7 @@ export async function runWebEvidencePipeline(
     question: input.userQuestion,
     searchQuery: input.searchQuery,
     priorUserMessages: input.conversationPriorUserMessages ?? [],
+    priorAssistantExcerpts: input.conversationPriorAssistantExcerpts ?? [],
   });
   coverage = await enrichFollowUpQueries(coverage, input, evidence);
 
@@ -318,6 +319,7 @@ export async function runWebEvidencePipeline(
           question: input.userQuestion,
           searchQuery: input.searchQuery,
           priorUserMessages: input.conversationPriorUserMessages ?? [],
+          priorAssistantExcerpts: input.conversationPriorAssistantExcerpts ?? [],
         });
         coverage = await enrichFollowUpQueries(coverage, input, evidence);
 
@@ -478,6 +480,7 @@ export async function runWebEvidencePipeline(
         question: input.userQuestion,
         searchQuery: input.searchQuery,
         priorUserMessages: input.conversationPriorUserMessages ?? [],
+        priorAssistantExcerpts: input.conversationPriorAssistantExcerpts ?? [],
       });
       coverage = await enrichFollowUpQueries(coverage, input, evidence);
 

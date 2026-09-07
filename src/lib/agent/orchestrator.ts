@@ -851,6 +851,10 @@ export async function runChatOrchestrator(
       historyMessages[historyMessages.length - 1]?.role === "user"
         ? historyMessages.slice(0, -1)
         : historyMessages;
+    const priorAssistantExcerpts = priorHistoryMessages
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.content)
+      .slice(-2);
 
     const persistedSummary = await loadConversationSummary(input.conversationId);
     const compressedHistory = buildCompressedHistoryPacket({
@@ -900,6 +904,7 @@ export async function runChatOrchestrator(
       route: analysis.route,
       userMessage: input.userContent,
       priorUserMessages: priorUserMsgs.slice(-3),
+      recentAssistantExcerpts: priorAssistantExcerpts,
       priorWebUsed: allDbMessages.some(
         (m) =>
           m.role === "assistant" &&
@@ -1284,6 +1289,7 @@ Elles seront attachées automatiquement au brouillon email_create_draft.
         userContent: input.userContent,
         conversationHistory: agentConversationHistory,
         priorUserMessages: priorUserMsgs.slice(-3),
+        priorAssistantExcerpts,
         settings,
         runtime,
         reasoningEffort,

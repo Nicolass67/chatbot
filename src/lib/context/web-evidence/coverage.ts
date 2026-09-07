@@ -18,14 +18,22 @@ export function evaluateCoverage(params: {
   /** Requête SERP déjà ancrée (préférée pour les follow-ups). */
   searchQuery?: string;
   priorUserMessages?: string[];
+  priorAssistantExcerpts?: string[];
 }): CoverageReport {
   const evidenceBlob = params.evidence
     .map((e) => `${e.claim} ${e.value ?? ""} ${e.evidence}`)
     .join("\n")
     .toLowerCase();
 
+  const topicBlob = [
+    params.searchQuery ?? "",
+    ...(params.priorAssistantExcerpts ?? []),
+  ]
+    .join("\n")
+    .toLowerCase();
+
   const needs = params.needs.map((n) => {
-    const status = assessNeed(n, params.evidence, evidenceBlob);
+    const status = assessNeed(n, params.evidence, evidenceBlob, topicBlob);
     return { ...n, status };
   });
 
@@ -66,6 +74,7 @@ export function evaluateCoverage(params: {
         {
           searchQuery: params.searchQuery,
           priorUserMessages: params.priorUserMessages,
+          priorAssistantExcerpts: params.priorAssistantExcerpts,
         }
       );
 
@@ -89,7 +98,8 @@ export function evaluateCoverage(params: {
 function assessNeed(
   need: InformationNeed,
   evidence: WebEvidenceItem[],
-  evidenceBlob: string
+  evidenceBlob: string,
+  topicBlob = ""
 ): InformationNeed["status"] {
   const direct = evidence.filter((e) => e.needId === need.id);
   const tokens = tokenize(need.description);
@@ -100,7 +110,13 @@ function assessNeed(
   );
 
   if (need.id === "need_resolve_reference") {
-    return evidence.length > 0 ? "satisfied" : "open";
+    // Preuve hors-sujet (ex. Tesla pour des GPU) ≠ référence résolue.
+    const topicTokens = tokenize(topicBlob).filter((t) => t.length >= 4);
+    if (topicTokens.length === 0) {
+      return evidence.length > 0 ? "satisfied" : "open";
+    }
+    const hit = topicTokens.some((t) => evidenceBlob.includes(t));
+    return hit ? "satisfied" : evidence.length > 0 ? "partial" : "open";
   }
 
   if (need.id === "need_primary") {
@@ -137,12 +153,17 @@ function buildFollowUpQueries(
   needs: InformationNeed[],
   missingNeedIds: string[],
   evidence: WebEvidenceItem[],
-  options?: { searchQuery?: string; priorUserMessages?: string[] }
+  options?: {
+    searchQuery?: string;
+    priorUserMessages?: string[];
+    priorAssistantExcerpts?: string[];
+  }
 ): string[] {
   const baseRaw = (options?.searchQuery?.trim() || question).trim();
   const base = groundSearchQueryWithContext({
     query: baseRaw,
     recentUserMessages: options?.priorUserMessages ?? [],
+    recentAssistantExcerpts: options?.priorAssistantExcerpts ?? [],
   });
   const missing = needs.filter((n) => missingNeedIds.includes(n.id));
   const queries: string[] = [];

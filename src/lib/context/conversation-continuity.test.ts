@@ -59,4 +59,57 @@ describe("conversation continuity", () => {
       )
     ).toBe(false);
   });
+
+  it("détecte un affinage budget avec pronom (micro-ondes → 200-300€)", () => {
+    const msg =
+      "J'aimerai qu'il coute entre 200 et 300€ si possible. Tu peux me chercher ça ?";
+    expect(isFollowUpTurn(msg, true)).toBe(true);
+    expect(isAmbiguousSearchQuery(msg)).toBe(true);
+  });
+
+  it("ancre la requête budget sur le sujet micro-ondes de l'historique", () => {
+    const q = groundSearchQueryWithContext({
+      query:
+        "J'aimerai qu'il coute entre 200 et 300€ si possible. Tu peux me chercher ça ?",
+      recentUserMessages: [
+        "Tu peux me trouver les micro ondes avec le meilleur rapport qualité prix ? Donne des models précis",
+      ],
+    });
+    const lower = q.toLowerCase();
+    expect(lower).toMatch(/micro/);
+    expect(lower).not.toMatch(/smartphone|iphone|voyage/);
+  });
+
+  it("ancre une fourchette de prix seule (sans pronom)", () => {
+    const q = groundSearchQueryWithContext({
+      query: "plutôt entre 200 et 300 euros",
+      recentUserMessages: [
+        "Cherche les meilleurs micro-ondes compacts du moment",
+      ],
+    });
+    expect(q.toLowerCase()).toMatch(/micro/);
+  });
+
+  it("ancre « prix de ces 3 models » sur les entités de la réponse assistant (pas Tesla)", () => {
+    const q = groundSearchQueryWithContext({
+      query: "C'est quoi le prix de ces 3 models ?",
+      recentUserMessages: ["Top 3 GPU RTX pour du gaming"],
+      recentAssistantExcerpts: [
+        "1. RTX 5090 — haut de gamme\n2. RTX 5080 — milieu\n3. Pour un budget optimisé : La RTX 5070 offre les technologies NVIDIA.",
+      ],
+    });
+    const lower = q.toLowerCase();
+    expect(lower).toMatch(/5070|5080|5090/);
+    expect(lower).toMatch(/prix/);
+    expect(lower).not.toMatch(/tesla|blogtesla/);
+  });
+
+  it("n'abandonne pas l'ancrage quand le prior user n'a que des tokens courts (GPU/RTX)", () => {
+    const q = groundSearchQueryWithContext({
+      query: "Donne clairement les modèles maintenant",
+      recentUserMessages: ["Top 3 GPU RTX"],
+      force: true,
+    });
+    expect(q.toLowerCase()).toMatch(/gpu|rtx|top 3/);
+  });
 });

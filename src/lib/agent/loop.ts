@@ -133,6 +133,8 @@ export interface AgentLoopInput {
   conversationHistory?: string;
   /** Tours utilisateur antérieurs (hors message courant). */
   priorUserMessages?: string[];
+  /** Tours assistant récents (entités déjà citées pour ancrer les follow-ups web). */
+  priorAssistantExcerpts?: string[];
 }
 
 class RequestIdTracker {
@@ -494,6 +496,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       route,
       userMessage: input.userContent,
       priorUserMessages: input.priorUserMessages ?? [],
+      recentAssistantExcerpts: input.priorAssistantExcerpts ?? [],
       priorWebUsed: Boolean(
         input.conversationHistory &&
           /web_search|web_sources|<web_/i.test(input.conversationHistory)
@@ -522,7 +525,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         .join("\n\n");
       if (execCtxRef) execCtxRef.applicationContext = documentContext;
     };
-    if ((input.priorUserMessages?.length ?? 0) > 0) {
+    if (
+      (input.priorUserMessages?.length ?? 0) > 0 ||
+      (input.priorAssistantExcerpts?.length ?? 0) > 0
+    ) {
       if (input.conversationHistory?.trim()) {
         documentContext = `${documentContext}\n\n<conversation_history>\n${input.conversationHistory.trim()}\n</conversation_history>`.trim();
       }
@@ -534,6 +540,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
             searchQuery: groundSearchQueryWithContext({
               query: route.web.searchQuery,
               recentUserMessages: input.priorUserMessages ?? [],
+              recentAssistantExcerpts: input.priorAssistantExcerpts ?? [],
             }),
           },
         };
@@ -793,6 +800,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           maxFollowUpPasses: researchMode ? 3 : 2,
           maxPageCharsForAnalysis: 24_000,
           conversationPriorUserMessages: input.priorUserMessages ?? [],
+          conversationPriorAssistantExcerpts: input.priorAssistantExcerpts ?? [],
           modelId: input.settings.selectedModel,
           analyzeSource: pageAnalyzer,
           onSourceProgress: (info) => {
@@ -1230,6 +1238,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                 maxFollowUpPasses: researchMode ? 3 : 2,
                 maxPageCharsForAnalysis: 24_000,
                 conversationPriorUserMessages: input.priorUserMessages ?? [],
+                conversationPriorAssistantExcerpts:
+                  input.priorAssistantExcerpts ?? [],
                 analyzeSource: pageAnalyzer,
                 onSourceProgress: (info) => {
                   input.onEvent({ type: "source_progress", ...info });
@@ -1242,6 +1252,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
                   const base = groundSearchQueryWithContext({
                     query: route.web.searchQuery || question,
                     recentUserMessages: input.priorUserMessages ?? [],
+                    recentAssistantExcerpts: input.priorAssistantExcerpts ?? [],
                   });
                   if (focuses.length === 0) return [base.slice(0, 160)];
                   return focuses.map((f) => `${base} — ${f}`.slice(0, 180));

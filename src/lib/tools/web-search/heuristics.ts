@@ -37,16 +37,20 @@ export function buildWebSearchQuery(params: {
   route?: Pick<RouteDecision["web"], "searchQuery">;
   recentContext?: string;
   recentUserMessages?: string[];
+  recentAssistantExcerpts?: string[];
 }): string {
   const routeQuery = params.route?.searchQuery?.trim();
   const base = routeQuery || params.userMessage.trim();
   const priors =
     params.recentUserMessages?.map((m) => m.trim()).filter(Boolean) ??
     (params.recentContext?.trim() ? [params.recentContext.trim()] : []);
-  if (priors.length === 0) return base;
+  const assistantExcerpts =
+    params.recentAssistantExcerpts?.map((m) => m.trim()).filter(Boolean) ?? [];
+  if (priors.length === 0 && assistantExcerpts.length === 0) return base;
   return groundSearchQueryWithContext({
     query: base,
     recentUserMessages: priors,
+    recentAssistantExcerpts: assistantExcerpts,
   });
 }
 
