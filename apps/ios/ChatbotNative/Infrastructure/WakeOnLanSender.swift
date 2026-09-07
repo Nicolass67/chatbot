@@ -79,30 +79,41 @@ enum WakeOnLanSender {
             for mac in macs {
                 guard let packet = magicPacket(for: mac) else { continue }
                 for host in hosts {
+                    let packetCopy = packet
+                    let hostCopy = host
                     group.addTask {
-                        await send(packet: packet, host: host, port: 9)
-                        await send(packet: packet, host: host, port: 7)
+                        await send(packet: packetCopy, host: hostCopy, port: 9)
+                        await send(packet: packetCopy, host: hostCopy, port: 7)
                     }
                 }
             }
         }
     }
 
+    private final class ResumeGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        private let cont: CheckedContinuation<Void, Never>
+
+        init(_ cont: CheckedContinuation<Void, Never>) {
+            self.cont = cont
+        }
+
+        func finish() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !done else { return }
+            done = true
+            cont.resume()
+        }
+    }
+
     private static func send(packet: Data, host: String, port: UInt16) async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let lock = NSLock()
-            var resumed = false
-            func finish() {
-                lock.lock()
-                defer { lock.unlock() }
-                guard !resumed else { return }
-                resumed = true
-                cont.resume()
-            }
-
+            let gate = ResumeGate(cont)
             let nwHost = NWEndpoint.Host(host)
             guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-                finish()
+                gate.finish()
                 return
             }
             let connection = NWConnection(host: nwHost, port: nwPort, using: .udp)
@@ -113,12 +124,12 @@ enum WakeOnLanSender {
                         content: packet,
                         completion: .contentProcessed { _ in
                             connection.cancel()
-                            finish()
+                            gate.finish()
                         }
                     )
                 case .failed, .cancelled:
                     connection.cancel()
-                    finish()
+                    gate.finish()
                 default:
                     break
                 }
@@ -126,7 +137,7 @@ enum WakeOnLanSender {
             connection.start(queue: .global(qos: .userInitiated))
             DispatchQueue.global().asyncAfter(deadline: .now() + 1.2) {
                 connection.cancel()
-                finish()
+                gate.finish()
             }
         }
     }
