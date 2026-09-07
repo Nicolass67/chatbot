@@ -21,7 +21,7 @@ enum ThemePaletteCatalog {
     static let defaultSecondaryId = "cyan"
     static let defaultBackgroundId = "graphite"
 
-    /// 10 couleurs principales (inclut le bleu glacier actuel).
+    /// Couleurs principales (accents boutons, tabs, CTA).
     static let primaries: [ThemeColorSwatch] = [
         .init(id: "ice-blue", name: "Bleu glacier", light: 0x3B82F6, dark: 0x7DD3FC),
         .init(id: "indigo", name: "Indigo", light: 0x6366F1, dark: 0xA5B4FC),
@@ -33,9 +33,20 @@ enum ThemePaletteCatalog {
         .init(id: "sky", name: "Ciel", light: 0x0284C7, dark: 0x38BDF8),
         .init(id: "slate", name: "Ardoise", light: 0x475569, dark: 0x94A3B8),
         .init(id: "gold", name: "Or doux", light: 0xB45309, dark: 0xFBBF24),
+        // Nouvelles
+        .init(id: "cobalt", name: "Cobalt", light: 0x2563EB, dark: 0x60A5FA),
+        .init(id: "electric", name: "Électrique", light: 0x4F46E5, dark: 0x818CF8),
+        .init(id: "fuchsia", name: "Fuchsia", light: 0xC026D3, dark: 0xE879F9),
+        .init(id: "crimson", name: "Cramoisi", light: 0xBE123C, dark: 0xFB7185),
+        .init(id: "terracotta", name: "Terracotta", light: 0xC2410C, dark: 0xFB923C),
+        .init(id: "saffron", name: "Safran", light: 0xCA8A04, dark: 0xFACC15),
+        .init(id: "jade", name: "Jade", light: 0x047857, dark: 0x34D399),
+        .init(id: "aqua", name: "Aqua", light: 0x0891B2, dark: 0x22D3EE),
+        .init(id: "arctic", name: "Arctique", light: 0x0E7490, dark: 0x67E8F9),
+        .init(id: "charcoal", name: "Charbon", light: 0x334155, dark: 0xE2E8F0),
     ]
 
-    /// 10 couleurs secondaires (inclut le cyan Files actuel).
+    /// Couleurs secondaires (accents Files, ambient, highlights).
     static let secondaries: [ThemeColorSwatch] = [
         .init(id: "cyan", name: "Cyan", light: 0x0EA5E9, dark: 0x67E8F9),
         .init(id: "mint", name: "Menthe", light: 0x10B981, dark: 0x6EE7B7),
@@ -47,9 +58,20 @@ enum ThemePaletteCatalog {
         .init(id: "magenta", name: "Magenta", light: 0xDB2777, dark: 0xF9A8D4),
         .init(id: "steel", name: "Acier", light: 0x64748B, dark: 0xCBD5E1),
         .init(id: "peach", name: "Pêche", light: 0xE07A5F, dark: 0xF4A261),
+        // Nouvelles
+        .init(id: "periwinkle", name: "Pervenche", light: 0x818CF8, dark: 0xA5B4FC),
+        .init(id: "orchid", name: "Orchidée", light: 0xA855F7, dark: 0xD8B4FE),
+        .init(id: "flamingo", name: "Flamant", light: 0xEC4899, dark: 0xF9A8D4),
+        .init(id: "tangerine", name: "Tangerine", light: 0xF97316, dark: 0xFDBA74),
+        .init(id: "honey", name: "Miel", light: 0xEAB308, dark: 0xFDE047),
+        .init(id: "spring", name: "Printemps", light: 0x84CC16, dark: 0xBEF264),
+        .init(id: "seafoam", name: "Écume", light: 0x14B8A6, dark: 0x5EEAD4),
+        .init(id: "glacier", name: "Glacier", light: 0x38BDF8, dark: 0x7DD3FC),
+        .init(id: "denim", name: "Denim", light: 0x3B82F6, dark: 0x93C5FD),
+        .init(id: "smoke", name: "Fumée", light: 0x94A3B8, dark: 0xE2E8F0),
     ]
 
-    /// ~12 familles de fond (clair + sombre dérivés), défaut Graphite inclus.
+    /// Familles de fond (clair + sombre dérivés).
     static let backgrounds: [ThemeColorSwatch] = [
         .init(id: "graphite", name: "Graphite", light: 0xF3F5F9, dark: 0x0B0F14),
         .init(id: "pure", name: "Blanc / Noir", light: 0xFFFFFF, dark: 0x000000),
@@ -63,6 +85,19 @@ enum ThemePaletteCatalog {
         .init(id: "mocha", name: "Mocha", light: 0xF0E9E2, dark: 0x1A1410),
         .init(id: "forest", name: "Forêt", light: 0xEAF2EC, dark: 0x0C1610),
         .init(id: "plum", name: "Prune", light: 0xF0EAF2, dark: 0x140F18),
+        // Nouvelles
+        .init(id: "ink", name: "Encre", light: 0xEEF1F6, dark: 0x070A0F),
+        .init(id: "midnight", name: "Minuit", light: 0xE9ECF4, dark: 0x080B14),
+        .init(id: "twilight", name: "Crépuscule", light: 0xECE8F4, dark: 0x100E1A),
+        .init(id: "aurora", name: "Aurore", light: 0xE8F4F0, dark: 0x0A1614),
+        .init(id: "lagoon", name: "Lagon", light: 0xE4F3F6, dark: 0x071820),
+        .init(id: "pine", name: "Pin", light: 0xE7F0EA, dark: 0x0A120E),
+        .init(id: "wine", name: "Vin", light: 0xF3E9EC, dark: 0x160A10),
+        .init(id: "ember", name: "Braise", light: 0xF5EBE6, dark: 0x160E0A),
+        .init(id: "olive", name: "Olive", light: 0xEEF0E6, dark: 0x12140C),
+        .init(id: "stone", name: "Pierre", light: 0xF0EEEA, dark: 0x121110),
+        .init(id: "fog", name: "Brouillard", light: 0xF2F4F7, dark: 0x101418),
+        .init(id: "dusk", name: "Pénombre", light: 0xEDEAF2, dark: 0x0E0C14),
     ]
 
     static func primary(id: String) -> ThemeColorSwatch {
