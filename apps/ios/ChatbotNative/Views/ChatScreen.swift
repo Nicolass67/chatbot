@@ -14,32 +14,6 @@ private struct ChatScrollMetrics: Equatable {
     var distanceToBottom: CGFloat
 }
 
-/// Fade viewport : calque indépendant du scroll, ancré au bas physique de l’écran.
-private struct ComposerBottomBlurFade: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let base = AppTheme.background
-        let peak: Double = reduceTransparency
-            ? (colorScheme == .dark ? 0.92 : 0.82)
-            : (colorScheme == .dark ? 0.82 : 0.7)
-        LinearGradient(
-            stops: [
-                .init(color: base.opacity(0), location: 0),
-                .init(color: base.opacity(peak * 0.08), location: 0.28),
-                .init(color: base.opacity(peak * 0.35), location: 0.58),
-                .init(color: base.opacity(peak * 0.62), location: 0.82),
-                .init(color: base.opacity(peak), location: 1)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -184,8 +158,10 @@ struct ChatScreen: View {
 
     var body: some View {
         let _ = themeRevision
-        // Stacking écran (pas le scroll) :
-        // messages → fade viewport → chrome interactif.
+        // Hiérarchie réelle (sous la UITabBar système) :
+        // messages → fade → composer/contrôles.
+        // Un fade sibling de TabView dans MainTabView est AU-DESSUS de la tab bar
+        // (prouvé par le test rouge qui masquait Chat/Mail/Files) — mauvais étage.
         ZStack(alignment: .bottom) {
             AmbientBackground()
                 .ignoresSafeArea()
@@ -202,19 +178,13 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                    // Fil jusqu’au bas physique ; pas de fade ici (sinon coupé par le stacking).
                     .ignoresSafeArea(.container, edges: .bottom)
             }
 
-            // Calque fade : ancré au bas du viewport, indépendant du contenu / scroll.
-            ComposerBottomBlurFade()
-                .frame(maxWidth: .infinity)
-                .frame(height: Self.bottomFadeHeight)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .ignoresSafeArea(.container, edges: .bottom)
+            // NIVEAU 2 — fade (devant le chat, derrière le chrome).
+            ViewportBottomFade(height: Self.bottomFadeHeight)
 
-            // Contrôles au-dessus du fade (cliquables).
+            // NIVEAU 3 — UI flottante nette, sans voile.
             composerFloatingChrome
                 .ignoresSafeArea(.container, edges: .bottom)
         }
@@ -1452,7 +1422,8 @@ struct ChatScreen: View {
     }
 
     /// Hauteur du fade viewport (bas physique), indépendante du contenu scrollé.
-    private static let bottomFadeHeight: CGFloat = 220
+    /// Bande de fade douce (devant messages, derrière composer).
+    private static let bottomFadeHeight: CGFloat = 360
 
     /// Hauteur réservée en bas du fil pour le chrome flottant.
     private var composerChromeScrollPadding: CGFloat {

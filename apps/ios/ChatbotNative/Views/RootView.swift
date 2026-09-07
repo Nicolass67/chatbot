@@ -160,60 +160,44 @@ struct MainTabView: View {
     var body: some View {
         let _ = themeRevision
         @Bindable var nav = nav
-        // Architecture validée par TEST ROUGE : un overlay MainTabView ATTEINT le bas physique
-        // (y compris la zone tab bar). Le fade doit donc vivre ICI, pas dans ChatScreen.
-        ZStack {
-            // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
-            TabView(selection: $nav.selectedTab) {
-                Tab(AppTab.chat.title, systemImage: AppTab.chat.systemImage, value: AppTab.chat) {
-                    ChatRootView()
-                }
-                .accessibilityIdentifier(A11yID.Navigation.tabChat)
-
-                Tab(AppTab.mail.title, systemImage: AppTab.mail.systemImage, value: AppTab.mail) {
-                    MailInboxView()
-                }
-                .accessibilityIdentifier(A11yID.Navigation.tabMail)
-
-                Tab(AppTab.files.title, systemImage: AppTab.files.systemImage, value: AppTab.files) {
-                    FilesBrowserView()
-                }
-                .accessibilityIdentifier(A11yID.Navigation.tabFiles)
+        // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
+        //
+        // IMPORTANT stacking (prouvé par le TEST ROUGE) :
+        // Un overlay sibling APRÈS le TabView dans un ZStack MainTabView est AU-DESSUS
+        // de la UITabBar et du contenu (le rouge masquait Chat/Mail/Files + composer).
+        // Donc le fade « derrière composer / derrière tab bar » ne peut PAS vivre ici
+        // sans extraire tout le chrome hors du TabView. Le fade correct est dans
+        // ChatScreen : messages → fade → composer (sous la UITabBar système).
+        TabView(selection: $nav.selectedTab) {
+            Tab(AppTab.chat.title, systemImage: AppTab.chat.systemImage, value: AppTab.chat) {
+                ChatRootView()
             }
-            .tint(AppTheme.accent)
-            .animation(.easeInOut(duration: 0.2), value: themeRevision)
-            .tabBarMinimizeBehavior(.onScrollDown)
-            // Tab bar en surimpression : pas de bandeau opaque derrière Chat / Mail / Files.
-            .toolbarBackground(.hidden, for: .tabBar)
-            .onAppear {
-                let appearance = UITabBarAppearance()
-                appearance.configureWithTransparentBackground()
-                appearance.backgroundColor = .clear
-                appearance.shadowColor = .clear
-                UITabBar.appearance().standardAppearance = appearance
-                UITabBar.appearance().scrollEdgeAppearance = appearance
-                UITabBar.appearance().isTranslucent = true
-            }
-            .accessibilityIdentifier(A11yID.Navigation.tabBar)
+            .accessibilityIdentifier(A11yID.Navigation.tabChat)
 
-            // Fade viewport — plein écran d’abord (pas de hauteur arbitraire).
-            // Au-dessus du TabView pour peindre jusqu’au bord bas (prouvé par le test rouge).
-            // allowsHitTesting(false) : les contrôles du TabView restent cliquables.
-            LinearGradient(
-                colors: [
-                    .clear,
-                    AppTheme.background.opacity(0.0),
-                    AppTheme.background.opacity(0.8),
-                    AppTheme.background
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("mainTab.viewportBottomFade")
+            Tab(AppTab.mail.title, systemImage: AppTab.mail.systemImage, value: AppTab.mail) {
+                MailInboxView()
+            }
+            .accessibilityIdentifier(A11yID.Navigation.tabMail)
+
+            Tab(AppTab.files.title, systemImage: AppTab.files.systemImage, value: AppTab.files) {
+                FilesBrowserView()
+            }
+            .accessibilityIdentifier(A11yID.Navigation.tabFiles)
         }
+        .tint(AppTheme.accent)
+        .animation(.easeInOut(duration: 0.2), value: themeRevision)
+        .tabBarMinimizeBehavior(.onScrollDown)
+        .toolbarBackground(.hidden, for: .tabBar)
+        .onAppear {
+            let appearance = UITabBarAppearance()
+            appearance.configureWithTransparentBackground()
+            appearance.backgroundColor = .clear
+            appearance.shadowColor = .clear
+            UITabBar.appearance().standardAppearance = appearance
+            UITabBar.appearance().scrollEdgeAppearance = appearance
+            UITabBar.appearance().isTranslucent = true
+        }
+        .accessibilityIdentifier(A11yID.Navigation.tabBar)
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
                 .environmentObject(session)
@@ -221,7 +205,6 @@ struct MainTabView: View {
                 .environmentObject(infra)
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
-                // Bridge UIKit seulement — pas de preferredColorScheme ici (remount).
                 .background(InterfaceStyleBridge(style: appearance.mode.uiUserInterfaceStyle))
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
