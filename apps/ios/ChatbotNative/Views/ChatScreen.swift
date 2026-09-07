@@ -690,6 +690,12 @@ struct ChatScreen: View {
                         }
                     }
                 }
+                .onChange(of: isSending) { wasSending, sending in
+                    // Dès que le tour est fini : plus de slack plein écran ni d’ancre pin figée.
+                    if wasSending, !sending {
+                        releasePinToTopAfterSend()
+                    }
+                }
                 .onChange(of: scrollToken) { _, _ in
                     pinToTopMessageId = nil
                     isPinnedToBottom = true
@@ -1513,10 +1519,11 @@ Corps actuel:
 
     /// Slack sous le fil : assez grand pour que `scrollTo(userId, .top)` place
     /// le message envoyé en haut du viewport (sinon le contenu est trop court).
+    /// Uniquement pendant `isSending` — garder le slack après l’envoi laissait un
+    /// trou d’une hauteur d’écran (scroll trop bas dès qu’un message a été envoyé).
     private var chatBottomScrollSlack: CGFloat {
         let chrome = composerChromeScrollPadding
-        let needsPinRoom = pinToTopMessageId != nil || isSending
-        guard needsPinRoom, scrollViewportHeight > 80 else { return chrome }
+        guard isSending, scrollViewportHeight > 80 else { return chrome }
         return max(chrome, scrollViewportHeight - 12)
     }
 
@@ -1525,6 +1532,12 @@ Corps actuel:
         pinToTopMessageId = messageId
         pinToTopToken += 1
         isPinnedToBottom = false
+    }
+
+    /// Fin d’envoi : retire l’ancre pin (marge 22pt) sans forcer un scroll bas.
+    private func releasePinToTopAfterSend() {
+        guard pinToTopMessageId != nil else { return }
+        pinToTopMessageId = nil
     }
 
     /// Carte brouillon visible dans le fil (pas masquée, pas seulement envoyée).
@@ -3053,6 +3066,7 @@ private var sendBlockedHint: String {
         if gen == sendGeneration {
             isSending = false
             sendTask = nil
+            releasePinToTopAfterSend()
         }
         endChatBackgroundTask()
     }
