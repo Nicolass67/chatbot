@@ -1426,8 +1426,7 @@ struct ChatScreen: View {
     }
 
     /// Hauteur du fade viewport (bas physique), indépendante du contenu scrollé.
-    /// Bande de fade douce au-dessus du chrome (~360 pt).
-    private static let bottomFadeHeight: CGFloat = 360
+    private static let bottomFadeHeight: CGFloat = 420
 
     /// Hauteur réservée en bas du fil pour le chrome flottant.
     private var composerChromeScrollPadding: CGFloat {
@@ -1446,10 +1445,12 @@ struct ChatScreen: View {
         draftCardCollapsed && !draftCardSent && draftCardId != nil
     }
 
-    /// Lift au-dessus de Chat / Mail / Files (toute la safe area bas).
+    /// Lift au-dessus de la tab bar — offset fixe (pas toute la safe area).
+    /// `max(bottomSafeInset, 72)` remontait le composer trop haut (double compte /
+    /// tab bar minimisée) ; ~54 place le composer juste au-dessus de Chat/Mail/Files.
     private var tabBarOverlayLift: CGFloat {
         if keyboardLiftActive { return AppTheme.space8 }
-        return max(bottomSafeInset, 72)
+        return 54
     }
 
     /// Composer + chrome : calque au-dessus du fade (pas d’arrière-plan de bande opaque).
