@@ -341,7 +341,10 @@ struct MailInboxView: View {
                 handleQaIntent(intent)
             }
             .navigationDestination(for: MailMessageSummary.self) { msg in
-                MailThreadView(summary: msg)
+                MailThreadView(summary: msg) {
+                    // Mise à jour locale immédiate — pas de reload liste au retour.
+                    applyLocalRead(msg.id)
+                }
                     .accessibilityIdentifier(A11yID.Mail.detail)
             }
             .sheet(isPresented: $showAssistant) {
@@ -821,6 +824,15 @@ struct MailInboxView: View {
     }
 
     private func applyLocalRead(_ id: String) {
+        let inMessages = messages.first(where: { $0.id == id })
+        let inWindow = sortedWindow.first(where: { $0.id == id })
+        let wasUnread = inMessages?.isUnread == true || inWindow?.isUnread == true
+        // Déjà lu / déjà retiré du filtre non-lus → no-op (évite double -1 widget).
+        if unreadOnly {
+            guard inMessages != nil || inWindow != nil else { return }
+        } else {
+            guard wasUnread else { return }
+        }
         if unreadOnly {
             _ = removeMessageLocally(id)
             bumpWidgetUnread(by: -1)
@@ -1046,9 +1058,12 @@ struct MailThreadView: View {
     @Environment(AppNavigation.self) private var nav
     @Environment(\.dismiss) private var dismiss
     let summary: MailMessageSummary
+    /// Notifie la liste parente (lu local) — sans refresh réseau de l’inbox.
+    var onMarkedRead: (() -> Void)? = nil
     @State private var thread: MailThreadDTO?
     @State private var error: String?
     @State private var loading = true
+    @State private var didNotifyRead = false
     @State private var summaryText: String?
     @State private var replyDraft: String?
     @State private var replyDraftId: String?
@@ -1145,7 +1160,11 @@ struct MailThreadView: View {
             } message: {
                 Text("À \(summary.from?.email ?? "destinataire")")
             }
-        .task { await load() }
+        .task {
+            // Liste parent mise à jour tout de suite (pas au retour + pas de reload inbox).
+            notifyReadLocallyIfNeeded()
+            await load()
+        }
     }
 
     @ViewBuilder
@@ -1184,14 +1203,9 @@ struct MailThreadView: View {
                         },
                         onEditToggle: {
                             editingDraft.toggle()
-                            if !editingDraft {
-                                replyRecipientSuggestions = []
-                            } else {
-                                replyRecipientSuggestions = []
-                            }
+                            replyRecipientSuggestions = []
                         },
                         onRetry: {
-                            // Même esprit Améliorer : prépare une consigne dans le flux suggest.
                             Task { await runSuggest() }
                         },
                         onSend: { confirmSend = true },
@@ -1237,6 +1251,7 @@ struct MailThreadView: View {
         do {
             thread = try await client.fetchMailThread(id: threadId)
             error = nil
+            notifyReadLocallyIfNeeded()
             try? await client.markMailRead(id: summary.id)
         } catch is CancellationError {
             return
@@ -1250,6 +1265,13 @@ struct MailThreadView: View {
                 await session.logout()
             }
         }
+    }
+
+    private func notifyReadLocallyIfNeeded() {
+        guard !didNotifyRead else { return }
+        didNotifyRead = true
+        // Optimistic dès que le fil est chargé — la liste se met à jour sans reload.
+        onMarkedRead?()
     }
 
     private func runSummarize() async {
