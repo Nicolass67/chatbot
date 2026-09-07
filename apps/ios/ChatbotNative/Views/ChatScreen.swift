@@ -12,6 +12,7 @@ private final class ChatStreamAccum {
 private struct ChatScrollMetrics: Equatable {
     var distanceToTop: CGFloat
     var distanceToBottom: CGFloat
+    var viewportHeight: CGFloat
 }
 
 struct ChatScreen: View {
@@ -96,7 +97,7 @@ struct ChatScreen: View {
     @State private var bottomSafeInset: CGFloat = 83
     /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
     @State private var keyboardLiftActive = false
-    /// Collé en bas → suivi auto du stream. Remontée utilisateur → false.
+    /// Collé en bas → suivi auto du stream. Remontée utilisateur / pin envoi → false.
     @State private var isPinnedToBottom = true
     /// Pendant un scroll programmé (envoi / stream / bouton), ignore les pics de distance.
     @State private var suppressScrollGeometryUntil: Date = .distantPast
@@ -105,6 +106,11 @@ struct ChatScreen: View {
     /// Redescente : re-pin + masquer le bouton (hystérésis).
     private let scrollHideButtonThreshold: CGFloat = 160
     @State private var scrollToken = 0
+    /// Hauteur visible du ScrollView — spacer pour ancrer le message user en haut.
+    @State private var scrollViewportHeight: CGFloat = 0
+    /// Après envoi : ancre ce message user en haut du viewport (style ChatGPT).
+    @State private var pinToTopMessageId: String?
+    @State private var pinToTopToken = 0
     /// Historique long : page récente + pages plus anciennes au scroll haut (RAM).
     /// Fenêtre bornée — trop de bulles SwiftUI = lag (markdown / pastilles).
     @State private var hasMoreOlderMessages = false
@@ -534,9 +540,10 @@ struct ChatScreen: View {
                             )
                             .id("conversation-draft")
                         }
-                        // Espace pour scroller sous l’overlay flottant (flou + composer + tab bar).
+                        // Spacer viewport : permet d’ancrer le dernier message user en haut
+                        // (sinon scrollTo(.top) ne peut pas remonter assez si le fil est court).
                         Color.clear
-                            .frame(height: composerChromeScrollPadding)
+                            .frame(height: chatBottomScrollSlack)
                             .id("bottom")
                     }
                     .padding(.horizontal, 14)
@@ -564,8 +571,15 @@ struct ChatScreen: View {
                     let bottomInset = geometry.contentInsets.bottom
                     let distanceToBottom = max(0, contentH + bottomInset - visibleH - offsetY)
                     let distanceToTop = max(0, offsetY + topInset)
-                    return ChatScrollMetrics(distanceToTop: distanceToTop, distanceToBottom: distanceToBottom)
+                    return ChatScrollMetrics(
+                        distanceToTop: distanceToTop,
+                        distanceToBottom: distanceToBottom,
+                        viewportHeight: visibleH
+                    )
                 } action: { _, metrics in
+                    if metrics.viewportHeight > 0, abs(metrics.viewportHeight - scrollViewportHeight) > 1 {
+                        scrollViewportHeight = metrics.viewportHeight
+                    }
                     // IMPORTANT : pendant le stream, le contenu grandit → distance explose
                     // avant le scrollTo. Ne jamais interpréter ça comme une remontée user.
                     if Date() < suppressScrollGeometryUntil { return }
@@ -584,6 +598,7 @@ struct ChatScreen: View {
                         }
                     } else if distanceToBottom <= scrollHideButtonThreshold {
                         if !isPinnedToBottom { isPinnedToBottom = true }
+                        if pinToTopMessageId != nil { pinToTopMessageId = nil }
                         if showScrollDown {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 showScrollDown = false
@@ -600,30 +615,34 @@ struct ChatScreen: View {
                     scheduleStreamScroll(proxy: proxy)
                 }
                 .onChange(of: messages.count) { _, _ in
-                    guard isPinnedToBottom else { return }
+                    // Envoi : pinToTop gère le scroll. Sinon suivi bas seulement si collé.
+                    guard pinToTopMessageId == nil, isPinnedToBottom else { return }
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
+                .onChange(of: pinToTopToken) { _, _ in
+                    guard let id = pinToTopMessageId else { return }
+                    isPinnedToBottom = false
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.55)
+                    // Laisser le layout (spacer + bulle) se poser avant l’ancre .top.
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.35)) {
+                            proxy.scrollTo(id, anchor: .top)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                            proxy.scrollTo(id, anchor: .top)
+                        }
+                    }
+                }
                 .onChange(of: scrollToken) { _, _ in
+                    pinToTopMessageId = nil
                     isPinnedToBottom = true
                     showScrollDown = false
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.35)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
-                .onChange(of: isSending) { _, sending in
-                    guard sending else { return }
-                    isPinnedToBottom = true
-                    showScrollDown = false
-                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
-                    withAnimation(.easeOut(duration: 0.28)) {
-                        proxy.scrollTo(
-                            shouldShowLiveAgentStrip ? "agent-live" : "working-indicator",
-                            anchor: .bottom
-                        )
                     }
                 }
                 .onChange(of: thinkingKind) { _, kind in
@@ -1439,6 +1458,22 @@ Corps actuel:
         max(floatingChromeHeight, 140) + 8
     }
 
+    /// Slack sous le fil : assez grand pour que `scrollTo(userId, .top)` place
+    /// le message envoyé en haut du viewport (sinon le contenu est trop court).
+    private var chatBottomScrollSlack: CGFloat {
+        let chrome = composerChromeScrollPadding
+        let needsPinRoom = pinToTopMessageId != nil || isSending
+        guard needsPinRoom, scrollViewportHeight > 80 else { return chrome }
+        return max(chrome, scrollViewportHeight - 12)
+    }
+
+    /// Ancre le message user en haut après un envoi (coupe le suivi bas/stream).
+    private func requestPinMessageToTop(_ messageId: String) {
+        pinToTopMessageId = messageId
+        pinToTopToken += 1
+        isPinnedToBottom = false
+    }
+
     /// Carte brouillon visible dans le fil (pas masquée, pas seulement envoyée).
     private var draftCardVisible: Bool {
         !draftCardCollapsed
@@ -1854,7 +1889,10 @@ private var sendBlockedHint: String {
                 .map(\.id)
             client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 360)
             contextSnapshot = try? await client.conversationContext(conversationId: conversation.id)
-            scrollToken += 1
+            // Ne pas écraser un pin « message user en haut » juste après envoi.
+            if pinToTopMessageId == nil {
+                scrollToken += 1
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -2620,7 +2658,11 @@ private var sendBlockedHint: String {
                 isSending = false
                 sendTask = nil
                 thinkingKind = nil
-                scrollToken += 1
+                if let pinId = messages.last(where: { $0.role == "user" })?.id {
+                    requestPinMessageToTop(pinId)
+                } else {
+                    scrollToken += 1
+                }
                 Keyboard.dismiss()
                 return
             }
@@ -2702,7 +2744,12 @@ private var sendBlockedHint: String {
         }
 
         Keyboard.dismiss()
-        scrollToken += 1
+        // Message user en haut du viewport (pas collé en bas).
+        if !hideUserMessage, let pinId = messages.last(where: { $0.role == "user" })?.id {
+            requestPinMessageToTop(pinId)
+        } else {
+            scrollToken += 1
+        }
         streamingText = ""
         streamAccum.text = ""
         streamScrollTick = 0
@@ -2724,7 +2771,6 @@ private var sendBlockedHint: String {
         streamFilesFound = []
         agentActivity = AgentActivityState()
         streamingAssistantId = nil
-        isPinnedToBottom = true
         showScrollDown = false
         runtimeStatus = "BUSY"
 
@@ -2824,7 +2870,9 @@ private var sendBlockedHint: String {
             if streamingAssistantId != nil {
                 flushTokenCoalesce()
                 streamingAssistantId = nil
-                scrollToken += 1
+                if isPinnedToBottom {
+                    scrollToken += 1
+                }
                 Task {
                     contextSnapshot = try? await client.conversationContext(conversationId: conversation.id)
                 }
@@ -2858,11 +2906,15 @@ private var sendBlockedHint: String {
                         messageId: last.id
                     )
                 }
-                scrollToken += 1
+                if isPinnedToBottom {
+                    scrollToken += 1
+                }
             } else {
                 flushTokenCoalesce()
                 streamingAssistantId = nil
-                scrollToken += 1
+                if isPinnedToBottom {
+                    scrollToken += 1
+                }
             }
         } catch is CancellationError {
             thinkingKind = nil
@@ -3229,7 +3281,9 @@ private var sendBlockedHint: String {
             )
             streamingText = ""
             streamAccum.text = ""
-            scrollToken += 1
+            if isPinnedToBottom {
+                scrollToken += 1
+            }
         }
         Task { @MainActor in
             runtimeStatus = (try? await client.runtimeStatus()) ?? runtimeStatus
