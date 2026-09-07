@@ -1,0 +1,11 @@
+---
+description: Arbre unique D:\chatbot-public — ne jamais utiliser D:\Chatbot
+alwaysApply: true
+---
+
+# Arbre unique
+
+- **Seul dépôt actif :** `D:\chatbot-public`
+- **Condamné :** `D:\Chatbot` (ne pas lancer npm/boot/Supervisor, ne pas y committer, ne pas y pointer de tâche)
+- Boot WoL / start-services : voir `docs/BOOT-SINGLE-TREE.md`
+- Après migration : tâches `ChatbotConditionalBoot` / `ChatbotBootPoll` → chemins `D:\chatbot-public\...`

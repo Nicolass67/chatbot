@@ -41,6 +41,9 @@ deploy/boot/machine.env
 deploy/cloudflared/*.json
 .cloudflared/
 
+# Certificats locaux Freebox / TLS (jamais dans Git)
+workers/chatbot/certs/
+
 # local data (SQLite + attachments — copy this folder to backup)
 /data/
 /data/attachments/

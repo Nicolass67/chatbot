@@ -1,11 +1,20 @@
 # AGENTS.md — Chatbot (iPhone native first)
 
+## Arbre unique (obligatoire)
+
+| Chemin | Statut |
+|--------|--------|
+| **`D:\chatbot-public`** | **Seul dépôt actif** (code, SQLite `data/`, boot WoL, Worker local, tâches Windows) |
+| `D:\Chatbot` / `D:\Chatbot.CONDEMNED` | **Condamné** — ne plus lancer, ne plus modifier, ne plus y pointer de tâche |
+
+Les tâches `ChatbotConditionalBoot` / `ChatbotBootPoll` et le Supervisor doivent toujours cibler `D:\chatbot-public`. Secrets boot : `deploy/boot/machine.env` (gitignored) dans **ce** dépôt seulement.
+
 ## Produit prioritaire
 
 | Client | Stack | Emplacement | Priorité |
 |--------|--------|-------------|----------|
 | **iPhone SwiftUI** | Native | `apps/ios/ChatbotNative/` (`fr.nicolazer.chatbot.native`) | **Principale** |
-| Backend | Next API + `src/lib/**` + SQLite + LM Studio | PC | Dépendance technique |
+| Backend | Next API + `src/lib/**` + SQLite + LM Studio | PC (`D:\chatbot-public`) | Dépendance technique |
 | Web / PC | Next.js + React | `src/app/**`, `src/components/**` | Hors scope UX |
 | Capacitor | Remote shell | `capacitor.config.ts`, `ios/` | Gelé / hors cible |
 
@@ -40,6 +49,18 @@ Les clients consomment les **mêmes** contrats (`contracts/`) et la **Client Sur
 [ ] Pas de Simulator / Contracts / Full CI / screenshots sans demande explicite
 [ ] Aucun secret Apple / 2FA / pairing dans git ou logs
 ```
+
+## Install iPhone — scripts obligatoires (ne pas inventer)
+
+Toujours les **mêmes** commandes npm (jamais des one-shot Python / scans LAN bricolés à la place) :
+
+| But | Commande |
+|-----|----------|
+| Déployer (build Flash + install Wi‑Fi) | `npm.cmd run ios:deploy:wifi` |
+| Install seule (IPA déjà là) | `npm.cmd run ios:install:wifi` |
+| Fallback câble | `npm.cmd run ios:deploy:usb` / `ios:install:usb` |
+
+**Dual-NIC (PC Ethernet + Wi‑Fi)** : le téléphone est sur le **LAN Wi‑Fi**, souvent un autre `/24` que l’Ethernet. Ne **pas** conclure « RemotePairing mort » après un scan Ethernet seul. S’assurer que le Wi‑Fi PC est **connecté** au même SSID que l’iPhone ; `wifi_rsd_deploy.py` scanne tous les `/24` locaux (Wi‑Fi d’abord).
 
 ## Pipeline autonome (défaut)
 
