@@ -1425,7 +1425,7 @@ struct ChatScreen: View {
     }
 
     /// Hauteur du fade viewport (bas physique), indépendante du contenu scrollé.
-    /// Bande de fade douce (devant messages, derrière composer).
+    /// Bande de fade douce au-dessus du chrome (~360 pt).
     private static let bottomFadeHeight: CGFloat = 360
 
     /// Hauteur réservée en bas du fil pour le chrome flottant.
