@@ -205,12 +205,11 @@ private struct ComposerGlassChrome: ViewModifier {
                     )
             }
         }
-        .overlay(
-            shape.stroke(
-                editing ? AppTheme.accent.opacity(0.4) : AppTheme.chromeStroke,
-                lineWidth: editing ? 1.25 : 0.5
-            )
-        )
+        .overlay {
+            if editing {
+                shape.stroke(AppTheme.accent.opacity(0.4), lineWidth: 1.25)
+            }
+        }
     }
 }
 
@@ -455,7 +454,6 @@ private struct ScrollGlassChrome: ViewModifier {
                     )
             }
         }
-        .overlay(Circle().stroke(AppTheme.chromeStroke, lineWidth: 0.5))
     }
 }
 

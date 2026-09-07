@@ -140,7 +140,11 @@ extension Color {
 
 private extension UIColor {
     /// Parse 0xRRGGBB (opaque) or 0xRRGGBBAA. Never treat AA as blue (was causing yellow borders in dark).
+    /// `0` = transparent (les tokens « pas de trait » en clair), pas du noir opaque.
     static func cnHex(_ hex: UInt32) -> UIColor {
+        if hex == 0 {
+            return .clear
+        }
         if hex > 0x00FF_FFFF {
             let r = CGFloat((hex >> 24) & 0xFF) / 255
             let g = CGFloat((hex >> 16) & 0xFF) / 255
@@ -306,12 +310,17 @@ struct RuntimeStatusPill: View {
     var body: some View {
         let _ = themeRevision
         HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
             Text(label)
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(color)
                 .lineLimit(1)
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.14), in: Capsule())
         .accessibilityLabel(label)
         .accessibilityIdentifier("chat.assistantStatus")
     }

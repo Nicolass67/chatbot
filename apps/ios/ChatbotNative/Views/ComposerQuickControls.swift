@@ -128,14 +128,6 @@ struct ComposerRoundIconButton: View {
                             : (isActive ? AppTheme.secondary.opacity(0.92) : AppTheme.surfaceElevated.opacity(0.55))
                     )
                 )
-                .overlay(
-                    Circle().stroke(
-                        disabled
-                            ? AppTheme.chromeStroke
-                            : (isActive ? Color.clear : AppTheme.chromeStroke),
-                        lineWidth: 0.5
-                    )
-                )
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
