@@ -110,7 +110,7 @@ function assessNeed(
   );
 
   if (need.id === "need_resolve_reference") {
-    // Preuve hors-sujet (ex. Tesla pour des GPU) ≠ référence résolue.
+    // Preuve hors-sujet (overlap d’entités = 0) ≠ référence résolue.
     const topicTokens = tokenize(topicBlob).filter((t) => t.length >= 4);
     if (topicTokens.length === 0) {
       return evidence.length > 0 ? "satisfied" : "open";

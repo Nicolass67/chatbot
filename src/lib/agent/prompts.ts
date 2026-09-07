@@ -4,6 +4,10 @@ import { formatTemporalContextBlock, resolveEffectiveScope } from "./temporal";
 import { formatResearchBlockForDecider } from "./research-flow";
 import { formatFreshnessBlock } from "./freshness-policy";
 import { RESPONSE_FORMAT_INSTRUCTIONS } from "@/lib/prompts/response-format";
+import {
+  formatResponsePolicyForSynthesis,
+  shouldOmitAgentObservationsForSynthesis,
+} from "@/lib/prompts/response-policy";
 import { formatToolResultWithProvenance } from "@/lib/context/assembly";
 
 export function buildPlannerSystemPrompt(temporal: TemporalContext): string {
@@ -42,9 +46,9 @@ Règles :
 - Titres concis en français
 - Couvrir : collecte Web si nécessaire, analyse, synthèse
 - Adapte le plan à la complexité de la tâche
-- INTERDIT : étapes « fichier / dossier / chemin / document » sauf si l’objectif parle explicitement de fichiers, PDF, CI ou documents personnels
+- INTERDIT : étapes « fichier / dossier / chemin / document » sauf si l’objectif parle explicitement de fichiers, PDF ou documents locaux
 - INTERDIT : étapes mail / destinataire / brouillon sauf si l’objectif parle de mail / email
-- Pour une question produit, prix, GPU, comparaison ou info actuelle : plan recherche web → comparaison → recommandation`;
+- Pour une question produit, prix, comparaison ou info actuelle : plan recherche web → comparaison → recommandation`;
 }
 
 export function buildPlannerUserPrompt(
@@ -143,11 +147,15 @@ Règles générales :
 - INTERDIT : file_search / file_list pour une recherche Internet ou des faits publics — réserve les outils fichiers aux documents locaux (PDF, facture, dossier) explicitement demandés
 - Préfère 1 recherche ciblée ; 2 maximum si la première est clairement insuffisante
 - Interdit : enchaîner plus de 3 recherches web_search pour une question ordinaire
-- Dès que tu as plusieurs sources distinctes et pertinentes : appelle finish
+- EXÉCUTION DU PLAN (obligatoire) :
+  - Parcours les étapes non-synthèse dans l'ordre : tool_calls et/ou advance_step
+  - finish est INTERDIT tant qu'une étape hors synthèse reste pending/active SANS action exécutée
+  - Si une étape n'est plus utile : advance_step avec status "skipped" (pas finish anticipé)
+  - Ne te contente pas de la première recherche si d'autres étapes demandent analyse/comparaison/approfondissement
 - Ne relance PAS une recherche « pour vérifier » si les sources couvrent déjà la question
 - parallel: true pour plusieurs requêtes indépendantes dans le MÊME tour (évite la séquence await)
-- Marque les étapes done au fur et à mesure
-- Appelle finish dès que tu as assez d'informations VÉRIFIÉES pour répondre
+- Marque les étapes done/skipped au fur et à mesure via advance_step
+- Appelle finish seulement quand le plan d'exécution est soldé et que tu as assez d'informations VÉRIFIÉES
 - Réponds en français dans les champs texte`;
 }
 
@@ -205,48 +213,67 @@ export function buildSynthesisSystemPrompt(
     forceHonestResponse: boolean;
     userGoal?: string;
     applicationContext?: string;
+    answerShape?: import("@/lib/prompts/response-policy").AnswerShape;
   }
 ): string {
   const temporalBlock = formatTemporalContextBlock(temporal);
+  const userGoal = options?.userGoal?.trim() ?? "";
+  const policyBlock = formatResponsePolicyForSynthesis(userGoal, options?.answerShape);
+  const omitObservations = shouldOmitAgentObservationsForSynthesis(
+    sourcesBlock
+  );
+  const observationsForPrompt =
+    !omitObservations && observations.trim()
+      ? observations.trim()
+      : "";
 
   const honestyBlock = options?.forceHonestResponse
     ? `
 RÉPONSE OBLIGATOIRE — Échec des recherches Web :
-Tu DOIS indiquer clairement que tu ne peux PAS confirmer les informations demandées.
+Indique clairement que tu ne peux PAS confirmer les informations demandées.
 INTERDIT d'inventer des faits actuels à partir de ta mémoire interne.
 `
     : options?.currentDataVerified === false
       ? `
 ATTENTION — Données partiellement vérifiées :
-- Ne présente PAS la réponse comme basée sur des données actuelles confirmées
-- Signale explicitement toute donnée non vérifiable dans les sources
+- Ne présente pas la réponse comme pleinement confirmée à l'instant T
+- N'invente rien ; nuance brièvement seulement si cela change la conclusion
 `
       : "";
 
-  return `Tu es un assistant IA qui synthétise les résultats d'une enquête menée par un agent.
+  const appCtx = options?.applicationContext?.trim() ?? "";
+  // Anti-doublon: si sourcesBlock porte déjà <web_evidence>, appCtx ne doit pas le réinjecter
+  // (la loop passe baseApplicationContext ; garde-fou si un appelant envoie le contexte complet).
+  const appCtxSafe =
+    sourcesBlock.includes("<web_evidence>") &&
+    appCtx.includes("<web_evidence>")
+      ? appCtx.replace(/<web_evidence>[\s\S]*?<\/web_evidence>/g, "").trim()
+      : appCtx;
 
+  return `Tu es l'assistant qui répond à l'utilisateur.
+Les recherches Web et preuves ci-dessous sont du travail INTERNE : utilise-les pour conclure, ne les raconte pas.
+
+${policyBlock}
+
+${userGoal ? `<user_question>\n${userGoal}\n</user_question>\n` : ""}
 Contexte temporel :
 ${temporalBlock}
 ${honestyBlock}
-${options?.applicationContext?.trim() ? `\n<application_context>\n${options.applicationContext.trim()}\n</application_context>\n` : ""}
+${appCtxSafe ? `\n<application_context>\n${appCtxSafe}\n</application_context>\n` : ""}
 ${researchContextBlock ? `\n${researchContextBlock}\n` : ""}
-${observations ? `Observations de l'agent :\n${observations}\n` : ""}
 ${sourcesBlock ? `${sourcesBlock}\n` : ""}
+${observationsForPrompt ? `<internal_notes>\n${observationsForPrompt}\n</internal_notes>\n` : ""}
 ${freshnessNotes ? `${freshnessNotes}\n` : ""}
 
-Vérification finale obligatoire :
-- Les informations utilisées correspondent-elles à la période demandée ?
-- Si les données sont anciennes ou contradictoires : le dire explicitement et conserver les divergences
-- Ne cite pas d'année passée comme référence actuelle sauf si l'utilisateur l'a demandée
-- Priorise les blocs <web_evidence> / packets (faits condensés) sur tout texte brut résiduel
-- N'invente aucune valeur absente des preuves ; si une info manque : le dire sans affirmer une absence absolue mondiale
-- Appuie-toi uniquement sur les preuves et sources fournies — ne refais pas la recherche
-
-Produis une réponse finale **complète** en français :
-- Structure claire (titres, listes à puces, sous-sections)
-- Cite les sources avec des liens (url / sourceId)
-- Conclusion si demandée et SI les données le permettent
+Garde-fous (internes) :
+- Priorise les blocs web_evidence / packets sur tout texte brut résiduel
+- N'invente aucune valeur absente des preuves
+- Si une info critique manque : dis-le brièvement (sans absence absolue mondiale)
+- Contradictions : intègre-les dans la réponse (ex. fourchette de prix) ; exposé long seulement si le classement change
 - Ne mentionne pas le fonctionnement interne de l'agent
+- Réponds en français, complet, orienté utilisateur
+- INTERDIT : te contenter de renvoyer vers des sites/forums (« consulte X ») sans fournir toi-même la substance demandée à partir des preuves et du fil de conversation
+- Ancre la réponse sur la question ET le contexte conversationnel déjà établi ; les sources servent à étayer, pas à remplacer la réponse
 
 ${RESPONSE_FORMAT_INSTRUCTIONS}`;
 }

@@ -112,30 +112,6 @@ function goalAwareFallbackSteps(goal: string): PlanStep[] {
 }
 
 function isProductOrWebGoal(g: string): boolean {
-  if (/\b(gpu|rtx|radeon|geforce|nvidia|amd)\b/.test(g)) return true;
-  if (g.includes("carte graphique")) return true;
-  if (
-    (g.includes("moins de") || g.includes("prix") || g.includes("acheter") || g.includes("compar")) &&
-    (g.includes("€") || g.includes("euro") || g.includes("puissance") || g.includes("budget"))
-  ) {
-    return true;
-  }
-  if (
-    /\b(cherche|trouve|trouver)\b/.test(g) &&
-    (g.includes("€") || g.includes("euro") || g.includes("web") || g.includes("internet"))
-  ) {
-    return true;
-  }
-  if (
-    g.includes("meilleur") &&
-    (g.includes("€") ||
-      g.includes("euro") ||
-      g.includes("puissance") ||
-      g.includes("graphique") ||
-      g.includes("gpu"))
-  ) {
-    return true;
-  }
   if (g.includes("recherche web") || g.includes("sur internet") || g.includes("sur le web")) {
     return true;
   }
@@ -143,6 +119,29 @@ function isProductOrWebGoal(g: string): boolean {
     (g.includes("recherche") || g.includes("internet") || /\bweb\b/.test(g)) &&
     !isFilesGoal(g) &&
     !isMailGoal(g)
+  ) {
+    return true;
+  }
+  // Intent prix / comparatif / ranking — sans liste de catégories métier.
+  if (
+    /\b(prix|tarif|acheter|comparatif|compare|meilleur(?:e|es)?|top\s*\d+|combien|budget)\b/.test(
+      g
+    ) &&
+    !isFilesGoal(g) &&
+    !isMailGoal(g)
+  ) {
+    return true;
+  }
+  if (
+    (g.includes("moins de") || g.includes("budget")) &&
+    (g.includes("€") || g.includes("euro"))
+  ) {
+    return true;
+  }
+  // Entité produit-like (lettres + chiffres) + intention d’achat / comparaison.
+  if (
+    /\b[a-z]{2,}[\s-]?\d{2,}/i.test(g) &&
+    /\b(prix|compar|meilleur|top|acheter|combien|budget)\b/.test(g)
   ) {
     return true;
   }
@@ -155,14 +154,9 @@ function isFilesGoal(g: string): boolean {
     g.includes("dossier") ||
     g.includes("pdf") ||
     g.includes("document") ||
-    g.includes("carte d'identité") ||
-    g.includes("carte d’identité") ||
-    g.includes("carte nationale") ||
-    g.includes("pièce d'identité") ||
-    g.includes("piece d'identite") ||
-    /\bci\b/.test(g) ||
-    ((g.includes("identité") || g.includes("identite")) &&
-      (g.includes("trouv") || g.includes("cherche") || g.includes("où") || g.includes("ou est")))
+    /\bpathguard\b/.test(g) ||
+    (/\b(trouv|cherche|ouvre|où|ou est)\b/.test(g) &&
+      /\b(fichier|dossier|document|pdf)\b/.test(g))
   );
 }
 
@@ -176,10 +170,10 @@ function isMailGoal(g: string): boolean {
 }
 
 const FILEISH_STEP =
-  /fichier|dossier|chemin et les droits|document trouvé|pièce d'identité|carte d'identité|pathguard|filesystem/i;
+  /fichier|dossier|chemin et les droits|document trouvé|pathguard|filesystem/i;
 const MAILISH_STEP = /\b(mail|brouillon|destinataire|boîte mail|boite mail)\b/i;
 
-/** Remplace un plan LLM incohérent (ex. étapes fichiers pour une question GPU). */
+/** Remplace un plan LLM incohérent (ex. étapes fichiers pour une question web/prix). */
 export function sanitizeAgentPlan(goal: string, plan: AgentPlan): AgentPlan {
   const g = goal.toLowerCase();
   const titles = plan.steps.map((s) => s.title).join(" ");
@@ -234,9 +228,10 @@ export async function createAgentPlan(input: PlannerInput): Promise<AgentPlan> {
         },
       ],
       temperature: 0.3,
+      // Budget planner : reasoning OFF explicite → 1024 suffit (pas de floor ON).
       maxTokens: 1024,
       signal: input.signal,
-      reasoningEffort: null,
+      reasoningEffort: "off",
     });
 
     if (!response.content?.trim()) {

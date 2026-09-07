@@ -185,22 +185,23 @@ function significantTokens(text: string): string[] {
     .map((t) => t.trim())
     .filter((t) => {
       if (t.length >= 4) return true;
-      // Codes courts avec chiffre (5070, r5…) — utiles pour ancrer un follow-up.
+      // Codes courts avec chiffre — utiles pour ancrer un follow-up.
       return t.length >= 3 && /\d/.test(t);
     });
 }
 
 /**
  * Entités produit-like domaine-agnostiques (lettres + chiffres).
- * Ex. « RTX 5070 », « iPhone 16 Pro », « 7800X3D » — pas de whitelist métier.
+ * Aucune whitelist de marques / catégories métier.
  */
 export function extractTopicEntityHints(text: string, max = 6): string[] {
   const raw = text.slice(0, 8_000);
   const found: string[] = [];
 
+  // Ex. « Marque 123 », « Code-45B », éventuellement un suffixe court (« Pro », « Ti »…).
   const spaced =
     raw.match(
-      /\b[A-Za-z][A-Za-z0-9]{1,24}(?:[\s\-][A-Za-z0-9]{1,16}){0,3}\s+\d{2,5}[A-Za-z0-9]{0,10}(?:\s+(?:Ti|Pro|Max|Ultra|Super|XT|X3D|Plus|Mini|Air|SE))?\b/gi
+      /\b[A-Za-z][A-Za-z0-9]{1,24}(?:[\s\-][A-Za-z0-9]{1,16}){0,3}\s+\d{2,5}[A-Za-z0-9]{0,10}(?:\s+[A-Za-z][A-Za-z0-9]{0,11})?\b/gi
     ) ?? [];
   const compact =
     raw.match(/\b[A-Za-z]{2,14}[\-]?\d{2,5}[A-Za-z0-9]{0,10}\b/g) ?? [];
@@ -217,7 +218,7 @@ export function extractTopicEntityHints(text: string, max = 6): string[] {
 
   const seen = new Set<string>();
   const out: string[] = [];
-  // Préférer les formes longues (RTX 5070 avant 5070 seul).
+  // Préférer les formes longues (« Foo 12 Pro » avant « 12 »).
   found.sort((a, b) => b.length - a.length);
   for (const item of found) {
     const key = item.toLowerCase();
@@ -280,7 +281,7 @@ export function groundSearchQueryWithContext(params: {
 
   const queryLower = query.toLowerCase();
 
-  // 1) Entités de la dernière réponse assistant (priorité) — évite « 3 models » → Tesla.
+  // 1) Entités de la dernière réponse assistant (priorité sur l’anaphore vague).
   const assistantEntities = uniqPreserveOrder(
     assistantExcerpts.flatMap((t) => extractTopicEntityHints(t, 8))
   ).slice(0, 6);

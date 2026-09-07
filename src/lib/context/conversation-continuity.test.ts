@@ -90,26 +90,30 @@ describe("conversation continuity", () => {
     expect(q.toLowerCase()).toMatch(/micro/);
   });
 
-  it("ancre « prix de ces 3 models » sur les entités de la réponse assistant (pas Tesla)", () => {
+  it("ancre « prix de ces 3 models » sur les entités de la réponse assistant", () => {
     const q = groundSearchQueryWithContext({
       query: "C'est quoi le prix de ces 3 models ?",
-      recentUserMessages: ["Top 3 GPU RTX pour du gaming"],
+      recentUserMessages: ["Top 3 purificateurs d'air silencieux"],
       recentAssistantExcerpts: [
-        "1. RTX 5090 — haut de gamme\n2. RTX 5080 — milieu\n3. Pour un budget optimisé : La RTX 5070 offre les technologies NVIDIA.",
+        "1. AquaSense 900 — haut de gamme\n2. AquaSense 700 — milieu\n3. Pour un budget optimisé : l’AquaSense 500 reste très efficace.",
       ],
     });
     const lower = q.toLowerCase();
-    expect(lower).toMatch(/5070|5080|5090/);
+    expect(lower).toMatch(/aquasense/);
+    expect(lower).toMatch(/500|700|900/);
     expect(lower).toMatch(/prix/);
-    expect(lower).not.toMatch(/tesla|blogtesla/);
+    // La requête ne doit plus reposer sur le seul mot « models ».
+    expect(lower.replace(/aquasense|500|700|900|prix|sujets?/g, "")).not.toMatch(
+      /^\s*(c'est quoi le prix de ces 3 models \??)\s*$/i
+    );
   });
 
-  it("n'abandonne pas l'ancrage quand le prior user n'a que des tokens courts (GPU/RTX)", () => {
+  it("n'abandonne pas l'ancrage quand le prior user n'a que des tokens courts", () => {
     const q = groundSearchQueryWithContext({
       query: "Donne clairement les modèles maintenant",
-      recentUserMessages: ["Top 3 GPU RTX"],
+      recentUserMessages: ["Top 3 LED UV"],
       force: true,
     });
-    expect(q.toLowerCase()).toMatch(/gpu|rtx|top 3/);
+    expect(q.toLowerCase()).toMatch(/led|uv|top 3/);
   });
 });
