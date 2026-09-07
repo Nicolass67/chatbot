@@ -102,7 +102,7 @@ export const emailCreateDraftTool: Tool<EmailCreateDraftInput> = {
     }
 
     // Fil actif : ne jamais créer un brouillon orphelin sans threadId.
-    let threadId =
+    const threadId =
       input.threadId?.trim() || ctx.activeMailThreadId?.trim() || undefined;
     let inReplyToMessageId =
       input.inReplyToMessageId?.trim() ||

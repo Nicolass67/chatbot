@@ -105,7 +105,7 @@ export async function runWebEvidencePipeline(
     meta: { candidateCount: allSources.length },
   });
 
-  let selection = selectSourcesForAnalysis({
+  const selection = selectSourcesForAnalysis({
     query: input.searchQuery || input.userQuestion,
     sources: allSources.map((s) => ({
       sourceId: s.sourceId,

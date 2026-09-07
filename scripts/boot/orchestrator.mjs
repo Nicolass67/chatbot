@@ -358,22 +358,25 @@ export async function finishChatbotStack(config, prewarm, options = {}) {
 
  */
 
-export async function startChatbotStack(config) {
-  const lock = acquireBootStackLock("start");
-  if (!lock.ok) {
-    return {
-      ok: false,
-      step: "boot_lock",
-      error: lock.reason,
-      message: `Boot déjà en cours (${lock.owner})`,
-    };
+export async function startChatbotStack(config, options = {}) {
+  const alreadyLocked = options.alreadyLocked === true;
+  if (!alreadyLocked) {
+    const lock = acquireBootStackLock("start");
+    if (!lock.ok) {
+      return {
+        ok: false,
+        step: "boot_lock",
+        error: lock.reason,
+        message: `Boot déjà en cours (${lock.owner})`,
+      };
+    }
   }
 
   try {
     const prewarm = await prewarmChatbotStack(config);
     return await finishChatbotStack(config, prewarm);
   } finally {
-    releaseBootStackLock();
+    if (!alreadyLocked) releaseBootStackLock();
   }
 }
 
@@ -387,15 +390,18 @@ export async function startChatbotStack(config) {
 
  */
 
-export async function restartChatbotStack(config) {
-  const lock = acquireBootStackLock("restart");
-  if (!lock.ok) {
-    return {
-      ok: false,
-      step: "boot_lock",
-      error: lock.reason,
-      message: `Boot déjà en cours (${lock.owner})`,
-    };
+export async function restartChatbotStack(config, options = {}) {
+  const alreadyLocked = options.alreadyLocked === true;
+  if (!alreadyLocked) {
+    const lock = acquireBootStackLock("restart");
+    if (!lock.ok) {
+      return {
+        ok: false,
+        step: "boot_lock",
+        error: lock.reason,
+        message: `Boot déjà en cours (${lock.owner})`,
+      };
+    }
   }
 
   try {
@@ -415,7 +421,7 @@ export async function restartChatbotStack(config) {
       forceRestart: true,
     });
   } finally {
-    releaseBootStackLock();
+    if (!alreadyLocked) releaseBootStackLock();
   }
 }
 

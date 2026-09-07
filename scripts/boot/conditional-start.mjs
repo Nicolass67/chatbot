@@ -24,18 +24,12 @@ import {
   prewarmChatbotStack,
   restartChatbotStack,
 } from "./orchestrator.mjs";
+import {
+  acquireBootStackLock,
+  releaseBootStackLock,
+} from "./lib/boot-stack-lock.mjs";
 
 const dryRun = process.argv.includes("--dry-run");
-
-/** @type {Promise<Awaited<ReturnType<typeof prewarmChatbotStack>>> | null} */
-let prewarmPromise = null;
-
-/** @param {import("./lib/config.mjs").BootConfig} config */
-/** @param {"start"|"restart"} [action] */
-function kickPrewarm(config, action = "start") {
-  if (dryRun || prewarmPromise || action === "restart") return;
-  prewarmPromise = prewarmChatbotStack(config);
-}
 
 /** @param {import("./lib/config.mjs").BootConfig} config */
 function accessAuthFromConfig(config) {
@@ -66,6 +60,8 @@ async function main() {
   console.log("[boot] Worker + cloudflared en parallèle…");
   const accessAuth = accessAuthFromConfig(config);
 
+  // Ne PAS préchauffer avant consume : BootPoll peut consommer la même demande
+  // et provoquer consume_failed + stack partielle.
   const workerPeekPromise = waitForWorkerBootPeek(async () => {
     try {
       const peekRes = await peekBootRequest(
@@ -83,9 +79,6 @@ async function main() {
       }
       if (!peekRes.ok) {
         return { reachable: false, error: peekRes.error };
-      }
-      if (peekRes.body?.pending) {
-        kickPrewarm(config, peekRes.body.action ?? "start");
       }
       return { reachable: true, peek: peekRes.body ?? null };
     } catch (error) {
@@ -140,11 +133,20 @@ async function main() {
     process.exit(0);
   }
 
-  const action = workerResult.peek.action ?? "start";
-
-  if (action === "restart") {
+  const lock = acquireBootStackLock("conditional");
+  if (!lock.ok) {
     console.log(
-      `[boot] Redémarrage demandé (${workerResult.peek.requestId}) — arrêt puis relance…`
+      `[boot] Boot déjà en cours (${lock.owner}) — skip (BootPoll / autre).`
+    );
+    process.exit(0);
+  }
+
+  let holdLock = true;
+  try {
+    const action = workerResult.peek.action ?? "start";
+
+    console.log(
+      `[boot] Demande pending (${workerResult.peek.requestId}, ${action}) — consommation avant préchauffage…`
     );
 
     const consumeRes = await consumeBootRequest(
@@ -160,95 +162,62 @@ async function main() {
     });
 
     if (!decision.start) {
-      console.log(`[boot] Redémarrage refusé (${decision.reason}).`);
+      console.log(`[boot] Démarrage refusé (${decision.reason}).`);
       process.exit(0);
     }
 
-    const stack = await restartChatbotStack(config);
+    if (action === "restart") {
+      console.log(
+        `[boot] Redémarrage demandé (${workerResult.peek.requestId}) — arrêt puis relance…`
+      );
+      // restartChatbotStack prend son propre lock : on libère d'abord.
+      releaseBootStackLock();
+      holdLock = false;
+      const stack = await restartChatbotStack(config);
+      if (!stack.ok) {
+        if (stack.error === "boot_in_progress") {
+          console.log("[boot] Redémarrage déjà pris en charge — OK.");
+          process.exit(0);
+        }
+        console.error(`[boot] Échec étape ${stack.step}: ${stack.error ?? "unknown"}`);
+        process.exit(1);
+      }
+      console.log("[boot] Redémarrage terminé avec succès.");
+      process.exit(0);
+    }
+
+    if (action === "shutdown") {
+      console.log(
+        `[boot] Extinction demandée (${workerResult.peek.requestId})…`
+      );
+      const { shutdownWindowsPc } = await import("./lib/shutdown-pc.mjs");
+      const shutdown = await shutdownWindowsPc(config);
+      if (!shutdown.ok) {
+        console.error(`[boot] Échec extinction: ${shutdown.error ?? "unknown"}`);
+        process.exit(1);
+      }
+      console.log(
+        `[boot] Extinction PC planifiée dans ${shutdown.delaySeconds}s.`
+      );
+      process.exit(0);
+    }
+
+    console.log("[boot] Demande consommée — préchauffage puis finalisation…");
+    const prewarm = await prewarmChatbotStack(config);
+    const stack = await finishChatbotStack(config, prewarm);
     if (!stack.ok) {
       console.error(`[boot] Échec étape ${stack.step}: ${stack.error ?? "unknown"}`);
       process.exit(1);
     }
 
-    console.log("[boot] Redémarrage terminé avec succès.");
-    process.exit(0);
+    console.log("[boot] Terminé avec succès.");
+  } finally {
+    if (holdLock) releaseBootStackLock();
   }
-
-  if (action === "shutdown") {
-    console.log(
-      `[boot] Extinction demandée (${workerResult.peek.requestId})…`
-    );
-
-    const consumeRes = await consumeBootRequest(
-      config.workerBaseUrl,
-      config.bootMachineToken,
-      workerResult.peek.requestId,
-      fetch,
-      accessAuth
-    );
-
-    const decision = shouldStartChatbotServices(workerResult.peek, {
-      consumed: consumeRes.consumed === true,
-    });
-
-    if (!decision.start) {
-      console.log(`[boot] Extinction refusée (${decision.reason}).`);
-      process.exit(0);
-    }
-
-    const { shutdownWindowsPc } = await import("./lib/shutdown-pc.mjs");
-    const shutdown = await shutdownWindowsPc(config);
-    if (!shutdown.ok) {
-      console.error(`[boot] Échec extinction: ${shutdown.error ?? "unknown"}`);
-      process.exit(1);
-    }
-
-    console.log(
-      `[boot] Extinction PC planifiée dans ${shutdown.delaySeconds}s.`
-    );
-    process.exit(0);
-  }
-
-  kickPrewarm(config, action);
-
-  console.log(
-    `[boot] Demande pending — préchauffage + consommation en parallèle…`
-  );
-
-  const [consumeRes, prewarm] = await Promise.all([
-    consumeBootRequest(
-      config.workerBaseUrl,
-      config.bootMachineToken,
-      workerResult.peek.requestId,
-      fetch,
-      accessAuth
-    ),
-    prewarmPromise ?? prewarmChatbotStack(config),
-  ]);
-
-  const decision = shouldStartChatbotServices(workerResult.peek, {
-    consumed: consumeRes.consumed === true,
-  });
-
-  if (!decision.start) {
-    console.log(`[boot] Démarrage refusé (${decision.reason}).`);
-    process.exit(0);
-  }
-
-  console.log(
-    `[boot] Demande Worker consommée (${workerResult.peek.requestId}) — finalisation stack…`
-  );
-
-  const stack = await finishChatbotStack(config, prewarm);
-  if (!stack.ok) {
-    console.error(`[boot] Échec étape ${stack.step}: ${stack.error ?? "unknown"}`);
-    process.exit(1);
-  }
-
-  console.log("[boot] Terminé avec succès.");
 }
 
 main().catch((error) => {
   console.error("[boot] Erreur fatale:", error);
+  releaseBootStackLock();
   process.exit(1);
 });

@@ -14,6 +14,46 @@ const LOG_PATH = join(PROJECT_ROOT, "data", "next-prod.log");
 /** @type {import('node:child_process').ChildProcess | null} */
 let nextProcess = null;
 
+/**
+ * Évite d'utiliser le Node embarqué Cursor (cassé pour spawn Next détaché).
+ * @returns {string}
+ */
+function resolveNodeExecutable() {
+  const candidates = [
+    process.env.CHATBOT_NODE_PATH,
+    process.platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : null,
+    process.execPath,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (
+      typeof candidate === "string" &&
+      existsSync(candidate) &&
+      !/cursor-agent|anysphere/i.test(candidate)
+    ) {
+      return candidate;
+    }
+  }
+  return process.execPath;
+}
+
+function loadHealthTokenFromEnvLocal() {
+  if (process.env.HEALTH_CHECK_TOKEN) return;
+  try {
+    const raw = readFileSync(join(PROJECT_ROOT, ".env.local"), "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(/^HEALTH_CHECK_TOKEN=(.*)$/);
+      if (m) {
+        process.env.HEALTH_CHECK_TOKEN = m[1].trim();
+        return;
+      }
+    }
+  } catch {
+    // optional
+  }
+}
+
+loadHealthTokenFromEnvLocal();
+
 function isPidAlive(pid) {
   if (!pid || pid <= 0) return false;
   try {
@@ -106,6 +146,35 @@ export async function fetchNextHealth(healthUrl) {
   return { status: response.status, health };
 }
 
+const ISO_HOME = join(PROJECT_ROOT, ".build-home");
+
+/**
+ * HOME isolé pour le build : évite EPERM sur junctions Windows
+ * sous Documents (ex. « Ma musique »).
+ */
+function ensureIsoHome() {
+  for (const p of [
+    ISO_HOME,
+    join(ISO_HOME, "Documents"),
+    join(ISO_HOME, "AppData", "Local"),
+    join(ISO_HOME, "AppData", "Roaming"),
+  ]) {
+    mkdirSync(p, { recursive: true });
+  }
+}
+
+function buildEnv() {
+  ensureIsoHome();
+  return {
+    ...process.env,
+    USERPROFILE: ISO_HOME,
+    HOME: ISO_HOME,
+    APPDATA: join(ISO_HOME, "AppData", "Roaming"),
+    LOCALAPPDATA: join(ISO_HOME, "AppData", "Local"),
+    NEXT_TELEMETRY_DISABLED: "1",
+  };
+}
+
 /**
  * Lance `npm run build` si le build production est absent.
  */
@@ -121,7 +190,7 @@ export function ensureNextJsProductionBuild() {
     stdio: "inherit",
     shell: process.platform === "win32",
     windowsHide: true,
-    env: process.env,
+    env: buildEnv(),
   });
 
   if (result.status !== 0) {
@@ -142,6 +211,56 @@ export function ensureNextJsProductionBuild() {
 
   console.log("[boot] Build Next.js terminé");
   return { ok: true, built: true };
+}
+
+/**
+ * Fallback si le build prod échoue : `npm run dev` détaché.
+ */
+export async function ensureNextJsDev() {
+  if (await isNextJsListening()) {
+    console.log("[boot] Next.js déjà actif sur :3000 (dev ou autre)");
+    return { ok: true, started: false, mode: "dev" };
+  }
+
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+  mkdirSync(dirname(LOG_PATH), { recursive: true });
+  const logFd = openSync(LOG_PATH, "a");
+
+  console.log("[boot] Fallback Next.js dev (127.0.0.1:3000)…");
+  nextProcess = spawn(npmCmd, ["run", "dev", "--", "-H", "127.0.0.1", "-p", "3000"], {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" },
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    shell: process.platform === "win32",
+    windowsHide: process.platform === "win32",
+  });
+
+  nextProcess.on("error", (error) => {
+    console.error(
+      "[boot] Next.js dev spawn error:",
+      error instanceof Error ? error.message : error
+    );
+  });
+
+  nextProcess.unref();
+  if (nextProcess.pid) {
+    writeNextPid(nextProcess.pid);
+  }
+
+  // Turbopack compile à froid — laisser plus de marge qu'en prod.
+  for (let i = 0; i < 40; i++) {
+    await sleep(1500);
+    if (await isNextJsListening()) {
+      return { ok: true, started: true, mode: "dev" };
+    }
+  }
+
+  return {
+    ok: false,
+    error: "next_dev_start_failed",
+    message: "Next.js dev ne répond pas sur le port 3000",
+  };
 }
 
 function writeNextPid(pid) {
@@ -192,7 +311,10 @@ export async function ensureNextJsProduction(options = {}) {
 
   const build = ensureNextJsProductionBuild();
   if (!build.ok) {
-    return build;
+    console.warn(
+      `[boot] Build prod impossible (${build.error}) — bascule vers next dev…`
+    );
+    return ensureNextJsDev();
   }
 
   const nextBin = join(
@@ -209,7 +331,7 @@ export async function ensureNextJsProduction(options = {}) {
 
   console.log("[boot] Démarrage Next.js production (127.0.0.1:3000)…");
   nextProcess = spawn(
-    process.execPath,
+    resolveNodeExecutable(),
     [nextBin, "start", "-p", "3000", "-H", "127.0.0.1"],
     {
       cwd: PROJECT_ROOT,
@@ -232,16 +354,15 @@ export async function ensureNextJsProduction(options = {}) {
     writeNextPid(nextProcess.pid);
   }
 
-  await sleep(1500);
-  if (!(await isNextJsListening())) {
-    return {
-      ok: false,
-      error: "next_start_failed",
-      message: "Next.js ne répond pas sur le port 3000 après démarrage",
-    };
+  for (let i = 0; i < 10; i++) {
+    await sleep(1500);
+    if (await isNextJsListening()) {
+      return { ok: true, started: true, mode: "production" };
+    }
   }
 
-  return { ok: true, started: true };
+  console.warn("[boot] next start n'écoute pas — bascule vers next dev…");
+  return ensureNextJsDev();
 }
 
 /**

@@ -14,6 +14,10 @@ import {
   startChatbotStack,
 } from "./orchestrator.mjs";
 import { shutdownWindowsPc } from "./lib/shutdown-pc.mjs";
+import {
+  acquireBootStackLock,
+  releaseBootStackLock,
+} from "./lib/boot-stack-lock.mjs";
 
 /** @param {import("./lib/config.mjs").BootConfig} config */
 function accessAuthFromConfig(config) {
@@ -47,53 +51,67 @@ async function main() {
   const action = peekRes.body.action ?? "start";
   const requestId = peekRes.body.requestId;
 
-  const consumeRes = await consumeBootRequest(
-    config.workerBaseUrl,
-    config.bootMachineToken,
-    requestId,
-    fetch,
-    accessAuth
-  );
-
-  const decision = shouldStartChatbotServices(peekRes.body, {
-    consumed: consumeRes.consumed === true,
-  });
-
-  if (!decision.start) {
-    console.log(`[boot] Exécution refusée (${decision.reason}).`);
-    process.exit(0);
-  }
-
-  console.log(`[boot] Exécution ${action} (${requestId})…`);
-
-  if (action === "shutdown") {
-    const shutdown = await shutdownWindowsPc(config);
-    if (!shutdown.ok) {
-      console.error(
-        `[boot] Échec extinction: ${shutdown.error ?? "unknown"}`
-      );
-      process.exit(1);
-    }
+  // Lock AVANT consume pour éviter la course avec ConditionalBoot.
+  const lock = acquireBootStackLock("poll-execute");
+  if (!lock.ok) {
     console.log(
-      `[boot] Extinction PC planifiée dans ${shutdown.delaySeconds}s.`
+      `[boot] Boot déjà en cours (${lock.owner}) — skip.`
     );
     process.exit(0);
   }
 
-  const stack =
-    action === "restart"
-      ? await restartChatbotStack(config)
-      : await startChatbotStack(config);
+  try {
+    const consumeRes = await consumeBootRequest(
+      config.workerBaseUrl,
+      config.bootMachineToken,
+      requestId,
+      fetch,
+      accessAuth
+    );
 
-  if (!stack.ok) {
-    console.error(`[boot] Échec étape ${stack.step}: ${stack.error ?? "unknown"}`);
-    process.exit(1);
+    const decision = shouldStartChatbotServices(peekRes.body, {
+      consumed: consumeRes.consumed === true,
+    });
+
+    if (!decision.start) {
+      console.log(`[boot] Exécution refusée (${decision.reason}).`);
+      process.exit(0);
+    }
+
+    console.log(`[boot] Exécution ${action} (${requestId})…`);
+
+    if (action === "shutdown") {
+      const shutdown = await shutdownWindowsPc(config);
+      if (!shutdown.ok) {
+        console.error(
+          `[boot] Échec extinction: ${shutdown.error ?? "unknown"}`
+        );
+        process.exit(1);
+      }
+      console.log(
+        `[boot] Extinction PC planifiée dans ${shutdown.delaySeconds}s.`
+      );
+      process.exit(0);
+    }
+
+    const stack =
+      action === "restart"
+        ? await restartChatbotStack(config, { alreadyLocked: true })
+        : await startChatbotStack(config, { alreadyLocked: true });
+
+    if (!stack.ok) {
+      console.error(`[boot] Échec étape ${stack.step}: ${stack.error ?? "unknown"}`);
+      process.exit(1);
+    }
+
+    console.log(`[boot] ${action === "restart" ? "Redémarrage" : "Démarrage"} terminé.`);
+  } finally {
+    releaseBootStackLock();
   }
-
-  console.log(`[boot] ${action === "restart" ? "Redémarrage" : "Démarrage"} terminé.`);
 }
 
 main().catch((error) => {
   console.error("[boot] Erreur fatale:", error);
+  releaseBootStackLock();
   process.exit(1);
 });
