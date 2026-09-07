@@ -182,12 +182,13 @@ struct ChatScreen: View {
             }
 
             // NIVEAU 2 — fade devant le chat, derrière le chrome.
-            // Le bas du fade s’aligne sur le HAUT du chrome : le verre du composer
-            // ne doit pas laisser voir le dégradé (sinon aspect « voile »).
+            // PAS de padding(.bottom, chromeHeight) : ça relève toute la bande et le
+            // début opaque apparaît AU-DESSUS du composer (régression « voile »).
+            // Le fade va jusqu’en bas ; le composer (niveau 3) le recouvre.
             ViewportBottomFade(height: Self.bottomFadeHeight)
-                .padding(.bottom, max(floatingChromeHeight - 4, tabBarOverlayLift))
+                .ignoresSafeArea(.container, edges: .bottom)
 
-            // NIVEAU 3 — UI flottante nette, sans voile.
+            // NIVEAU 3 — UI flottante nette, au-dessus du fade.
             composerFloatingChrome
                 .ignoresSafeArea(.container, edges: .bottom)
         }
