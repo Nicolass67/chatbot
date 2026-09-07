@@ -219,6 +219,7 @@ struct MessageBubble: View {
         let needles = [
             "j'ai trouvé", "voici le fichier", "fichier trouvé", "files found",
             "voici le document", "j’ai trouvé", "trouvé le fichier",
+            "id du fichier", "nom du fichier", "file id", "filename",
         ]
         return needles.contains { lower.contains($0) } || (text.count < 120 && lower.contains("fichier"))
     }

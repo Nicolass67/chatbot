@@ -187,31 +187,107 @@ enum ConversationSessionStore {
         let orphans = map.filter { id, meta in
             !liveIds.contains(id) && !meta.filesFound.isEmpty
         }
-        guard !orphans.isEmpty else { return map }
-
-        let assistants = messages.filter { $0.role == "assistant" }
-        for (orphanId, meta) in orphans {
-            let matched = assistants.last(where: { msg in
-                meta.filesFound.contains { file in
-                    msg.content.localizedCaseInsensitiveContains(file.filename)
-                        || msg.content.localizedCaseInsensitiveContains(file.id)
+        if !orphans.isEmpty {
+            let assistants = messages.filter { $0.role == "assistant" }
+            for (orphanId, meta) in orphans {
+                let matched = assistants.last(where: { msg in
+                    meta.filesFound.contains { file in
+                        msg.content.localizedCaseInsensitiveContains(file.filename)
+                            || msg.content.localizedCaseInsensitiveContains(file.id)
+                    }
+                }) ?? assistants.last
+                guard let target = matched else { continue }
+                var merged = map[target.id] ?? MessageChromeMeta()
+                var seen = Set(merged.filesFound.map(\.id))
+                for file in meta.filesFound where seen.insert(file.id).inserted {
+                    merged.filesFound.append(file)
                 }
-            }) ?? assistants.last
-            guard let target = matched else { continue }
-            var merged = map[target.id] ?? MessageChromeMeta()
-            var seen = Set(merged.filesFound.map(\.id))
-            for file in meta.filesFound where seen.insert(file.id).inserted {
-                merged.filesFound.append(file)
+                if !meta.savedMemories.isEmpty {
+                    merged.savedMemories = mergeSavedMemories(merged.savedMemories, meta.savedMemories)
+                }
+                map[target.id] = merged
+                map.removeValue(forKey: orphanId)
             }
-            if !meta.savedMemories.isEmpty {
-                merged.savedMemories = mergeSavedMemories(merged.savedMemories, meta.savedMemories)
-            }
-            map[target.id] = merged
-            map.removeValue(forKey: orphanId)
+            chromeMemory[conversationId] = map
+            persistChromeToDisk(conversationId)
         }
-        chromeMemory[conversationId] = map
-        persistChromeToDisk(conversationId)
+
+        // Récupération contenu : narration « ID du fichier / Nom du fichier » sans chrome SSE.
+        var changed = false
+        for msg in messages where msg.role == "assistant" {
+            var meta = map[msg.id] ?? MessageChromeMeta()
+            guard meta.filesFound.isEmpty else { continue }
+            let hints = extractFilesFoundHints(from: msg.content)
+            guard !hints.isEmpty else { continue }
+            meta.filesFound = hints
+            map[msg.id] = meta
+            changed = true
+        }
+        if changed {
+            chromeMemory[conversationId] = map
+            persistChromeToDisk(conversationId)
+        }
         return map
+    }
+
+    /// Extrait des indices fichiers depuis le texte assistant (labels FR/EN, pas de domaine métier).
+    static func extractFilesFoundHints(from content: String) -> [FilesFoundFileDTO] {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 12 else { return [] }
+
+        let idPattern = #"(?i)(?:id\s*(?:du\s*)?fichier|file\s*id|fileid)\s*[:：]\s*([A-Za-z0-9_-]{6,})"#
+        let namePattern = #"(?i)(?:nom\s*(?:du\s*)?fichier|file\s*name|filename)\s*[:：]\s*(.+)$"#
+
+        var ids: [String] = []
+        if let re = try? NSRegularExpression(pattern: idPattern) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for match in re.matches(in: text, range: range) {
+                guard match.numberOfRanges >= 2,
+                      let r = Range(match.range(at: 1), in: text) else { continue }
+                let id = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !id.isEmpty { ids.append(id) }
+            }
+        }
+
+        var names: [String] = []
+        if let re = try? NSRegularExpression(pattern: namePattern, options: [.anchorsMatchLines]) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for match in re.matches(in: text, range: range) {
+                guard match.numberOfRanges >= 2,
+                      let r = Range(match.range(at: 1), in: text) else { continue }
+                var name = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Coupe un éventuel suffixe markdown / ponctuation collée.
+                if let cut = name.firstIndex(where: { $0 == "\n" || $0 == "*" }) {
+                    name = String(name[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if !name.isEmpty { names.append(name) }
+            }
+        }
+
+        guard !ids.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [FilesFoundFileDTO] = []
+        for (idx, id) in ids.enumerated() {
+            guard seen.insert(id).inserted else { continue }
+            let filename: String = {
+                if idx < names.count { return names[idx] }
+                if names.count == 1 { return names[0] }
+                return "fichier"
+            }()
+            let ext = (filename as NSString).pathExtension
+            out.append(
+                FilesFoundFileDTO(
+                    id: id,
+                    filename: filename,
+                    relativePath: nil,
+                    rootId: nil,
+                    sizeBytes: nil,
+                    mtimeMs: nil,
+                    extensionHint: ext.isEmpty ? nil : ext.lowercased()
+                )
+            )
+        }
+        return out
     }
 
     // MARK: - Draft card snapshot (survit au kill app via UserDefaults)

@@ -1931,6 +1931,14 @@ private var sendBlockedHint: String {
                     from: preserveAssistantId,
                     onto: messages
                 )
+                // Chrome souvent sous asst-* pendant files_found — remonter aussi ces ancres.
+                for tempId in chromeById.keys where tempId.hasPrefix("asst-") || tempId.hasPrefix("local-") {
+                    chromeById = ConversationSessionStore.remountChrome(
+                        conversationId: conversation.id,
+                        from: tempId,
+                        onto: messages
+                    )
+                }
             } else {
                 let stored = ConversationSessionStore.chrome(for: conversation.id)
                 if !stored.isEmpty {
@@ -1986,6 +1994,10 @@ private var sendBlockedHint: String {
             scrollAnchorAfterPrepend = oldestId
             messages = Self.withoutLeakedDraftControlMessages(older + messages)
             hydrateChromeSources(from: older)
+            chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                conversationId: conversation.id,
+                messages: messages
+            )
             pruneChromeOutsideWindow()
             let ids = older.flatMap { $0.attachments ?? [] }
                 .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
@@ -2009,7 +2021,12 @@ private var sendBlockedHint: String {
         if let streamingAssistantId {
             keep.insert(streamingAssistantId)
         }
-        chromeById = chromeById.filter { keep.contains($0.key) }
+        // Ne jamais détruire filesFound / souvenirs hors fenêtre — reattach au prochain load.
+        chromeById = chromeById.filter { id, meta in
+            keep.contains(id)
+                || !meta.filesFound.isEmpty
+                || !meta.savedMemories.isEmpty
+        }
         ConversationSessionStore.replaceChrome(conversationId: conversation.id, chrome: chromeById)
     }
 
