@@ -1449,7 +1449,7 @@ struct ChatScreen: View {
     /// Ne pas rajouter `bottomSafeInset` (sinon double lift).
     private var tabBarOverlayLift: CGFloat {
         if keyboardLiftActive { return AppTheme.space8 }
-        return 72
+        return 88
     }
 
     /// Composer + chrome : calque au-dessus du fade (pas d’arrière-plan de bande opaque).
