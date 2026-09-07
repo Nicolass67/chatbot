@@ -162,6 +162,10 @@ struct ChatScreen: View {
         // messages → fade → composer/contrôles.
         // Un fade sibling de TabView dans MainTabView est AU-DESSUS de la tab bar
         // (prouvé par le test rouge qui masquait Chat/Mail/Files) — mauvais étage.
+        //
+        // CRITICAL : le ZStack doit ignorer la safe area bas. Sinon le composer est
+        // déjà posé au-dessus de la tab bar, et un padding.bottom ajoute un 2e lift
+        // (composer « trop haut » avec trou sous le chrome).
         ZStack(alignment: .bottom) {
             AmbientBackground()
                 .ignoresSafeArea()
@@ -178,20 +182,15 @@ struct ChatScreen: View {
                     )
                 }
                 messageScroll
-                    .ignoresSafeArea(.container, edges: .bottom)
             }
 
             // NIVEAU 2 — fade devant le chat, derrière le chrome.
-            // PAS de padding(.bottom, chromeHeight) : ça relève toute la bande et le
-            // début opaque apparaît AU-DESSUS du composer (régression « voile »).
-            // Le fade va jusqu’en bas ; le composer (niveau 3) le recouvre.
             ViewportBottomFade(height: Self.bottomFadeHeight)
-                .ignoresSafeArea(.container, edges: .bottom)
 
             // NIVEAU 3 — UI flottante nette, au-dessus du fade.
             composerFloatingChrome
-                .ignoresSafeArea(.container, edges: .bottom)
         }
+        .ignoresSafeArea(.container, edges: .bottom)
         .background {
             GeometryReader { geo in
                 let inset = geo.safeAreaInsets.bottom
@@ -1445,12 +1444,12 @@ struct ChatScreen: View {
         draftCardCollapsed && !draftCardSent && draftCardId != nil
     }
 
-    /// Lift au-dessus de la tab bar — offset fixe (pas toute la safe area).
-    /// `max(bottomSafeInset, 72)` remontait le composer trop haut (double compte /
-    /// tab bar minimisée) ; ~54 place le composer juste au-dessus de Chat/Mail/Files.
+    /// Lift depuis le bas physique (ZStack ignore déjà la safe area container).
+    /// Un seul offset pour passer au-dessus de la pastille tab / home indicator.
+    /// Ne pas rajouter `bottomSafeInset` (sinon double lift = composer trop haut).
     private var tabBarOverlayLift: CGFloat {
         if keyboardLiftActive { return AppTheme.space8 }
-        return 54
+        return 56
     }
 
     /// Composer + chrome : calque au-dessus du fade (pas d’arrière-plan de bande opaque).
