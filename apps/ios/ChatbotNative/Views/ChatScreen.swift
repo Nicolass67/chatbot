@@ -1445,11 +1445,11 @@ struct ChatScreen: View {
     }
 
     /// Lift depuis le bas physique (ZStack ignore déjà la safe area container).
-    /// Un seul offset pour passer au-dessus de la pastille tab / home indicator.
-    /// Ne pas rajouter `bottomSafeInset` (sinon double lift = composer trop haut).
+    /// Un seul offset — au-dessus des labels Chat/Mail/Files (pas collé, pas trop haut).
+    /// Ne pas rajouter `bottomSafeInset` (sinon double lift).
     private var tabBarOverlayLift: CGFloat {
         if keyboardLiftActive { return AppTheme.space8 }
-        return 56
+        return 72
     }
 
     /// Composer + chrome : calque au-dessus du fade (pas d’arrière-plan de bande opaque).
