@@ -37,6 +37,8 @@ enum ConversationSessionStore {
         if let id = UserDefaults.standard.string(forKey: storage) {
             chromeMemory.removeValue(forKey: id)
             draftCardMemory.removeValue(forKey: id)
+            UserDefaults.standard.removeObject(forKey: chromeDefaultsKey(id))
+            UserDefaults.standard.removeObject(forKey: draftCardDefaultsKey(id))
         }
         UserDefaults.standard.removeObject(forKey: storage)
     }
@@ -45,14 +47,64 @@ enum ConversationSessionStore {
         UserDefaults.standard.removeObject(forKey: scopedKey(scope: scope, contextKey: contextKey))
         chromeMemory.removeValue(forKey: conversationId)
         draftCardMemory.removeValue(forKey: conversationId)
+        UserDefaults.standard.removeObject(forKey: chromeDefaultsKey(conversationId))
+        UserDefaults.standard.removeObject(forKey: draftCardDefaultsKey(conversationId))
     }
 
-    // MARK: - Chrome structuré (filesFound, drafts meta, handoffs) en mémoire process
+    // MARK: - Chrome structuré (filesFound persistant disk comme les brouillons)
 
     private static var chromeMemory: [String: [String: MessageChromeMeta]] = [:]
+    private static let chromeDefaultsPrefix = "ctxchat.chrome."
+
+    private struct PersistedChromeSlice: Codable {
+        var filesFound: [FilesFoundFileDTO]
+        var savedMemories: [SavedMemoryChipDTO]
+    }
+
+    private static func chromeDefaultsKey(_ conversationId: String) -> String {
+        chromeDefaultsPrefix + conversationId
+    }
+
+    private static func loadChromeFromDisk(_ conversationId: String) -> [String: MessageChromeMeta]? {
+        guard let data = UserDefaults.standard.data(forKey: chromeDefaultsKey(conversationId)),
+              let raw = try? JSONDecoder().decode([String: PersistedChromeSlice].self, from: data)
+        else { return nil }
+        var map: [String: MessageChromeMeta] = [:]
+        for (messageId, slice) in raw {
+            guard !slice.filesFound.isEmpty || !slice.savedMemories.isEmpty else { continue }
+            map[messageId] = MessageChromeMeta(
+                filesFound: slice.filesFound,
+                savedMemories: slice.savedMemories
+            )
+        }
+        return map.isEmpty ? nil : map
+    }
+
+    private static func persistChromeToDisk(_ conversationId: String) {
+        let map = chromeMemory[conversationId] ?? [:]
+        var payload: [String: PersistedChromeSlice] = [:]
+        for (messageId, meta) in map {
+            guard !meta.filesFound.isEmpty || !meta.savedMemories.isEmpty else { continue }
+            payload[messageId] = PersistedChromeSlice(
+                filesFound: meta.filesFound,
+                savedMemories: meta.savedMemories
+            )
+        }
+        let key = chromeDefaultsKey(conversationId)
+        if payload.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(payload) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
 
     static func chrome(for conversationId: String) -> [String: MessageChromeMeta] {
-        chromeMemory[conversationId] ?? [:]
+        if let mem = chromeMemory[conversationId] { return mem }
+        if let disk = loadChromeFromDisk(conversationId) {
+            chromeMemory[conversationId] = disk
+            return disk
+        }
+        return [:]
     }
 
     /// Remplace la map chrome (après prune fenêtre historique).
@@ -62,6 +114,7 @@ enum ConversationSessionStore {
         } else {
             chromeMemory[conversationId] = chrome
         }
+        persistChromeToDisk(conversationId)
     }
 
     static func setChrome(
@@ -72,6 +125,7 @@ enum ConversationSessionStore {
         var map = chromeMemory[conversationId] ?? [:]
         map[messageId] = meta
         chromeMemory[conversationId] = map
+        persistChromeToDisk(conversationId)
     }
 
     static func mergeChrome(
@@ -97,7 +151,7 @@ enum ConversationSessionStore {
         from temporaryId: String,
         onto serverMessages: [MessageDTO]
     ) -> [String: MessageChromeMeta] {
-        var map = chromeMemory[conversationId] ?? [:]
+        var map = chrome(for: conversationId)
         guard let temp = map[temporaryId] else { return map }
         // Dernier message assistant serveur
         if let last = serverMessages.last(where: { $0.role == "assistant" }) {
@@ -118,7 +172,45 @@ enum ConversationSessionStore {
                 map.removeValue(forKey: temporaryId)
             }
             chromeMemory[conversationId] = map
+            persistChromeToDisk(conversationId)
         }
+        return map
+    }
+
+    /// Rattache les filesFound orphelins (id local `asst-*` après restart) aux messages assistant du fil.
+    static func reattachOrphanFilesFound(
+        conversationId: String,
+        messages: [MessageDTO]
+    ) -> [String: MessageChromeMeta] {
+        var map = chrome(for: conversationId)
+        let liveIds = Set(messages.map(\.id))
+        let orphans = map.filter { id, meta in
+            !liveIds.contains(id) && !meta.filesFound.isEmpty
+        }
+        guard !orphans.isEmpty else { return map }
+
+        let assistants = messages.filter { $0.role == "assistant" }
+        for (orphanId, meta) in orphans {
+            let matched = assistants.last(where: { msg in
+                meta.filesFound.contains { file in
+                    msg.content.localizedCaseInsensitiveContains(file.filename)
+                        || msg.content.localizedCaseInsensitiveContains(file.id)
+                }
+            }) ?? assistants.last
+            guard let target = matched else { continue }
+            var merged = map[target.id] ?? MessageChromeMeta()
+            var seen = Set(merged.filesFound.map(\.id))
+            for file in meta.filesFound where seen.insert(file.id).inserted {
+                merged.filesFound.append(file)
+            }
+            if !meta.savedMemories.isEmpty {
+                merged.savedMemories = mergeSavedMemories(merged.savedMemories, meta.savedMemories)
+            }
+            map[target.id] = merged
+            map.removeValue(forKey: orphanId)
+        }
+        chromeMemory[conversationId] = map
+        persistChromeToDisk(conversationId)
         return map
     }
 

@@ -427,7 +427,7 @@ struct ContextUsageMeter: View {
     }
 }
 
-struct FilesFoundFileDTO: Identifiable, Hashable {
+struct FilesFoundFileDTO: Identifiable, Hashable, Codable {
     let id: String
     let filename: String
     let relativePath: String?
@@ -448,7 +448,7 @@ struct MessageChromeMeta: Equatable {
     var savedMemories: [SavedMemoryChipDTO] = []
 }
 
-struct SavedMemoryChipDTO: Identifiable, Hashable, Equatable {
+struct SavedMemoryChipDTO: Identifiable, Hashable, Equatable, Codable {
     let id: String
     let content: String
     let category: String

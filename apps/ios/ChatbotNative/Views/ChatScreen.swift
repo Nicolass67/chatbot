@@ -1841,6 +1841,10 @@ private var sendBlockedHint: String {
                     chromeById = stored
                 }
             }
+            chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                conversationId: conversation.id,
+                messages: messages
+            )
             // Réhydrate les pastilles web_N depuis l’API (survit au changement de chat / restart).
             hydrateChromeSources(from: messages)
             pruneChromeOutsideWindow()
