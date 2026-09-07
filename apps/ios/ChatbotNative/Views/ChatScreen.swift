@@ -97,6 +97,8 @@ struct ChatScreen: View {
     @State private var bottomSafeInset: CGFloat = 83
     /// Clavier visible → ne pas re-pousser le composer (safe area clavier déjà appliquée).
     @State private var keyboardLiftActive = false
+    /// Ouverture clavier alors qu’on était collé en bas → re-stick (sinon laisser la position).
+    @State private var stickBottomThroughKeyboard = false
     /// Collé en bas → suivi auto du stream. Remontée utilisateur / pin envoi → false.
     @State private var isPinnedToBottom = true
     /// Pendant un scroll programmé (envoi / stream / bouton), ignore les pics de distance.
@@ -203,6 +205,13 @@ struct ChatScreen: View {
                 Color.clear
                     .onAppear { updateBottomSafeInset(inset) }
                     .onChange(of: inset) { _, value in updateBottomSafeInset(value) }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            // Avant le shrink du viewport : mémoriser si on était vraiment en bas.
+            if !stickBottomThroughKeyboard {
+                stickBottomThroughKeyboard =
+                    isPinnedToBottom && pinToTopMessageId == nil && !showScrollDown
             }
         }
         .navigationTitle(
@@ -589,6 +598,10 @@ struct ChatScreen: View {
                     }
 
                     let distanceToBottom = metrics.distanceToBottom
+                    // Pendant la transition clavier + re-stick : ignorer les faux « trop haut ».
+                    if stickBottomThroughKeyboard {
+                        return
+                    }
                     if distanceToBottom > scrollShowButtonThreshold {
                         if isPinnedToBottom { isPinnedToBottom = false }
                         if !showScrollDown {
@@ -604,6 +617,33 @@ struct ChatScreen: View {
                                 showScrollDown = false
                             }
                         }
+                    }
+                }
+                .onChange(of: keyboardLiftActive) { _, active in
+                    guard active, stickBottomThroughKeyboard else { return }
+                    // Clavier ouvert + on était déjà en bas → recoller sous le composer.
+                    isPinnedToBottom = true
+                    showScrollDown = false
+                    pinToTopMessageId = nil
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.7)
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.28)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                            guard stickBottomThroughKeyboard else { return }
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                            stickBottomThroughKeyboard = false
+                            isPinnedToBottom = true
+                            showScrollDown = false
+                        }
+                    }
+                }
+                .onChange(of: floatingChromeHeight) { _, _ in
+                    guard keyboardLiftActive, isPinnedToBottom, pinToTopMessageId == nil else { return }
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
                     }
                 }
                 .onChange(of: streamingText) { _, text in
@@ -1619,8 +1659,16 @@ Corps actuel:
         // Tab bar + home indicator ≈ 49–110 ; clavier typiquement > 200.
         if inset > 0 && inset < 140 {
             bottomSafeInset = inset
-            keyboardLiftActive = false
+            if keyboardLiftActive {
+                keyboardLiftActive = false
+                stickBottomThroughKeyboard = false
+            }
         } else if inset >= 140 {
+            if !keyboardLiftActive {
+                // Capturer AVANT que la géométrie ne croie qu’on a remonté.
+                stickBottomThroughKeyboard =
+                    isPinnedToBottom && pinToTopMessageId == nil
+            }
             keyboardLiftActive = true
         }
     }
