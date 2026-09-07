@@ -255,9 +255,10 @@ export async function searchFileIndexPassages(input: {
   query: string;
   limit?: number;
 }): Promise<Array<{ content: string; relativePath: string; score: number }>> {
-  const q = queryTokens(input.query)
+  const tokens = queryTokens(input.query);
+  const q = tokens
     .map((w) => `"${w.replace(/"/g, "")}"`)
-    .join(" OR ");
+    .join(tokens.length >= 2 ? " AND " : " OR ");
   if (!q) return [];
 
   const sqlite = getSqlite();

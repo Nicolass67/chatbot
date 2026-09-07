@@ -6,7 +6,10 @@ import {
   requireFilesUserId,
   withUntrustedFileNotice,
 } from "@/lib/files/helpers";
-import { searchMetadata } from "@/lib/files/provider";
+import {
+  keepStrongSearchHits,
+  searchMetadata,
+} from "@/lib/files/provider";
 import { requireEnabledRoots } from "@/lib/files/resolve";
 import { ensureDefaultRoots, getFileRoot } from "@/lib/files/roots";
 import type { Tool } from "../types";
@@ -134,9 +137,10 @@ export const fileSearchTool: Tool<
         /* index optionnel */
       }
     }
-    const merged = [...byId.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 25);
+    const merged = keepStrongSearchHits(
+      [...byId.values()].sort((a, b) => b.score - a.score),
+      { max: 8, minAbs: 50, ratio: 0.82 }
+    );
     return withUntrustedFileNotice({
       query: input.query,
       filesScanned,

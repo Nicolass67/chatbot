@@ -319,7 +319,7 @@ async function runAutoFileSearchForChat(params: {
         snippet: typeof r.snippet === "string" ? r.snippet : undefined,
       }))
       .filter((f) => f.fileId.length > 0)
-      .slice(0, 12);
+      .slice(0, 6);
 
     input.onEvent({
       type: "tool_done",

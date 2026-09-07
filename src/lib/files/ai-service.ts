@@ -375,9 +375,8 @@ async function collectSearchHits(input: {
 
   await runQueries(queries);
 
-  // Fallback : si rien (ou trop peu), élargir avec les tokens individuels
-  // et une passe sur toutes les roots (évite AND trop strict / root trop étroite).
-  if (byId.size < 2) {
+  // Fallback tokens seuls UNIQUEMENT si zéro hit (sinon « carte » seul pollue les résultats).
+  if (byId.size === 0) {
     const tokenSet = new Set<string>();
     for (const q of queries) {
       for (const t of queryTokens(q)) {

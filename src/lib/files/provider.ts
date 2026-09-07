@@ -112,9 +112,9 @@ export function queryTokens(query: string): string[] {
 }
 
 /**
- * Score nom/chemin vs requête. Exige une majorité de tokens significatifs
- * pour éviter que « ma » matche Map/Manager. Seuil assoupli (50 %) pour les
- * phrases naturelles (« Cherche … stp ») une fois les stopwords retirés.
+ * Score nom/chemin vs requête.
+ * 2 tokens → les deux requis (évite « carte » seul → carte grise / vitale).
+ * 3+ tokens → majorité stricte (~2/3).
  */
 export function nameScore(haystack: string, query: string): number {
   const f = normalizeSearchText(haystack);
@@ -128,10 +128,11 @@ export function nameScore(haystack: string, query: string): number {
 
   let matched = 0;
   for (const p of parts) {
-    if (f.includes(p)) matched += 1;
+    if (tokenMatchesHaystack(f, p)) matched += 1;
   }
   if (matched === 0) return 0;
-  if (parts.length >= 2 && matched < Math.max(1, Math.ceil(parts.length * 0.5))) {
+  if (parts.length === 2 && matched < 2) return 0;
+  if (parts.length >= 3 && matched < Math.ceil(parts.length * (2 / 3))) {
     return 0;
   }
 
@@ -140,7 +141,35 @@ export function nameScore(haystack: string, query: string): number {
   if (matched === parts.length) score += 15;
   const base = f.split(/[/\\]/).pop() ?? f;
   if (base.startsWith(parts[0]!)) score += 8;
+  // Bonus documents d’identité explicites (CNI / nationale).
+  if (parts.includes("identite") && (f.includes("cni") || f.includes("nationale"))) {
+    score += 10;
+  }
   return Math.min(99, score);
+}
+
+/** Synonymes légers sans hardcoder tout le domaine. */
+function tokenMatchesHaystack(haystack: string, token: string): boolean {
+  if (haystack.includes(token)) return true;
+  if (token === "identite" && haystack.includes("cni")) return true;
+  if (token === "cni" && haystack.includes("identite")) return true;
+  // CNI.pdf doit répondre à « carte d'identité » (pas seulement « identité »).
+  if (token === "carte" && haystack.includes("cni")) return true;
+  return false;
+}
+
+/** Garde les hits proches du meilleur score (coupe le bruit faible). */
+export function keepStrongSearchHits<T extends { score: number }>(
+  hits: T[],
+  options?: { ratio?: number; minAbs?: number; max?: number }
+): T[] {
+  if (hits.length === 0) return hits;
+  const ratio = options?.ratio ?? 0.82;
+  const minAbs = options?.minAbs ?? 50;
+  const max = options?.max ?? 8;
+  const best = hits[0]!.score;
+  const floor = Math.max(minAbs, best * ratio);
+  return hits.filter((h) => h.score >= floor).slice(0, max);
 }
 
 export async function listDirectory(input: {
@@ -344,7 +373,11 @@ export async function searchMetadata(input: {
   }
 
   scored.sort((a, b) => b._score - a._score || b.mtimeMs - a.mtimeMs);
-  const top = scored.slice(0, maxResults);
+  const strong = keepStrongSearchHits(
+    scored.map((h) => ({ ...h, score: h._score })),
+    { max: maxResults, minAbs: query ? 50 : 0, ratio: query ? 0.82 : 0 }
+  );
+  const top = strong.length > 0 ? strong : scored.slice(0, Math.min(3, maxResults));
   const minted = await Promise.all(
     top.map(async (hit) => {
       const ref = await mintFileReference({

@@ -108,17 +108,13 @@ struct MessageBubble: View {
                 }
 
                 if !filesFound.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(filesFound) { file in
-                            FileResultCard(
-                                file: file,
-                                onOpen: { onOpenFoundFile?(file) },
-                                onDownload: { onDownloadFoundFile?(file) },
-                                onReveal: { onRevealFoundFile?(file) },
-                                onSendByMail: onSendFoundFileByMail.map { cb in { cb(file) } }
-                            )
-                        }
-                    }
+                    FilesFoundResultsView(
+                        files: filesFound,
+                        onOpen: { onOpenFoundFile?($0) },
+                        onDownload: { onDownloadFoundFile?($0) },
+                        onReveal: { onRevealFoundFile?($0) },
+                        onSendByMail: onSendFoundFileByMail
+                    )
                 }
             }
         }
@@ -265,6 +261,157 @@ struct HandoffBanner: View {
     }
 }
 
+/// Résultats fichiers : liste compacte (1 surface) au lieu de N cartes × 4 boutons.
+struct FilesFoundResultsView: View {
+    let files: [FilesFoundFileDTO]
+    var onOpen: (FilesFoundFileDTO) -> Void
+    var onDownload: (FilesFoundFileDTO) -> Void
+    var onReveal: (FilesFoundFileDTO) -> Void
+    var onSendByMail: ((FilesFoundFileDTO) -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.secondary)
+                Text(files.count == 1 ? "1 fichier" : "\(files.count) fichiers")
+                    .font(CNFont.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mutedForeground)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
+                if index > 0 {
+                    Divider()
+                        .opacity(0.35)
+                        .padding(.leading, 52)
+                }
+                FileResultRow(
+                    file: file,
+                    isPrimary: index == 0 && files.count > 1,
+                    onOpen: { onOpen(file) },
+                    onDownload: { onDownload(file) },
+                    onReveal: { onReveal(file) },
+                    onSendByMail: onSendByMail.map { cb in { cb(file) } }
+                )
+            }
+        }
+        .background(AppTheme.surface.opacity(0.92))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous))
+    }
+}
+
+struct FileResultRow: View {
+    let file: FilesFoundFileDTO
+    var isPrimary: Bool = false
+    var onOpen: () -> Void
+    var onDownload: () -> Void
+    var onReveal: () -> Void
+    var onSendByMail: (() -> Void)? = nil
+
+    private var typeLabel: String {
+        if let ext = file.extensionHint, !ext.isEmpty { return ext.uppercased() }
+        if let path = file.relativePath, let dot = path.lastIndex(of: ".") {
+            return String(path[path.index(after: dot)...]).uppercased()
+        }
+        return "Fichier"
+    }
+
+    private var folderLabel: String? {
+        guard let path = file.relativePath else { return nil }
+        let parts = path.split(separator: "/")
+        guard parts.count >= 2 else { return path }
+        return parts.dropLast().suffix(2).joined(separator: "/")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onOpen) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(AppTheme.secondary.opacity(isPrimary ? 0.22 : 0.12))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: fileIcon)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(AppTheme.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.filename)
+                            .font(.subheadline.weight(isPrimary ? .semibold : .medium))
+                            .foregroundStyle(AppTheme.foreground)
+                            .lineLimit(1)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 6) {
+                            if isPrimary {
+                                Text("Meilleur")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                            Text(typeLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(AppTheme.mutedForeground)
+                            if let folderLabel {
+                                Text("·")
+                                    .foregroundStyle(AppTheme.mutedForeground)
+                                Text(folderLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.muted)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button("Ouvrir", systemImage: "doc", action: onOpen)
+                Button("Télécharger", systemImage: "square.and.arrow.down", action: onDownload)
+                if let onSendByMail {
+                    Button("Envoyer par mail", systemImage: "envelope", action: onSendByMail)
+                }
+                Button("Aller à la destination", systemImage: "folder", action: onReveal)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .contextMenu {
+            Button("Ouvrir", systemImage: "doc", action: onOpen)
+            Button("Télécharger", systemImage: "square.and.arrow.down", action: onDownload)
+            if let onSendByMail {
+                Button("Envoyer par mail", systemImage: "envelope", action: onSendByMail)
+            }
+            Button("Aller à la destination", systemImage: "folder", action: onReveal)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(file.filename)
+    }
+
+    private var fileIcon: String {
+        let ext = (file.extensionHint ?? "").lowercased()
+        if ["png", "jpg", "jpeg", "heic", "webp", "gif"].contains(ext) {
+            return "photo"
+        }
+        if ext == "pdf" { return "doc.richtext" }
+        if ["json", "txt", "md"].contains(ext) { return "doc.plaintext" }
+        return "doc.fill"
+    }
+}
+
 struct FileResultCard: View {
     let file: FilesFoundFileDTO
     var onOpen: () -> Void
@@ -339,10 +486,6 @@ struct FileResultCard: View {
         .padding(12)
         .background(AppTheme.surface.opacity(0.95))
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
-        )
         .contextMenu {
             Button("Ouvrir", systemImage: "doc", action: onOpen)
             Button("Télécharger", systemImage: "square.and.arrow.down", action: onDownload)
