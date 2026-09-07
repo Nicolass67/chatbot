@@ -1324,11 +1324,9 @@ struct ChatScreen: View {
         guard !text.isEmpty else { return false }
         let markers = [
             "Brouillon email ouvert",
-            "Brouillon email ouvert",
             "Demande de l’utilisateur:",
             "Demande de l'utilisateur:",
             "Appelle immédiatement",
-            "email_create_draft",
             "email_create_draft",
             "INTERDIT d",
             "INTERDIT d’écrire le corps",
@@ -1337,10 +1335,13 @@ struct ChatScreen: View {
             "la carte brouillon l'affiche",
             "RÉÉCRITURE :",
             "Réécris le corps de CE brouillon",
+            "Réécris UNIQUEMENT le corps",
             "draftId=",
             "Corps actuel:",
             "Destinataire:",
             "outil email_create_draft",
+            "N’invente PAS d’autre contenu",
+            "N'invente PAS d'autre contenu",
         ]
         let hitCount = markers.reduce(0) { count, marker in
             text.localizedCaseInsensitiveContains(marker) ? count + 1 : count
@@ -1367,7 +1368,9 @@ struct ChatScreen: View {
         }
     }
 
-    /// Après « Réécrire » : si l’outil a mis à jour la carte, OK ; sinon appliquer le texte streamé via PATCH.
+    /// Après « Améliorer » : seule une vraie carte `draft_preview` (outil) met à jour le brouillon.
+    /// Ne JAMAIS PATCH-er avec le texte streamé — c’était la cause des corps absurdes
+    /// (échecs d’outils, listes de mails, etc. collés dans le brouillon).
     private func finishDraftRewriteIfNeeded(appliedViaPreview: Bool, fallbackText: String) async {
         guard awaitingDraftRewrite else { return }
         defer {
@@ -1380,48 +1383,31 @@ struct ChatScreen: View {
             AppHaptics.success()
             return
         }
-        let body = Self.extractRewrittenDraftBody(from: fallbackText)
-        guard !body.isEmpty, let draftId = draftCardId else {
-            draftCardStatus = "Brouillon"
-            return
-        }
-        draftCardText = body
-        do {
-            try await client.updateEmailDraft(id: draftId, bodyText: body)
-            AppHaptics.success()
-        } catch {
-            // Carte déjà mise à jour localement — l’envoi pourra resync.
-            AppHaptics.warning()
-        }
+        _ = fallbackText
+        // Corps inchangé ; prévenir l’utilisateur plutôt que d’écraser avec de la narration.
+        error = "L’amélioration n’a pas pu mettre à jour le brouillon. Réessaie avec une consigne plus précise."
+        AppHaptics.warning()
     }
 
-    /// Retire les enveloppes « Objet / Corps » si le modèle a narré au lieu d’appeler l’outil.
-    private static func extractRewrittenDraftBody(from raw: String) -> String {
-        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return "" }
-        let markers = ["Corps du message", "Corps :", "Corps:", "**Corps"]
-        for marker in markers {
-            if let r = t.range(of: marker, options: .caseInsensitive) {
-                t = String(t[r.upperBound...])
-                if t.hasPrefix("**") { t = String(t.dropFirst(2)) }
-                if t.hasPrefix(":") { t = String(t.dropFirst()) }
-                t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-                break
-            }
-        }
-        // Drop leading Objet line if present.
-        let lines = t.components(separatedBy: .newlines)
-        if let first = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-           first.lowercased().hasPrefix("objet") {
-            t = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        // Ignore meta refusals without a real body.
-        let lower = t.lowercased()
-        if t.count < 40,
-           lower.contains("limite") || lower.contains("ne peux pas") || lower.contains("outil") {
-            return ""
-        }
-        return t
+    /// Message API pour une réécriture (le fil affiche seulement la consigne courte).
+    private static func draftRewriteApiMessage(
+        instruction: String,
+        body: String,
+        to: String,
+        subject: String
+    ) -> String {
+        let clippedBody = String(body.prefix(8000))
+        let toLine = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subjectLine = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        return """
+Réécris UNIQUEMENT le corps de CE brouillon email selon la consigne. Appelle immédiatement email_create_draft (le brouillon est déjà ouvert dans le contexte — conserve destinataires/objet sauf demande contraire). N’écris PAS le corps dans le chat. N’invente PAS d’autre contenu (pas de listes, pas de statut d’outils).
+
+Consigne: \(instruction)
+Destinataire: \(toLine.isEmpty ? "(inchangé)" : toLine)
+Objet: \(subjectLine.isEmpty ? "(inchangé)" : subjectLine)
+Corps actuel:
+\(clippedBody)
+"""
     }
 
     /// Hauteur du fade viewport (bas physique), indépendante du contenu scrollé.
@@ -2516,9 +2502,9 @@ private var sendBlockedHint: String {
         sendGeneration &+= 1
         let gen = sendGeneration
 
-        // Ne JAMAIS injecter les consignes outil dans le message persisté.
+        // Ne JAMAIS injecter les consignes outil dans le message persisté / affiché.
         // Le draftId / thread part via activeContext (system) — sinon l’historique affiche la litanie.
-        let text = rawText
+        let displayText = rawText
 
         var opts = options ?? ChatSendOptions(attachmentIds: ids, mode: chatMode)
         opts.toolChannel = toolChannel.apiValue
@@ -2550,6 +2536,24 @@ private var sendBlockedHint: String {
            options?.regenerate != true {
             effectiveRewrite = true
             draftImprovePending = false
+        }
+
+        // API : consigne + corps actuel (sinon le modèle dérive sur l’historique).
+        // UI : seule la consigne courte (« moins formel ») apparaît dans le fil.
+        let text: String
+        if effectiveRewrite, draftCardId != nil {
+            text = Self.draftRewriteApiMessage(
+                instruction: rawText,
+                body: draftCardText,
+                to: draftCardTo,
+                subject: draftCardSubject
+            )
+            opts.toolChannel = ComposerToolChannel.email.apiValue
+            if opts.mode == "chat" {
+                opts.mode = "agent"
+            }
+        } else {
+            text = rawText
         }
 
         awaitingDraftRewrite = effectiveRewrite
@@ -2604,7 +2608,7 @@ private var sendBlockedHint: String {
                     MessageDTO(
                         id: "local-\(UUID().uuidString)",
                         role: "user",
-                        content: rawText.isEmpty ? "📎 Pièce jointe" : rawText,
+                        content: displayText.isEmpty ? "📎 Pièce jointe" : displayText,
                         createdAt: nil,
                         attachments: localAtts
                     )
@@ -2614,7 +2618,7 @@ private var sendBlockedHint: String {
                 messages[idx] = MessageDTO(
                     id: editId,
                     role: "user",
-                    content: rawText,
+                    content: displayText,
                     createdAt: messages[idx].createdAt,
                     attachments: messages[idx].attachments
                 )
