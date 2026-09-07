@@ -2584,7 +2584,7 @@ private var sendBlockedHint: String {
                             type: $0.typeHint
                         )
                     }
-                let names = (localAtts ?? []).map(\.filename).filter { !$0.isEmpty }
+                let names = (localAtts ?? []).compactMap(\.filename).filter { !$0.isEmpty }
                 if options?.regenerate != true, !hideUserMessage {
                     messages.append(
                         MessageDTO(
