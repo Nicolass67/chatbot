@@ -160,8 +160,8 @@ struct MainTabView: View {
     var body: some View {
         let _ = themeRevision
         @Bindable var nav = nav
-        // DIAGNOSTIC TEMPORAIRE — test rouge plein écran (MainTabView / TabView uniquement).
-        // But : le rouge atteint-il les derniers pixels sous la tab bar ?
+        // Architecture validée par TEST ROUGE : un overlay MainTabView ATTEINT le bas physique
+        // (y compris la zone tab bar). Le fade doit donc vivre ICI, pas dans ChatScreen.
         ZStack {
             // TabView natif : un seul NavigationStack interactif à la fois (évite taps morts du ZStack keep-alive).
             TabView(selection: $nav.selectedTab) {
@@ -196,11 +196,23 @@ struct MainTabView: View {
             }
             .accessibilityIdentifier(A11yID.Navigation.tabBar)
 
-            // TEST ROUGE — hors ChatScreen, au niveau MainTabView.
-            Color.red
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("diagnostic.tabViewRedOverlay")
+            // Fade viewport — plein écran d’abord (pas de hauteur arbitraire).
+            // Au-dessus du TabView pour peindre jusqu’au bord bas (prouvé par le test rouge).
+            // allowsHitTesting(false) : les contrôles du TabView restent cliquables.
+            LinearGradient(
+                colors: [
+                    .clear,
+                    AppTheme.background.opacity(0.0),
+                    AppTheme.background.opacity(0.8),
+                    AppTheme.background
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("mainTab.viewportBottomFade")
         }
         .sheet(isPresented: $nav.showSettings) {
             SettingsHubView()
