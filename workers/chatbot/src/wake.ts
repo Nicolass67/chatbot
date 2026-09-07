@@ -1,4 +1,4 @@
-import { hasCloudflareAccessJwt } from "./access";
+import { hasEdgeUserAuth } from "./access";
 import {
   createBootRequest,
   bootRequestTtlSeconds,
@@ -51,7 +51,7 @@ export async function handleWake(
   env: WakeEnv,
   fetchFn: typeof fetch = fetch
 ): Promise<Response> {
-  if (!hasCloudflareAccessJwt(request)) {
+  if (!hasEdgeUserAuth(request)) {
     return json(
       { ok: false, error: "access_required", message: "Authentification requise" },
       401

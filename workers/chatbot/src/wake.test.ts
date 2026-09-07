@@ -36,7 +36,7 @@ function wakeRequest(headers: Record<string, string> = {}): Request {
 }
 
 describe("handleWake", () => {
-  it("returns 401 without Cloudflare Access JWT", async () => {
+  it("returns 401 without Cloudflare Access JWT or app Bearer", async () => {
     const request = new Request("https://chatbot.example.workers.dev/wake", {
       method: "POST",
     });
@@ -44,6 +44,40 @@ describe("handleWake", () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error: string };
     expect(body.error).toBe("access_required");
+  });
+
+  it("accepts native app session Bearer chs_ (Access Bypass /api)", async () => {
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v4/login/")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: { challenge: "challenge-abc" },
+          })
+        );
+      }
+      if (url.endsWith("/api/v4/login/session/")) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            result: { session_token: "session-token-xyz", permissions: ["settings"] },
+          })
+        );
+      }
+      if (url.endsWith("/api/v4/lan/wol/pub/")) {
+        return new Response(JSON.stringify({ success: true, result: null }));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const request = new Request("https://chatbot.example.workers.dev/api/infrastructure/power/wake", {
+      method: "POST",
+      headers: { Authorization: "Bearer chs_testSessionToken99" },
+    });
+    const response = await handleWake(request, baseEnv, fetchFn);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
   });
 
   it("returns 503 when FREEBOX_APP_TOKEN is missing", async () => {

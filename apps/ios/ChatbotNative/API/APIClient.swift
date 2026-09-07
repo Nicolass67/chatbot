@@ -692,9 +692,9 @@ final class APIClient: @unchecked Sendable {
         if UITestMode.isActive {
             return PowerStatusDTO(powerState: .starting, message: "Réveil simulé", ok: true)
         }
-        // Toujours /wake sur le Worker (Freebox) — fonctionne PC éteint.
-        // Ne pas passer par api/infrastructure/power/wake (Next.js, mort si PC off).
-        var req = authorizedRequest(path: "wake", method: "POST")
+        // Toujours Worker Freebox — PC éteint. Bypass Access `/api/*` + Bearer chs_.
+        // Ne pas utiliser /wake seul (Access JWT navigateur) ni Next (mort si PC off).
+        var req = authorizedRequest(path: "api/infrastructure/power/wake", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data("{}".utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)

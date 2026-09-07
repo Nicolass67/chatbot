@@ -1,4 +1,4 @@
-import { hasCloudflareAccessJwt } from "./access";
+import { hasEdgeUserAuth } from "./access";
 import {
   bootRequestTtlSeconds,
   createBootRequest,
@@ -18,7 +18,7 @@ export async function handleStartServices(
   request: Request,
   env: StartServicesEnv
 ): Promise<Response> {
-  if (!hasCloudflareAccessJwt(request)) {
+  if (!hasEdgeUserAuth(request)) {
     return json(
       { ok: false, error: "access_required", message: "Authentification requise" },
       401

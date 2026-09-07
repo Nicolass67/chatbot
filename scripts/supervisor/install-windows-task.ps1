@@ -74,14 +74,38 @@ if (-not $AtLogOn) {
         -Description "Chatbot local supervisor (API :3927) - forever loop + restart on failure" | Out-Null
       Write-Host "OK: tache '$TaskName' creee."
     } catch {
-      Write-Host "ERREUR: impossible de creer la tache (droits insuffisants ?)."
+      Write-Host "WARN: tache planifiee impossible (droits). Fallback Startup shortcut."
       Write-Host $_.Exception.Message
-      throw
+      $StartupShortcut = $true
     }
   }
-  Write-Host "  Trigger : AtLogOn"
+  if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host "  Trigger : AtLogOn"
+  }
+}
+
+if ($StartupShortcut) {
+  $startup = [Environment]::GetFolderPath("Startup")
+  $lnkPath = Join-Path $startup "ChatbotSupervisor.lnk"
+  $ws = New-Object -ComObject WScript.Shell
+  $lnk = $ws.CreateShortcut($lnkPath)
+  $lnk.TargetPath = $wrapper
+  $lnk.WorkingDirectory = $RepoRoot
+  $lnk.WindowStyle = 7
+  $lnk.Description = "Chatbot local supervisor (API :3927) forever loop"
+  $lnk.Save()
+  Write-Host "OK: raccourci Startup cree: $lnkPath"
+} else {
+  # Retirer un ancien raccourci Startup (contournait le boot conditionnel app).
+  $startup = [Environment]::GetFolderPath("Startup")
+  $lnkPath = Join-Path $startup "ChatbotSupervisor.lnk"
+  if (Test-Path -LiteralPath $lnkPath) {
+    Remove-Item -LiteralPath $lnkPath -Force
+    Write-Host "OK: raccourci Startup retire: $lnkPath"
+  }
 }
 
 Write-Host "  Wrapper : $wrapper"
 Write-Host "  Entry   : $entry"
-Write-Host "Note: le Supervisor demarre via boot conditionnel (wake/start-services), pas au login."
+Write-Host "Note: -AtLogOn (tache, admin) ou -StartupShortcut (dossier Demarrage, sans admin)."
+Write-Host "Defaut: PAS de demarrage au login - Supervisor lance apres wake/start-services app."

@@ -22,6 +22,8 @@ const STATUS_FILE = path.join(DATA_DIR, "status.json");
 const COMMAND_FILE = path.join(DATA_DIR, "command.json");
 const INCIDENTS_FILE = path.join(DATA_DIR, "incidents.json");
 const LOCK_FILE = path.join(DATA_DIR, "repair.lock");
+const PID_FILE = path.join(DATA_DIR, "supervisor.pid");
+const LOG_FILE = path.join(DATA_DIR, "supervisor.log");
 const PORT = Number(process.env.CHATBOT_SUPERVISOR_PORT || 3927);
 const TICK_MS = Number(process.env.CHATBOT_SUPERVISOR_INTERVAL_MS || 12_000);
 const CRASH_WINDOW_MS = 15 * 60_000;
@@ -90,14 +92,95 @@ function writeJson(file, data) {
 }
 
 function log(level, msg, extra) {
-  console.log(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      level,
-      msg,
-      ...(extra || {}),
-    })
-  );
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    msg,
+    pid: process.pid,
+    ...(extra || {}),
+  });
+  console.log(line);
+  try {
+    ensureDir();
+    fs.appendFileSync(LOG_FILE, `${line}\n`, "utf8");
+  } catch {
+    /* ignore disk errors */
+  }
+}
+
+function isPidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeLocalSupervisorHealth() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return false;
+    const body = await res.json().catch(() => null);
+    return Boolean(body?.ok || body?.supervisor);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Une seule instance : si un superviseur sain tourne déjà → exit 0.
+ * Sinon nettoie un PID / port périmé.
+ */
+async function acquireSingleton() {
+  ensureDir();
+  let existingPid = null;
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      existingPid = Number(fs.readFileSync(PID_FILE, "utf8").trim());
+    }
+  } catch {
+    existingPid = null;
+  }
+
+  if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
+    if (await probeLocalSupervisorHealth()) {
+      log("info", "supervisor_already_running", { existingPid });
+      process.exit(0);
+    }
+    log("warn", "stale_supervisor_pid_unhealthy", { existingPid });
+  } else if (existingPid && !isPidAlive(existingPid)) {
+    log("warn", "stale_supervisor_pid_dead", { existingPid });
+  }
+
+  if (await probeLocalSupervisorHealth()) {
+    log("info", "supervisor_port_healthy_other_owner", { port: PORT });
+    process.exit(0);
+  }
+
+  fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
+  const clearPid = () => {
+    try {
+      if (fs.existsSync(PID_FILE)) {
+        const cur = Number(fs.readFileSync(PID_FILE, "utf8").trim());
+        if (cur === process.pid) fs.unlinkSync(PID_FILE);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+  process.on("exit", clearPid);
+  process.on("SIGINT", () => {
+    clearPid();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    clearPid();
+    process.exit(0);
+  });
 }
 
 function run(cmd, args, timeoutMs = 20_000) {
@@ -531,15 +614,45 @@ async function runAction(action) {
 
   if (type === "restart_service" && serviceId === "nextjs") {
     noteRestart(serviceId);
-    let r = await run(NPM_CMD, ["run", "boot:restart"], 180_000);
-    if (!r.ok) {
-      r = await run(NPM_CMD, ["run", "start:prod"], 120_000);
+    const buildIdPath = path.join(ROOT, ".next", "BUILD_ID");
+    const hasProdBuild = fs.existsSync(buildIdPath);
+    if (hasProdBuild) {
+      let r = await run(NPM_CMD, ["run", "boot:restart"], 180_000);
+      if (!r.ok) {
+        r = await run(NPM_CMD, ["run", "start:prod"], 120_000);
+      }
+      return {
+        type,
+        serviceId,
+        ok: true,
+        detail: r.ok ? "Chatbot relancé (prod)" : "Redémarrage Chatbot demandé",
+      };
     }
+    // Pas de build prod : démarrer `npm run dev` détaché (répare l'app sans bloquer).
+    if (process.platform === "win32") {
+      spawn("cmd.exe", ["/c", "start", "", "/MIN", NPM_CMD, "run", "dev"], {
+        cwd: ROOT,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      }).unref();
+    } else {
+      spawn(NPM_CMD, ["run", "dev"], {
+        cwd: ROOT,
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+    }
+    await new Promise((r) => setTimeout(r, 4000));
+    const probe = await PROBES.nextjs();
     return {
       type,
       serviceId,
-      ok: true,
-      detail: r.ok ? "Chatbot relancé" : "Redémarrage Chatbot demandé",
+      ok: probe.health === "healthy" || probe.process === "running",
+      detail:
+        probe.health === "healthy"
+          ? "Chatbot démarré (dev, pas de BUILD_ID)"
+          : "Démarrage Chatbot (dev) demandé — pas de build prod",
     };
   }
 
@@ -748,18 +861,26 @@ async function tick() {
     await consumeCommand();
 
     const status = await collectStatus();
-    for (const s of status.services) {
-      const streak = failStreak.get(s.id) || 0;
-      if (
-        !repairing &&
-        !s.crashLoop &&
-        streak >= AUTO_REPAIR_STREAK &&
-        isDown(s)
-      ) {
-        log("warn", "auto_repair", { serviceId: s.id, streak });
-        await executePlan(buildPlan(status.services, s.id));
-        break;
-      }
+    const candidates = status.services
+      .filter((s) => {
+        const streak = failStreak.get(s.id) || 0;
+        return !s.crashLoop && streak >= AUTO_REPAIR_STREAK && isDown(s);
+      })
+      .sort((a, b) => {
+        // Required (Chatbot) avant optionnels — Docker ne doit pas bloquer Next.
+        const rank = (s) =>
+          s.criticality === "required" ? 0 : s.id === "docker" ? 2 : 1;
+        return rank(a) - rank(b);
+      });
+
+    if (!repairing && candidates.length > 0) {
+      const s = candidates[0];
+      log("warn", "auto_repair", {
+        serviceId: s.id,
+        streak: failStreak.get(s.id) || 0,
+        criticality: s.criticality,
+      });
+      await executePlan(buildPlan(status.services, s.id));
     }
 
     writeJson(STATUS_FILE, await collectStatus());
@@ -771,66 +892,128 @@ async function tick() {
 }
 
 function startApi() {
-  const server = createServer(async (req, res) => {
-    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
-    res.setHeader("Content-Type", "application/json");
-
-    if (url.pathname === "/health") {
-      res.end(JSON.stringify({ ok: true, supervisor: true }));
-      return;
-    }
-
-    if (url.pathname === "/status") {
+  return new Promise((resolve, reject) => {
+    const server = createServer(async (req, res) => {
       try {
-        if (fs.existsSync(STATUS_FILE)) {
-          res.end(fs.readFileSync(STATUS_FILE, "utf8"));
-        } else {
+        const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+        res.setHeader("Content-Type", "application/json");
+
+        if (url.pathname === "/health") {
           res.end(
-            JSON.stringify({ supervisorAlive: true, services: [] })
+            JSON.stringify({ ok: true, supervisor: true, pid: process.pid })
           );
+          return;
         }
+
+        if (url.pathname === "/status") {
+          try {
+            if (fs.existsSync(STATUS_FILE)) {
+              res.end(fs.readFileSync(STATUS_FILE, "utf8"));
+            } else {
+              res.end(
+                JSON.stringify({ supervisorAlive: true, services: [] })
+              );
+            }
+          } catch (e) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: String(e) }));
+          }
+          return;
+        }
+
+        if (url.pathname === "/repair" && req.method === "POST") {
+          let body = "";
+          for await (const chunk of req) body += chunk;
+          let parsed = {};
+          try {
+            parsed = body ? JSON.parse(body) : {};
+          } catch {
+            parsed = {};
+          }
+          const status = await collectStatus();
+          const result = await executePlan(
+            buildPlan(status.services, parsed.serviceId)
+          );
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not_found" }));
       } catch (e) {
-        res.statusCode = 500;
-        res.end(JSON.stringify({ error: String(e) }));
+        log("error", "api_request_failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: "internal_error" }));
+        }
       }
-      return;
-    }
+    });
 
-    if (url.pathname === "/repair" && req.method === "POST") {
-      let body = "";
-      for await (const chunk of req) body += chunk;
-      let parsed = {};
-      try {
-        parsed = body ? JSON.parse(body) : {};
-      } catch {
-        parsed = {};
+    server.on("error", async (err) => {
+      if (err && err.code === "EADDRINUSE") {
+        // Autre instance déjà saine → sortir proprement (pas un crash).
+        if (await probeLocalSupervisorHealth()) {
+          log("info", "port_in_use_healthy_peer", { port: PORT });
+          process.exit(0);
+        }
+        log("error", "port_in_use_unhealthy", {
+          port: PORT,
+          error: err.message,
+        });
+        reject(err);
+        return;
       }
-      const status = await collectStatus();
-      const result = await executePlan(
-        buildPlan(status.services, parsed.serviceId)
-      );
-      res.end(JSON.stringify(result));
-      return;
-    }
+      log("error", "api_server_error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      reject(err);
+    });
 
-    res.statusCode = 404;
-    res.end(JSON.stringify({ error: "not_found" }));
+    server.listen(PORT, "127.0.0.1", () => {
+      log("info", "local_api_listening", { port: PORT });
+      resolve(server);
+    });
   });
+}
 
-  server.listen(PORT, "127.0.0.1", () =>
-    log("info", "local_api_listening", { port: PORT })
-  );
+function installProcessGuards() {
+  process.on("uncaughtException", (err) => {
+    log("error", "uncaught_exception", {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    // Ne pas exit : le tick + API doivent survivre aux erreurs isolées.
+  });
+  process.on("unhandledRejection", (reason) => {
+    log("error", "unhandled_rejection", {
+      error:
+        reason instanceof Error ? reason.message : String(reason),
+    });
+  });
 }
 
 async function main() {
   ensureDir();
+  installProcessGuards();
+  await acquireSingleton();
   log("info", "supervisor_start", { root: ROOT, pid: process.pid });
-  startApi();
+  await startApi();
   await tick();
-  setInterval(tick, TICK_MS);
+  setInterval(() => {
+    tick().catch((e) =>
+      log("error", "tick_unhandled", {
+        error: e instanceof Error ? e.message : String(e),
+      })
+    );
+  }, TICK_MS);
 }
 
 main().catch((e) => {
+  log("error", "supervisor_fatal", {
+    error: e instanceof Error ? e.message : String(e),
+  });
   console.error(e);
   process.exit(1);
 });
