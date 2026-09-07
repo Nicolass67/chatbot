@@ -33,10 +33,9 @@ export async function shutdownWindowsPc(config, options = {}) {
   }
 
   const result = spawnSync(
-    "shutdown",
+    "shutdown.exe",
     [
       "/s",
-      "/full",
       "/t",
       String(delaySeconds),
       "/c",

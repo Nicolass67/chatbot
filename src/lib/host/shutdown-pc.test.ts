@@ -34,7 +34,7 @@ describe("scheduleHostPcShutdown", () => {
     expect(spawnSync).not.toHaveBeenCalled();
   });
 
-  it("planifie shutdown /s /full sous Windows", async () => {
+  it("planifie shutdown /s /t sous Windows", async () => {
     Object.defineProperty(process, "platform", {
       value: "win32",
       configurable: true,
@@ -47,9 +47,10 @@ describe("scheduleHostPcShutdown", () => {
       expect(result.delaySeconds).toBe(60);
     }
     expect(spawnSync).toHaveBeenCalledWith(
-      "shutdown",
-      expect.arrayContaining(["/s", "/full", "/t", "60"]),
+      "shutdown.exe",
+      expect.arrayContaining(["/s", "/t", "60"]),
       expect.any(Object)
     );
+    expect(spawnSync.mock.calls[0]?.[1]).not.toContain("/full");
   });
 });

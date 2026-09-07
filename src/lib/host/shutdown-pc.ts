@@ -32,11 +32,11 @@ export function scheduleHostPcShutdown(
   }
 
   const safeDelay = Math.max(15, Math.min(delaySeconds, 600));
+  // Pas de /full : absent de shutdown.exe sur Win10/11 FR → exit 1 + aide syntaxe.
   const result = spawnSync(
-    "shutdown",
+    "shutdown.exe",
     [
       "/s",
-      "/full",
       "/t",
       String(safeDelay),
       "/c",
@@ -49,11 +49,14 @@ export function scheduleHostPcShutdown(
   );
 
   if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim() || undefined;
     return {
       ok: false,
       error: "shutdown_failed",
-      message: "Impossible de planifier l'extinction du PC.",
-      detail: (result.stderr || result.stdout || "").trim() || undefined,
+      message: detail
+        ? `Impossible de planifier l'extinction du PC (${detail.slice(0, 180)})`
+        : "Impossible de planifier l'extinction du PC.",
+      detail,
     };
   }
 
