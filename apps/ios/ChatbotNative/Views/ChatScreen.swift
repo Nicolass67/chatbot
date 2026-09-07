@@ -1013,6 +1013,26 @@ struct ChatScreen: View {
         }
     }
 
+    /// Brouillon ouvert + IDs chat → fusionne les PJ sur CE brouillon (chemin produit, pas le LLM).
+    @discardableResult
+    private func syncAttachmentsToOpenDraft(_ attachmentIds: [String]) async -> Bool {
+        let ids = attachmentIds.filter { !$0.isEmpty && !$0.hasPrefix("local-") }
+        guard let draftId = draftCardId, !draftId.isEmpty, !ids.isEmpty, !draftCardSent else {
+            return false
+        }
+        do {
+            try await client.attachFilesToEmailDraft(id: draftId, attachmentIds: ids)
+            await refreshDraftCardAttachments(draftId: draftId)
+            draftCardCollapsed = false
+            draftInConversation = true
+            AppHaptics.success()
+            return true
+        } catch {
+            AppHaptics.warning()
+            return false
+        }
+    }
+
     private func persistActiveConversation() {
         let scope = forcedScope ?? .general
         let key: String? = {
@@ -1161,6 +1181,7 @@ struct ChatScreen: View {
             } else {
                 pendingAttachments.append(uploaded)
             }
+            await syncAttachmentsToOpenDraft([uploaded.id])
         } catch {
             pendingAttachments.removeAll { $0.id == tempId }
             self.error = error.localizedDescription
@@ -2354,6 +2375,7 @@ private var sendBlockedHint: String {
                     isUploading: false
                 )
             }
+            await syncAttachmentsToOpenDraft([uploaded.id])
         } catch {
             pendingAttachments.removeAll { $0.id == tempId }
             self.error = error.localizedDescription
@@ -2413,20 +2435,8 @@ private var sendBlockedHint: String {
                         isUploading: false
                     )
                 }
-                // Brouillon mail ouvert : rattacher la PJ au brouillon Gmail (pas seulement au chat).
-                if let draftId = draftCardId, !draftId.isEmpty {
-                    do {
-                        try await client.attachFilesToEmailDraft(
-                            id: draftId,
-                            attachmentIds: [uploaded.id]
-                        )
-                        await refreshDraftCardAttachments(draftId: draftId)
-                        AppHaptics.success()
-                    } catch {
-                        self.error = error.localizedDescription
-                        AppHaptics.warning()
-                    }
-                }
+                // Brouillon mail ouvert : rattacher la PJ au brouillon (pas seulement au chat).
+                await syncAttachmentsToOpenDraft([uploaded.id])
             } catch {
                 pendingAttachments.removeAll { $0.id == tempId }
                 self.error = error.localizedDescription
@@ -2554,6 +2564,62 @@ private var sendBlockedHint: String {
             }
         } else {
             text = rawText
+        }
+
+        // Brouillon ouvert + PJ : joindre côté produit (indépendant du LLM / des phrases).
+        if !effectiveRewrite,
+           let draftId = draftCardId,
+           !draftId.isEmpty,
+           !ids.isEmpty {
+            let attached = await syncAttachmentsToOpenDraft(ids)
+            if attached {
+                let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : pendingAttachments
+                    .filter { ids.contains($0.id) }
+                    .map {
+                        MessageAttachmentDTO(
+                            id: $0.id,
+                            filename: $0.filename,
+                            mimeType: $0.mimeType,
+                            sizeBytes: $0.sizeBytes,
+                            type: $0.typeHint
+                        )
+                    }
+                let names = (localAtts ?? []).map(\.filename).filter { !$0.isEmpty }
+                if options?.regenerate != true, !hideUserMessage {
+                    messages.append(
+                        MessageDTO(
+                            id: "local-\(UUID().uuidString)",
+                            role: "user",
+                            content: displayText.isEmpty ? "📎 Pièce jointe" : displayText,
+                            createdAt: nil,
+                            attachments: localAtts
+                        )
+                    )
+                }
+                pendingAttachments = []
+                if forcedScope == .mail {
+                    nav.clearMailStickyAttachments()
+                }
+                let confirm = names.isEmpty
+                    ? "Pièce(s) jointe(s) ajoutée(s) au brouillon ouvert."
+                    : "Pièce(s) jointe(s) ajoutée(s) au brouillon : \(names.joined(separator: ", "))."
+                messages.append(
+                    MessageDTO(
+                        id: "asst-\(UUID().uuidString)",
+                        role: "assistant",
+                        content: confirm,
+                        createdAt: nil
+                    )
+                )
+                draft = ""
+                editingMessageId = nil
+                isSending = false
+                sendTask = nil
+                thinkingKind = nil
+                scrollToken += 1
+                Keyboard.dismiss()
+                return
+            }
         }
 
         awaitingDraftRewrite = effectiveRewrite
