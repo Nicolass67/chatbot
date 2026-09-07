@@ -8,6 +8,7 @@ import {
   guessMimeFromFilename,
 } from "@/lib/documents/extract";
 import type { NormalizedEmailThread } from "@/lib/integrations/email/types";
+import { getEmailDraftForUser, toEmailDraftPreview } from "@/lib/email/draft";
 
 /**
  * ACTIVE CONTEXT = USER CONTEXT HINT (not authorization).
@@ -52,6 +53,12 @@ export type ResolvedActiveContext = {
   root?: {
     rootId: string;
     label: string;
+  };
+  /** Brouillon ouvert validé (appartenance user + pas envoyé/annulé). */
+  draft?: {
+    draftId: string;
+    subject?: string;
+    to?: string[];
   };
 };
 
@@ -102,7 +109,8 @@ export async function resolveActiveContext(input: {
   const hasAny =
     Boolean(hint.fileId?.trim()) ||
     Boolean(hint.mailThreadId?.trim()) ||
-    Boolean(hint.rootId?.trim());
+    Boolean(hint.rootId?.trim()) ||
+    Boolean(hint.draftId?.trim());
 
   if (!hasAny) {
     return {
@@ -118,6 +126,7 @@ export async function resolveActiveContext(input: {
   let file: ResolvedActiveContext["file"];
   let mail: ResolvedActiveContext["mail"];
   let root: ResolvedActiveContext["root"];
+  let draft: ResolvedActiveContext["draft"];
   const ignoreReasons: string[] = [];
 
   if (hint.fileId?.trim()) {
@@ -209,14 +218,33 @@ export async function resolveActiveContext(input: {
     }
   }
 
-  const resolved = Boolean(file || mail || root);
+  if (hint.draftId?.trim()) {
+    try {
+      const row = await getEmailDraftForUser(hint.draftId.trim(), input.userId);
+      if (row && row.status !== "sent" && row.status !== "cancelled") {
+        const preview = await toEmailDraftPreview(row);
+        draft = {
+          draftId: preview.draftId,
+          subject: preview.subject || undefined,
+          to: preview.to,
+        };
+        if (preview.subject?.trim()) entityLabels.push(preview.subject.trim());
+      } else {
+        ignoreReasons.push("draft:unavailable");
+      }
+    } catch {
+      ignoreReasons.push("draft:unavailable");
+    }
+  }
+
+  const resolved = Boolean(file || mail || root || draft);
   return {
     hint: {
       fileId: file?.fileId,
       mailThreadId: mail?.threadId,
       rootId: root?.rootId ?? hint.rootId,
       label: hint.label,
-      draftId: hint.draftId?.trim() || undefined,
+      draftId: draft?.draftId,
     },
     resolved,
     ignoredReason: !resolved
@@ -228,6 +256,7 @@ export async function resolveActiveContext(input: {
     file,
     mail,
     root,
+    draft,
   };
 }
 
@@ -237,9 +266,17 @@ export function formatActiveContextBlock(
 ): string | null {
   if (!ctx.resolved) return null;
   const lines: string[] = [];
-  if (ctx.hint.draftId?.trim()) {
+  if (ctx.hint.draftId?.trim() || ctx.draft) {
+    const id = ctx.draft?.draftId ?? ctx.hint.draftId!.trim();
+    const subject = ctx.draft?.subject?.trim();
+    const to = ctx.draft?.to?.filter(Boolean) ?? [];
     lines.push(
-      `Brouillon ouvert: draftId=${ctx.hint.draftId.trim()} — pour réécrire, appelle email_create_draft (le serveur met à jour CE brouillon et conserve threadId / inReplyTo).`
+      `Brouillon OUVERT (draftId=${id}). C’est CE brouillon — ne demande JAMAIS lequel / sujet / expéditeur.`
+    );
+    if (subject) lines.push(`Objet du brouillon ouvert: ${subject}`);
+    if (to.length) lines.push(`Destinataires: ${to.join(", ")}`);
+    lines.push(
+      `Pour réécrire ou y ajouter des pièces jointes déjà fournies dans le message : appelle email_create_draft (le serveur met à jour CE brouillon, conserve threadId / inReplyTo, et fusionne les PJ).`
     );
   }
   if (ctx.file) {

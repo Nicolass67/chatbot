@@ -33,4 +33,21 @@ describe("formatActiveContextBlock", () => {
       })
     ).toBeNull();
   });
+
+  it("expose le brouillon ouvert sans fil mail", () => {
+    const block = formatActiveContextBlock({
+      hint: { draftId: "d1" },
+      resolved: true,
+      entityLabels: ["Re: CI"],
+      draft: {
+        draftId: "d1",
+        subject: "Re: CI",
+        to: ["notifications@example.com"],
+      },
+    });
+    expect(block).toContain("draftId=d1");
+    expect(block).toContain("ne demande JAMAIS");
+    expect(block).toContain("Re: CI");
+    expect(block).toContain("notifications@example.com");
+  });
 });

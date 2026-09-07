@@ -936,7 +936,8 @@ export async function runChatOrchestrator(
       resolvedActive.mail?.threadId ?? input.activeContext?.mailThreadId;
     toolCtxBase.activeMailInReplyToMessageId =
       resolvedActive.mail?.lastMessageId;
-    toolCtxBase.activeDraftId = input.activeContext?.draftId;
+    toolCtxBase.activeDraftId =
+      resolvedActive.draft?.draftId ?? input.activeContext?.draftId;
 
     const contextPlan = buildContextPlan({
       route,
@@ -950,10 +951,35 @@ export async function runChatOrchestrator(
     const emailIntent = route.email.intent;
     const isMailScopedConversation = convRow?.scope === "mail";
     const hasActiveMail = Boolean(resolvedActive.mail);
+    const hasOpenDraft = Boolean(resolvedActive.draft?.draftId);
     const mailAssistantActive =
       isMailScopedConversation ||
       hasActiveMail ||
+      hasOpenDraft ||
       (channelResolved.emailEnabled && channelResolved.emailToolCandidates.length > 0);
+
+    // Brouillon ouvert + PJ du tour → joindre tout de suite (pas d’aller-retour « lequel ? »).
+    let openDraftAttachmentsMerged = false;
+    if (hasOpenDraft && pendingAttachments.length > 0 && toolCtxBase.activeDraftId) {
+      try {
+        const {
+          attachFilesToEmailDraft,
+          toEmailDraftPreview,
+        } = await import("@/lib/email/draft");
+        const updated = await attachFilesToEmailDraft(
+          toolCtxBase.activeDraftId,
+          userId,
+          pendingAttachments.map((a) => a.id)
+        );
+        input.onEvent({
+          type: "draft_preview",
+          draft: await toEmailDraftPreview(updated),
+        });
+        openDraftAttachmentsMerged = true;
+      } catch {
+        /* best-effort — le modèle pourra encore appeler email_create_draft */
+      }
+    }
 
     const mailToolCandidates =
       channelResolved.emailToolCandidates.length > 0
@@ -1118,7 +1144,13 @@ export async function runChatOrchestrator(
         const list = pendingAttachments
           .map((a) => `- ${a.filename} (id=${a.id}, type=${a.type})`)
           .join("\n");
-        const attachBlock = `<chat_attachments>
+        const attachBlock = openDraftAttachmentsMerged
+          ? `<chat_attachments>
+Pièces jointes déjà jointes au brouillon OUVERT (NE PAS redemander lequel) :
+${list}
+Confirme brièvement ; n’invente pas d’autre brouillon.
+</chat_attachments>`
+          : `<chat_attachments>
 Pièces jointes déjà fournies par l'utilisateur (NE PAS redemander) :
 ${list}
 Elles seront attachées automatiquement au brouillon email_create_draft.

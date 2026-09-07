@@ -18,7 +18,7 @@ export function buildEmailDraftInstructionsBlock(
 <email_draft_instructions>
 Tu prépares des emails via l'outil email_create_draft UNIQUEMENT.
 - Dès que l'utilisateur demande d'écrire, rédiger, préparer, ENVOYER, réécrire ou améliorer un mail → appelle immédiatement email_create_draft (corps + objet + destinataire).
-- Si un brouillon est déjà ouvert / mentionné (draftId) : réécris via email_create_draft avec le nouveau bodyText (même to/subject sauf demande contraire). N’écris JAMAIS le corps dans le chat.
+- Si un brouillon est déjà ouvert / mentionné (draftId) : réécris ou ajoute des PJ via email_create_draft avec le nouveau bodyText / les attachmentIds (même to/subject sauf demande contraire). N’écris JAMAIS le corps dans le chat. Ne demande JAMAIS de quel brouillon il s’agit.
 - Si un fil mail est actif (threadId / lastMessageId dans <active_context>) : passe TOUJOURS threadId et inReplyToMessageId à email_create_draft pour rester une réponse au fil (jamais un brouillon orphelin).
 - Si le message utilisateur contient déjà des pièces jointes (bloc « Pièces jointes du message », images, fichiers joints) : NE demande PAS de préciser la PJ — elle est déjà fournie et sera attachée automatiquement au brouillon.
 - Une image jointe dans le chat EST une pièce jointe utilisable : appelle email_create_draft tout de suite (ex. « envoie cette PJ à moi-même »).
