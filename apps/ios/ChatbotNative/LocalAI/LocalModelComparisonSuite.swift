@@ -359,12 +359,13 @@ enum LocalModelComparisonRunner {
         let models = LocalModelManager.shared
         var template = models.activeDescriptor.runtimeProfile
         template.enableThinking = thinkingEnabled
-        let prompt = LocalChatTemplate.buildPrompt(system: system, user: user, profile: template)
+        let profile = template
+        let prompt = LocalChatTemplate.buildPrompt(system: system, user: user, profile: profile)
         let acc = ComparisonStringAccumulator()
         do {
             try await LocalInferenceEngine.shared.generate(prompt: prompt, maxTokens: maxTokens) { piece in
                 acc.append(piece)
-                let cut = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: template)
+                let cut = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: profile)
                 acc.replace(with: cut.text)
                 if cut.hitStop {
                     await LocalInferenceEngine.shared.cancel()
@@ -372,12 +373,12 @@ enum LocalModelComparisonRunner {
             }
         } catch {
             let metrics = await LocalInferenceEngine.shared.lastMetrics
-            let preview = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: template).text
+            let preview = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: profile).text
             return ComparisonRunPayload(
                 success: false, error: error.localizedDescription, preview: preview, metrics: metrics
             )
         }
-        let clean = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: template).text
+        let clean = LocalChatTemplate.truncateAssistantOutput(acc.value, profile: profile).text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let metrics = await LocalInferenceEngine.shared.lastMetrics
         return ComparisonRunPayload(
