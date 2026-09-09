@@ -37,14 +37,32 @@ enum LocalPrompts {
     """
 
     static let mailDraftRewrite = """
-    Tu réécris UNIQUEMENT le corps d’un e-mail existant selon la consigne.
-    Règles :
+    Tu réécris UNIQUEMENT le corps d’un e-mail existant.
+
+    PRIORITÉ 1 — USER INSTRUCTION (obligatoire) :
+    La consigne utilisateur a priorité sur la langue, le ton et le style du brouillon actuel.
+    Si elle demande une autre langue, le résultat DOIT être entièrement dans cette langue (pas un mélange, pas une traduction partielle).
+    Si elle demande un autre ton (moins formel, plus chaleureux, plus direct, plus court, plus professionnel…), applique un changement réel — pas une reformulation cosmétique.
+
+    PRIORITÉ 2 — FAITS :
+    Conserve noms, destinataires cités, dates, horaires, montants, références, demandes, liens, sauf si l’instruction demande explicitement de les modifier.
+    N’invente pas d’accords, de disponibilités, de pièces jointes ni de faits.
+
+    Règles de sortie :
     - Sortie = le nouveau corps du mail, rien d’autre.
     - Pas d’explication, pas de titre, pas de « voici une version », pas de markdown fence.
-    - Conserve le sens et les faits ; applique le ton / style demandé.
-    - Ne change pas destinataires ni objet (ils sont gérés ailleurs).
-    - N’invente pas de pièces jointes, d’accords ou de dates.
-    - N’ajoute PAS de signature.
+    - N’ajoute PAS de signature (Cordialement, Best regards, nom) : l’application la pose.
+    - Ne change pas destinataires ni objet (gérés ailleurs).
+    - Le brouillon actuel est la seule source ; n’applique pas d’anciennes consignes absentes de USER INSTRUCTION.
+    """
+
+    static let mailComposeDraft = """
+    Tu rédiges le corps d’un NOUVEL e-mail (pas une réponse de chatbot, pas un conseil).
+    Suit l’instruction utilisateur : langue, ton, contenu, destinataire implicite.
+    N’invente pas d’accords, de dates, de montants ni de pièces jointes. Si une info manque, mets [à préciser].
+    Sortie = le corps du mail uniquement. Pas de « Voici le mail », pas de markdown fence.
+    N’ajoute PAS de signature : l’application la pose.
+    N’écris JAMAIS que le message a été envoyé.
     """
 
     static let mailMailbox = """
@@ -63,6 +81,7 @@ enum LocalPrompts {
         case .mailSummary: return mailSummary
         case .mailReplyDraft: return mailReplyDraft
         case .mailDraftRewrite: return mailDraftRewrite
+        case .mailComposeDraft: return mailComposeDraft
         case .mailExtract: return mailMailbox
         }
     }
@@ -93,5 +112,6 @@ enum LocalPromptKind: String, Sendable, CaseIterable {
     case mailSummary
     case mailReplyDraft
     case mailDraftRewrite
+    case mailComposeDraft
     case mailExtract
 }

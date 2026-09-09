@@ -136,6 +136,7 @@ struct ChatScreen: View {
     @State private var draftCardCollapsed = false
     @State private var confirmSendDraft = false
     @State private var draftInConversation = false
+    @State private var draftRewriteGeneration: UInt64 = 0
     @State private var lastSources: [SearchSourceDTO] = []
     @State private var lastMailHandoff: MailHandoffDTO?
     @State private var lastFilesHandoff: FilesHandoffDTO?
@@ -327,6 +328,7 @@ struct ChatScreen: View {
             restoreDraftCardSnapshot()
             persistActiveConversation()
             consumePendingComposerFocus()
+            consumePendingMailComposeInstruction()
             if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id), !cached.isEmpty {
                 // Fenêtre récente seulement — pas tout le cache (RAM).
                 if cached.count > historyInitialPageSize {
@@ -402,6 +404,7 @@ struct ChatScreen: View {
         // Annuler le stream quand on quitte cette conversation.
         // Prefer onChange(id) over onDisappear: tab switches may remount ChatScreen.
         .onChange(of: conversation.id) { _, _ in
+            persistDraftCardSnapshot()
             sendTask?.cancel()
             sendTask = nil
             sendGeneration &+= 1
@@ -423,8 +426,11 @@ struct ChatScreen: View {
         // Arrière-plan : NE PAS cancel (sinon AbortSignal coupe le serveur) —
         // demander du temps CPU/réseau via beginBackgroundTask, puis resync au retour.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background, isSending {
-                beginChatBackgroundTaskIfNeeded()
+            if phase == .background {
+                persistDraftCardSnapshot()
+                if isSending {
+                    beginChatBackgroundTaskIfNeeded()
+                }
             } else if phase == .active {
                 let hadBgTask = chatBackgroundTaskId != .invalid
                 endChatBackgroundTask()
@@ -440,6 +446,18 @@ struct ChatScreen: View {
                     }
                 }
             }
+        }
+        .onDisappear {
+            persistDraftCardSnapshot()
+        }
+        .onChange(of: draftCardText) { _, _ in
+            persistDraftCardSnapshot()
+        }
+        .onChange(of: draftCardTo) { _, _ in
+            persistDraftCardSnapshot()
+        }
+        .onChange(of: draftCardSubject) { _, _ in
+            persistDraftCardSnapshot()
         }
         .onChange(of: photoItem) { _, newItem in
             guard let newItem else { return }
@@ -979,7 +997,10 @@ struct ChatScreen: View {
 
     /// Active le mode « conseil » : l’utilisateur écrit dans le composer (ex. plus formel).
     private func beginDraftImproveFromComposer() {
-        guard draftCardId != nil, !isSending else { return }
+        guard !isSending else { return }
+        guard draftCardId != nil || !draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
         draftCardCollapsed = false
         draftInConversation = true
         draftImprovePending = true
@@ -988,25 +1009,20 @@ struct ChatScreen: View {
         AppHaptics.selection()
     }
 
-    /// Réécrit le brouillon ouvert avec une consigne (cachée) → met à jour la carte.
+    /// Réécrit le brouillon ouvert avec une consigne — pas l’agent, pas suggest-reply.
     private func rewriteOpenDraft(instruction: String? = nil) async {
         guard !isSending else { return }
         let text = (instruction?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
             ?? "Réécris ce brouillon de façon plus claire et naturelle."
-        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
-            guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
-            await rewriteOpenDraftOnDevice(instruction: text)
-            return
-        }
-        await send(
-            forcedText: text,
-            hideUserMessage: true,
-            rewriteDraftCard: true
-        )
+        let current = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty else { return }
+        guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
+        await performDraftRewrite(instruction: text)
     }
 
-    /// Réécriture on-device : stream dans la carte brouillon, pas dans le fil.
-    private func rewriteOpenDraftOnDevice(instruction: String) async {
+    private func performDraftRewrite(instruction: String) async {
+        draftRewriteGeneration &+= 1
+        let gen = draftRewriteGeneration
         awaitingDraftRewrite = true
         suppressAssistantNarration = true
         draftCardCollapsed = false
@@ -1016,50 +1032,76 @@ struct ChatScreen: View {
         draftCardEditing = false
         thinkingKind = .custom("Amélioration du brouillon…")
         let previous = draftCardText
-        draftCardText = ""
         defer {
-            isSending = false
-            sendTask = nil
-            awaitingDraftRewrite = false
-            draftCardStreaming = false
-            draftCardStatus = "Brouillon"
-            suppressAssistantNarration = false
-            thinkingKind = nil
+            if gen == draftRewriteGeneration {
+                isSending = false
+                sendTask = nil
+                awaitingDraftRewrite = false
+                draftCardStreaming = false
+                draftCardStatus = MailDraftCardPolicy.sanitizedRestoreStatus("Brouillon", sent: draftCardSent)
+                suppressAssistantNarration = false
+                thinkingKind = nil
+            }
         }
         do {
-            if !LocalModelManager.shared.isReady {
-                await LocalModelManager.shared.loadIntoEngine()
-            }
-            guard LocalModelManager.shared.isReady else {
-                throw LocalMailAssistantError.modelNotReady
-            }
-            let body = try await MailDraftRewriteWorkflow.run(
-                .init(
+            let raw: String
+            if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                guard LocalModelManager.shared.isReady else {
+                    throw LocalMailAssistantError.modelNotReady
+                }
+                raw = try await MailDraftRewriteWorkflow.run(
+                    .init(
+                        instruction: instruction,
+                        body: previous,
+                        to: draftCardTo,
+                        subject: draftCardSubject
+                    ),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { _ in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                    }
+                )
+            } else {
+                let result = try await client.rewriteMailDraft(
                     instruction: instruction,
                     body: previous,
                     to: draftCardTo,
-                    subject: draftCardSubject
-                ),
-                runtime: LocalAIRuntime.shared,
-                onToken: { token in
-                    if self.thinkingKind != nil { self.thinkingKind = nil }
-                    self.draftCardText += token
+                    subject: draftCardSubject,
+                    draftId: draftCardId
+                )
+                raw = result.bodyText
+                if let id = result.draftId, !id.isEmpty {
+                    draftCardId = id
                 }
-            )
-            let cleaned = MailDraftRewriteWorkflow.stripMeta(body)
+            }
+            let cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
             guard cleaned.count >= 8 else {
                 throw LocalMailAssistantError.inference("Réécriture vide.")
             }
+            guard gen == draftRewriteGeneration else { return }
             draftCardText = cleaned
+            draftCardSent = false
             persistDraftCardSnapshot()
             AppHaptics.success()
         } catch is CancellationError {
-            draftCardText = previous
+            if gen == draftRewriteGeneration {
+                draftCardText = previous
+            }
         } catch {
-            draftCardText = previous
-            self.error = error.localizedDescription
-            AppHaptics.warning()
+            if gen == draftRewriteGeneration {
+                draftCardText = previous
+                self.error = error.localizedDescription
+                AppHaptics.warning()
+            }
         }
+    }
+
+    /// Réécriture on-device (compat appels existants).
+    private func rewriteOpenDraftOnDevice(instruction: String) async {
+        await performDraftRewrite(instruction: instruction)
     }
     private func runMailSummarizeProduct(threadId: String) async {
         guard !isSending else { return }
@@ -1729,7 +1771,8 @@ struct ChatScreen: View {
     }
 
     private func persistDraftCardSnapshot() {
-        guard draftInConversation || draftCardId != nil || draftCardSent || draftCardStreaming else {
+        let hasBody = !draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard draftInConversation || draftCardId != nil || draftCardSent || draftCardStreaming || hasBody else {
             ConversationSessionStore.clearDraftCard(conversationId: conversation.id)
             return
         }
@@ -1740,7 +1783,7 @@ struct ChatScreen: View {
                 text: draftCardText,
                 to: draftCardTo,
                 subject: draftCardSubject,
-                status: draftCardStatus,
+                status: MailDraftCardPolicy.sanitizedRestoreStatus(draftCardStatus, sent: draftCardSent),
                 sent: draftCardSent,
                 inConversation: true,
                 collapsed: draftCardCollapsed || draftCardSent,
@@ -1759,17 +1802,17 @@ struct ChatScreen: View {
         draftCardText = snap.text
         draftCardTo = snap.to
         draftCardSubject = snap.subject
-        draftCardStatus = snap.status
         draftCardSent = snap.sent
+        draftCardStatus = MailDraftCardPolicy.sanitizedRestoreStatus(snap.status, sent: snap.sent)
         draftCardCollapsed = snap.collapsed || snap.sent
-        draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
+        draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil || !snap.text.isEmpty
         draftCardEditing = false
         if let atts = snap.attachments, !atts.isEmpty {
             draftCardAttachments = atts
         }
         draftCardInReplyTo = snap.inReplyTo
         draftCardReferences = snap.references
-        if let id = snap.draftId, !id.isEmpty {
+        if let id = snap.draftId, !id.isEmpty, !id.hasPrefix("local-") {
             Task { await refreshDraftCardAttachments(draftId: id) }
         }
     }
@@ -1801,6 +1844,143 @@ struct ChatScreen: View {
             persistDraftCardSnapshot()
         } catch {
             // Silencieux : pas de brouillon / email off.
+        }
+    }
+
+    private func consumePendingMailComposeInstruction() {
+        guard forcedScope == .mail else { return }
+        if let ready = nav.pendingMailDraft {
+            nav.pendingMailDraft = nil
+            nav.pendingMailComposeInstruction = nil
+            applyMailDraftConfirmation(ready)
+            return
+        }
+        let instruction = (nav.pendingMailComposeInstruction ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { return }
+        nav.pendingMailComposeInstruction = nil
+        Task {
+            if let threadId = forcedActiveContext?.mailThreadId, !threadId.isEmpty,
+               MailIntentDetector.wantsReply(instruction) || !MailIntentDetector.wantsCompose(instruction) {
+                await runMailReplyProduct(threadId: threadId, instruction: instruction)
+            } else {
+                await runMailComposeProduct(instruction: instruction)
+            }
+        }
+    }
+
+    private func applyMailDraftConfirmation(_ confirmation: MailSendConfirmation) {
+        if let id = confirmation.draftId, !id.isEmpty {
+            draftCardId = id
+        } else if (draftCardId ?? "").isEmpty {
+            draftCardId = "local-\(UUID().uuidString)"
+        }
+        let body = LocalChatTemplate.truncateAssistantOutput(confirmation.proposedBody).text
+        guard body.count >= 8 else { return }
+        draftCardText = body
+        if !confirmation.to.isEmpty { draftCardTo = confirmation.to }
+        if !confirmation.subject.isEmpty { draftCardSubject = confirmation.subject }
+        draftCardInReplyTo = confirmation.inReplyTo
+        draftCardReferences = confirmation.references
+        draftCardSent = false
+        draftCardStatus = "Brouillon"
+        draftCardCollapsed = false
+        draftInConversation = true
+        draftCardStreaming = false
+        draftCardEditing = false
+        persistDraftCardSnapshot()
+    }
+
+    private func applyMailSuggestResult(_ result: APIClient.MailSuggestReplyResult) {
+        if let id = result.draftId, !id.isEmpty {
+            draftCardId = id
+        } else if (draftCardId ?? "").isEmpty {
+            draftCardId = "local-\(UUID().uuidString)"
+        }
+        if !result.bodyText.isEmpty {
+            draftCardText = MailDraftRewriteWorkflow.stripMeta(result.bodyText)
+        }
+        if !result.to.isEmpty {
+            draftCardTo = result.to.joined(separator: ", ")
+        }
+        if let subject = result.subject, !subject.isEmpty {
+            draftCardSubject = subject
+        }
+        draftCardSent = false
+        draftCardStatus = "Brouillon"
+        draftCardCollapsed = false
+        draftInConversation = true
+        draftCardStreaming = false
+        persistDraftCardSnapshot()
+    }
+
+    private func runMailComposeProduct(instruction: String) async {
+        let startedHere = ChatSendGate.tryBegin(isSending: &isSending)
+        error = nil
+        thinkingKind = .custom("Rédaction…")
+        draftInConversation = true
+        draftCardStreaming = true
+        draftCardCollapsed = false
+        draftCardStatus = "Rédaction…"
+        draftCardSent = false
+        draftCardEditing = false
+        defer {
+            if startedHere {
+                isSending = false
+                sendTask = nil
+            }
+            thinkingKind = nil
+            draftCardStreaming = false
+            if !draftCardSent {
+                draftCardStatus = "Brouillon"
+            }
+        }
+        let hint: String? = {
+            if case .compose(let h) = MailIntentDetector.detect(instruction, hasOpenThread: false) {
+                return h
+            }
+            return nil
+        }()
+        do {
+            if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                guard LocalModelManager.shared.isReady else {
+                    throw LocalMailAssistantError.modelNotReady
+                }
+                let previous = draftCardText
+                draftCardText = ""
+                let confirmation = try await MailComposeWorkflow.run(
+                    .init(instruction: instruction, recipientHint: hint),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                        self.draftCardText += token
+                    }
+                )
+                let body = LocalChatTemplate.truncateAssistantOutput(confirmation.proposedBody).text
+                if body.count < 8 {
+                    draftCardText = previous
+                    throw LocalMailAssistantError.inference("Brouillon vide.")
+                }
+                applyMailDraftConfirmation(confirmation)
+            } else {
+                let result = try await client.composeMailDraft(
+                    instruction: instruction,
+                    recipientHint: hint,
+                    conversationId: conversation.id
+                )
+                applyMailSuggestResult(result)
+            }
+            AppHaptics.success()
+            scrollToken += 1
+        } catch is CancellationError {
+            draftInConversation = !(draftCardText.isEmpty && draftCardId == nil)
+        } catch {
+            draftInConversation = !draftCardText.isEmpty || draftCardId != nil
+            self.error = error.localizedDescription
+            AppHaptics.warning()
         }
     }
 
@@ -1940,15 +2120,22 @@ Corps actuel:
 
     /// Carte brouillon visible dans le fil (pas masquée, pas seulement envoyée).
     private var draftCardSendingLabel: String {
-        if draftCardSent { return "Envoyé" }
-        if draftCardBusy && !draftCardStreaming { return "Envoi…" }
-        return draftCardStatus
+        MailDraftCardPolicy.statusLabel(
+            sent: draftCardSent,
+            sending: draftCardBusy && !draftCardStreaming,
+            streaming: draftCardStreaming,
+            stored: draftCardStatus
+        )
     }
 
     private var draftCardVisible: Bool {
-        !draftCardCollapsed
-            && !draftCardSent
-            && (draftInConversation || draftCardId != nil || draftCardStreaming)
+        MailDraftCardPolicy.visible(
+            collapsed: draftCardCollapsed,
+            sent: draftCardSent,
+            inConversation: draftInConversation,
+            draftId: draftCardId,
+            streaming: draftCardStreaming
+        )
     }
 
     private var showsDraftCard: Bool {
@@ -1997,7 +2184,13 @@ Corps actuel:
 
     /// Brouillon masqué par la croix — récupérable sans être affiché dans le fil.
     private var draftCardRecoverable: Bool {
-        draftCardCollapsed && !draftCardSent && draftCardId != nil
+        MailDraftCardPolicy.recoverable(
+            collapsed: draftCardCollapsed,
+            sent: draftCardSent,
+            draftId: draftCardId,
+            text: draftCardText,
+            inConversation: draftInConversation
+        )
     }
 
     /// Lift depuis le bas physique (ZStack ignore déjà la safe area container).
@@ -2151,7 +2344,7 @@ Corps actuel:
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if draftImprovePending, draftCardId != nil {
+            if draftImprovePending, !draftCardSent, draftCardId != nil || !draftCardText.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 13, weight: .semibold))
@@ -3225,9 +3418,59 @@ private var sendBlockedHint: String {
 
     /// Détecte une demande de réponse au fil mail actif (texte libre).
     private func isMailReplyIntent(_ text: String) -> Bool {
-        let lower = text.lowercased()
-        let keys = ["répond", "repond", "reply", "rédige une réponse", "redige une reponse", "écris une réponse", "ecris une reponse", "prépare une réponse", "prepare une reponse"]
-        return keys.contains { lower.contains($0) }
+        MailIntentDetector.wantsReply(text)
+    }
+
+    private func appendComposeHandoffMessages(rawText: String, hideUserMessage: Bool) {
+        if !hideUserMessage {
+            messages.append(
+                MessageDTO(
+                    id: "local-\(UUID().uuidString)",
+                    role: "user",
+                    content: rawText,
+                    createdAt: nil
+                )
+            )
+        }
+        messages.append(
+            MessageDTO(
+                id: "asst-\(UUID().uuidString)",
+                role: "assistant",
+                content: "Brouillon ouvert dans Mail Assistant.",
+                createdAt: nil
+            )
+        )
+        draft = ""
+        editingMessageId = nil
+    }
+
+    private func routeMailComposeIntent(rawText: String, hideUserMessage: Bool) async {
+        if forcedScope == .mail {
+            if !hideUserMessage {
+                messages.append(
+                    MessageDTO(
+                        id: "local-\(UUID().uuidString)",
+                        role: "user",
+                        content: rawText,
+                        createdAt: nil
+                    )
+                )
+            }
+            messages.append(
+                MessageDTO(
+                    id: "asst-\(UUID().uuidString)",
+                    role: "assistant",
+                    content: "Brouillon ouvert dans Mail Assistant.",
+                    createdAt: nil
+                )
+            )
+            draft = ""
+            await runMailComposeProduct(instruction: rawText)
+            return
+        }
+        appendComposeHandoffMessages(rawText: rawText, hideUserMessage: hideUserMessage)
+        nav.openMailAssistantForCompose(instruction: rawText)
+        AppHaptics.light()
     }
 
     private func regenerate() async {
@@ -3589,6 +3832,46 @@ private var sendBlockedHint: String {
             }
 
             // Mail : fil ouvert OU boîte (liste) — Gmail device, jamais « pas d’accès ».
+            if !useVisionTurn, MailIntentDetector.wantsCompose(effectiveText) {
+                if forcedScope != .mail {
+                    thinkingKind = nil
+                    streamingText = ""
+                    streamAccum.text = ""
+                    let asstId = "asst-\(UUID().uuidString)"
+                    messages.append(
+                        MessageDTO(
+                            id: asstId,
+                            role: "assistant",
+                            content: "Brouillon ouvert dans Mail Assistant.",
+                            createdAt: nil
+                        )
+                    )
+                    persistLocalMessage(id: asstId, role: .assistant, content: "Brouillon ouvert dans Mail Assistant.")
+                    nav.openMailAssistantForCompose(instruction: effectiveText)
+                    isSending = false
+                    sendTask = nil
+                    return
+                }
+                thinkingKind = .custom("Rédaction…")
+                await runMailComposeProduct(instruction: effectiveText)
+                thinkingKind = nil
+                streamingText = ""
+                streamAccum.text = ""
+                let asstId = "asst-\(UUID().uuidString)"
+                messages.append(
+                    MessageDTO(
+                        id: asstId,
+                        role: "assistant",
+                        content: "Brouillon ouvert dans Mail Assistant.",
+                        createdAt: nil
+                    )
+                )
+                persistLocalMessage(id: asstId, role: .assistant, content: "Brouillon ouvert dans Mail Assistant.")
+                isSending = false
+                sendTask = nil
+                return
+            }
+
             if !useVisionTurn, forcedScope == .mail, GmailOAuthSession.shared.isConnected {
                 activeGeneration.workflow = "mail"
                 activeGeneration.log("start", extra: ["workflow": "mail"])
@@ -3603,23 +3886,21 @@ private var sendBlockedHint: String {
                 var mailboxHandoff: MailHandoffDTO?
                 if intent == .threadReply, let threadId, !threadId.isEmpty {
                     thinkingKind = .custom("Préparation de la réponse…")
+                    draftInConversation = true
+                    draftCardStreaming = true
+                    draftCardCollapsed = false
+                    draftCardStatus = "Rédaction…"
+                    draftCardSent = false
                     let confirmation = try await assistant.draftReply(
                         threadId: threadId,
                         instruction: effectiveText,
                         onToken: { token in
                             if self.thinkingKind != nil { self.thinkingKind = nil }
-                            self.streamAccum.text += token
-                            self.streamingText = self.streamAccum.text
+                            self.draftCardText += token
                         }
                     )
-                    answer =
-                        """
-                        Proposition de réponse (non envoyée) :
-
-                        \(confirmation.proposedBody)
-
-                        L’envoi réel nécessite une confirmation explicite.
-                        """
+                    applyMailDraftConfirmation(confirmation)
+                    answer = "Brouillon ouvert dans Mail Assistant."
                     mailThreadHandoff = threadId
                 } else if intent == .threadSummary, let threadId, !threadId.isEmpty {
                     thinkingKind = .custom("Analyse du message…")
@@ -3638,12 +3919,13 @@ private var sendBlockedHint: String {
                         .init(userText: effectiveText, context: threadId == nil ? .mailbox : .thread(threadId: threadId ?? "")),
                         runtime: LocalAIRuntime.shared,
                         tools: AIToolRegistry.makeLocalDefault(),
-                        onToken: { token in
+                        onToken: { _ in
                             if self.thinkingKind != nil { self.thinkingKind = nil }
-                            self.streamAccum.text += token
-                            self.streamingText = self.streamAccum.text
                         }
                     )
+                    if let draft = mailbox.draft {
+                        applyMailDraftConfirmation(draft)
+                    }
                     answer = mailbox.text
                     mailThreadHandoff = mailbox.mailThreadId
                     mailboxHandoff = mailbox.mailHandoff
@@ -3694,10 +3976,8 @@ private var sendBlockedHint: String {
                         .init(userText: effectiveText, context: .mailbox),
                         runtime: LocalAIRuntime.shared,
                         tools: AIToolRegistry.makeLocalDefault(),
-                        onToken: { token in
+                        onToken: { _ in
                             if self.thinkingKind != nil { self.thinkingKind = nil }
-                            self.streamAccum.text += token
-                            self.streamingText = self.streamAccum.text
                         }
                     )
                     guard gen == sendGeneration, !Task.isCancelled else {
@@ -3708,9 +3988,21 @@ private var sendBlockedHint: String {
                     thinkingKind = nil
                     streamingText = ""
                     streamAccum.text = ""
+                    if let draft = mailbox.draft {
+                        let context: MailAssistantContext = {
+                            if let tid = mailbox.mailThreadId, !tid.isEmpty {
+                                return .thread(threadId: tid, subject: draft.subject, from: nil)
+                            }
+                            return .global
+                        }()
+                        nav.presentGeneratedMailDraft(draft, context: context)
+                    }
+                    let handoffText = mailbox.draft == nil
+                        ? mailbox.text
+                        : "Brouillon ouvert dans Mail Assistant."
                     let asstId = "asst-\(UUID().uuidString)"
                     messages.append(
-                        MessageDTO(id: asstId, role: "assistant", content: mailbox.text, createdAt: nil)
+                        MessageDTO(id: asstId, role: "assistant", content: handoffText, createdAt: nil)
                     )
                     streamingAssistantId = asstId
                     attachLocalChrome(
@@ -3720,7 +4012,7 @@ private var sendBlockedHint: String {
                         finalize: true
                     )
                     streamingAssistantId = nil
-                    persistLocalMessage(id: asstId, role: .assistant, content: mailbox.text)
+                    persistLocalMessage(id: asstId, role: .assistant, content: handoffText)
                     isSending = false
                     sendTask = nil
                     return
@@ -3893,6 +4185,12 @@ private var sendBlockedHint: String {
                 await rewriteOpenDraftOnDevice(instruction: rawText)
                 return
             }
+            if options?.regenerate != true,
+               editingMessageId == nil,
+               MailIntentDetector.wantsCompose(rawText) {
+                await routeMailComposeIntent(rawText: rawText, hideUserMessage: hideUserMessage)
+                return
+            }
             guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
             await sendViaLocalLLM(
                 rawText: rawText,
@@ -3900,6 +4198,26 @@ private var sendBlockedHint: String {
                 hideUserMessage: hideUserMessage,
                 options: options
             )
+            return
+        }
+
+        // PC Improve : API dédiée (pas l’agent, pas writing-prefs, pas suggest-reply).
+        let wantsRewritePC = rewriteDraftCard
+            || (draftImprovePending
+                && !draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && forcedText == nil
+                && options?.regenerate != true)
+        if wantsRewritePC {
+            guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
+            draftImprovePending = false
+            await performDraftRewrite(instruction: rawText)
+            return
+        }
+
+        if options?.regenerate != true,
+           editingMessageId == nil,
+           MailIntentDetector.wantsCompose(rawText) {
+            await routeMailComposeIntent(rawText: rawText, hideUserMessage: hideUserMessage)
             return
         }
 
@@ -3944,38 +4262,16 @@ private var sendBlockedHint: String {
             opts.activeContext = ctx
         }
 
-        // Améliorer via composer : le message = consigne pour peaufiner CE brouillon.
-        var effectiveRewrite = rewriteDraftCard
-        if !effectiveRewrite,
-           draftImprovePending,
-           draftCardId != nil,
-           forcedText == nil,
-           options?.regenerate != true {
-            effectiveRewrite = true
+        // Améliorer via composer : déjà géré plus haut. Ne jamais passer par l’agent.
+        if rewriteDraftCard || draftImprovePending {
             draftImprovePending = false
-        }
-
-        // API : consigne + corps actuel (sinon le modèle dérive sur l’historique).
-        // UI : seule la consigne courte (« moins formel ») apparaît dans le fil.
-        let text: String
-        if effectiveRewrite, draftCardId != nil {
-            text = Self.draftRewriteApiMessage(
-                instruction: rawText,
-                body: draftCardText,
-                to: draftCardTo,
-                subject: draftCardSubject
-            )
-            opts.toolChannel = ComposerToolChannel.email.apiValue
-            if opts.mode == "chat" {
-                opts.mode = "agent"
-            }
-        } else {
-            text = rawText
+            isSending = false
+            sendTask = nil
+            return
         }
 
         // Brouillon ouvert + PJ : joindre côté produit (indépendant du LLM / des phrases).
-        if !effectiveRewrite,
-           let draftId = draftCardId,
+        if let draftId = draftCardId,
            !draftId.isEmpty,
            !ids.isEmpty {
             let attached = await syncAttachmentsToOpenDraft(ids)
@@ -4025,15 +4321,9 @@ private var sendBlockedHint: String {
             }
         }
 
-        awaitingDraftRewrite = effectiveRewrite
+        awaitingDraftRewrite = false
         draftPreviewReceivedThisTurn = false
-        suppressAssistantNarration = effectiveRewrite
-        if effectiveRewrite {
-            draftCardCollapsed = false
-            draftCardStreaming = true
-            draftCardStatus = "Amélioration…"
-            draftCardEditing = false
-        }
+        suppressAssistantNarration = false
 
         var immediateThinking: ThinkingKind = chatMode == "agent" ? .preparing : .reflecting
         let lower = rawText.lowercased()
@@ -4043,7 +4333,7 @@ private var sendBlockedHint: String {
             || forcedActiveContext?.mailThreadId != nil
             || (forcedActiveContext?.label?.localizedCaseInsensitiveContains("mail") == true)
         if draftCardId != nil {
-            immediateThinking = .custom(effectiveRewrite ? "Amélioration du brouillon…" : "Mise à jour du brouillon…")
+            immediateThinking = .custom("Mise à jour du brouillon…")
         } else if inMailFlow, Self.containsMailRecipientPhrase(lower) {
             immediateThinking = .custom("Recherche du destinataire…")
         } else if inMailFlow,
@@ -4126,7 +4416,7 @@ private var sendBlockedHint: String {
         do {
             try await client.sendChat(
                 conversationId: conversation.id,
-                message: text,
+                message: rawText,
                 options: opts,
                 streaming: streamingService
             ) { event in
@@ -4684,16 +4974,11 @@ private var sendBlockedHint: String {
             agentActivity.phase = "synthesis"
             activeGeneration.phase = .generating
             activeGeneration.log("llm", extra: [:])
-            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == "act" }) {
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.status == "running" }) {
                 agentActivity.planSteps[i].status = "done"
             }
-            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == "answer" }) {
-                agentActivity.planSteps[i].status = "running"
-                agentActivity.currentStepTitle = agentActivity.planSteps[i].title
-                agentActivity.stepIndex = i
-            } else {
-                activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
-            }
+            let last = max(0, agentActivity.planSteps.count - 1)
+            activateAgentPlanStep(at: last)
             syncAgentChromeToStreamingMessage()
         case .completed:
             if let start = agentActivity.startedAt {

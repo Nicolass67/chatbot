@@ -1422,6 +1422,8 @@ struct MailThreadView: View {
     @State private var sendStatus: String?
     @State private var replySending = false
     @State private var replySent = false
+    @State private var replyCollapsed = false
+    @State private var replyRewriteGeneration: UInt64 = 0
     @State private var aiTask: Task<Void, Never>?
     @State private var showReplyImporter = false
 
@@ -1516,8 +1518,10 @@ struct MailThreadView: View {
             }
         .task {
             await load()
+            restoreInboxDraft()
         }
         .onDisappear {
+            persistInboxDraft()
             aiTask?.cancel()
             aiTask = nil
             if usesOnDeviceAI {
@@ -1550,13 +1554,35 @@ struct MailThreadView: View {
                 if let summaryText {
                     MailSummaryBlock(text: summaryText)
                 }
-                if replyDraft != nil || draftStreaming {
+                if replyCollapsed, MailDraftCardPolicy.recoverable(
+                    collapsed: true,
+                    sent: replySent,
+                    draftId: replyDraftId,
+                    text: replyDraft ?? "",
+                    inConversation: replyDraft != nil
+                ) {
+                    Button {
+                        replyCollapsed = false
+                        persistInboxDraft()
+                    } label: {
+                        Label("Récupérer le brouillon", systemImage: "envelope.badge")
+                            .font(CNFont.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 4)
+                }
+                if (replyDraft != nil || draftStreaming) && !replyCollapsed {
                     MailDraftProposal(
                         draftText: replyDraftBinding,
                         toText: $replyDraftTo,
                         subjectText: $replyDraftSubject,
                         draftId: replyDraftId,
-                        statusLabel: draftStreaming ? "Rédaction…" : (replySending ? "Envoi…" : (replySent ? "Envoyé" : "Brouillon")),
+                        statusLabel: MailDraftCardPolicy.statusLabel(
+                            sent: replySent,
+                            sending: replySending,
+                            streaming: draftStreaming,
+                            stored: aiStatus ?? "Brouillon"
+                        ),
                         isEditing: editingDraft,
                         busy: aiBusy || replySending,
                         isStreaming: draftStreaming,
@@ -1575,7 +1601,7 @@ struct MailThreadView: View {
                             replyRecipientSuggestions = []
                         },
                         onImprove: { instruction in
-                            aiTask?.cancel()
+                            guard !aiBusy, !replySending, !replySent else { return }
                             aiTask = Task { await rewriteReplyDraft(instruction: instruction) }
                         },
                         onRetry: {
@@ -1594,6 +1620,10 @@ struct MailThreadView: View {
                         },
                         onCommitHeaders: {
                             Task { await commitReplyDraftHeaders() }
+                        },
+                        onDismiss: {
+                            replyCollapsed = true
+                            persistInboxDraft()
                         }
                     )
                 }
@@ -1614,8 +1644,59 @@ struct MailThreadView: View {
     private var replyDraftBinding: Binding<String> {
         Binding(
             get: { replyDraft ?? "" },
-            set: { replyDraft = $0 }
+            set: {
+                replyDraft = $0
+                persistInboxDraft()
+            }
         )
+    }
+
+    private var inboxDraftStorageId: String {
+        "mail-inbox.\(threadId)"
+    }
+
+    private func persistInboxDraft() {
+        guard !replySent else {
+            ConversationSessionStore.clearDraftCard(conversationId: inboxDraftStorageId)
+            return
+        }
+        let text = (replyDraft ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard replyDraft != nil || !text.isEmpty else { return }
+        ConversationSessionStore.saveDraftCard(
+            conversationId: inboxDraftStorageId,
+            .init(
+                draftId: replyDraftId,
+                text: replyDraft ?? "",
+                to: replyDraftTo,
+                subject: replyDraftSubject,
+                status: MailDraftCardPolicy.sanitizedRestoreStatus("Brouillon", sent: false),
+                sent: false,
+                inConversation: true,
+                collapsed: replyCollapsed,
+                attachments: replyAttachments,
+                inReplyTo: replyInReplyTo,
+                references: replyReferences
+            )
+        )
+    }
+
+    private func restoreInboxDraft() {
+        guard !replySent else { return }
+        guard let snap = ConversationSessionStore.draftCard(conversationId: inboxDraftStorageId) else { return }
+        if snap.sent { return }
+        if replyDraft == nil, !snap.text.isEmpty {
+            replyDraft = snap.text
+        }
+        if replyDraftTo.isEmpty { replyDraftTo = snap.to }
+        if replyDraftSubject.isEmpty { replyDraftSubject = snap.subject }
+        if replyDraftId == nil { replyDraftId = snap.draftId }
+        if replyAttachments.isEmpty, let atts = snap.attachments {
+            replyAttachments = atts
+        }
+        if replyInReplyTo == nil { replyInReplyTo = snap.inReplyTo }
+        if replyReferences == nil { replyReferences = snap.references }
+        replyCollapsed = snap.collapsed
+        replySent = false
     }
 
     private var mailOverflowMenu: some View {
@@ -1809,22 +1890,27 @@ struct MailThreadView: View {
     private func rewriteReplyDraft(instruction: String) async {
         let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard !aiBusy, !replySending, !replySent else { return }
         let previous = (replyDraft ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if previous.isEmpty {
             await runSuggest()
             return
         }
+        replyRewriteGeneration &+= 1
+        let gen = replyRewriteGeneration
         aiBusy = true
         aiStatus = "Amélioration du brouillon…"
         draftStreaming = true
         editingDraft = false
-        replyDraft = ""
         defer {
-            aiBusy = false
-            aiStatus = nil
-            draftStreaming = false
+            if gen == replyRewriteGeneration {
+                aiBusy = false
+                aiStatus = nil
+                draftStreaming = false
+            }
         }
         do {
+            let raw: String
             if usesOnDeviceAI {
                 if !LocalModelManager.shared.isReady {
                     await LocalModelManager.shared.loadIntoEngine()
@@ -1832,7 +1918,7 @@ struct MailThreadView: View {
                 guard LocalModelManager.shared.isReady else {
                     throw LocalMailAssistantError.modelNotReady
                 }
-                let body = try await MailDraftRewriteWorkflow.run(
+                raw = try await MailDraftRewriteWorkflow.run(
                     .init(
                         instruction: trimmed,
                         body: previous,
@@ -1840,46 +1926,42 @@ struct MailThreadView: View {
                         subject: replyDraftSubject
                     ),
                     runtime: LocalAIRuntime.shared,
-                    onToken: { token in
+                    onToken: { _ in
                         self.aiStatus = nil
-                        self.replyDraft = (self.replyDraft ?? "") + token
                     }
                 )
-                let cleaned = MailDraftRewriteWorkflow.stripMeta(body)
-                guard cleaned.count >= 8 else {
-                    throw LocalMailAssistantError.inference("Réécriture vide.")
-                }
-                replyDraft = cleaned
             } else {
-                let instruction = """
-                Réécris UNIQUEMENT le corps de CE brouillon selon la consigne « \(trimmed) ».
-                Remplace le texte par la nouvelle version, sans explication.
-                Brouillon actuel:
-                \(previous)
-                """
-                let result = try await client.streamSuggestMailReply(
-                    threadId: threadId,
-                    instruction: instruction
-                ) { token in
-                    Task { @MainActor in
-                        self.aiStatus = nil
-                        self.replyDraft = (self.replyDraft ?? "") + token
-                    }
-                }
-                let cleaned = MailDraftRewriteWorkflow.stripMeta(result.bodyText)
-                replyDraft = cleaned.count >= 8 ? cleaned : result.bodyText
+                let result = try await client.rewriteMailDraft(
+                    instruction: trimmed,
+                    body: previous,
+                    to: replyDraftTo,
+                    subject: replyDraftSubject,
+                    draftId: replyDraftId
+                )
+                raw = result.bodyText
                 if let id = result.draftId, !id.isEmpty {
                     replyDraftId = id
-                    await refreshReplyDraftAttachments(id: id)
                 }
             }
+            let cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
+            guard cleaned.count >= 8 else {
+                throw LocalMailAssistantError.inference("Réécriture vide.")
+            }
+            guard gen == replyRewriteGeneration else { return }
+            replyDraft = cleaned
+            replySent = false
+            persistInboxDraft()
             AppHaptics.success()
         } catch is CancellationError {
-            replyDraft = previous
+            if gen == replyRewriteGeneration {
+                replyDraft = previous
+            }
         } catch {
-            replyDraft = previous
-            self.error = error.localizedDescription
-            AppHaptics.warning()
+            if gen == replyRewriteGeneration {
+                replyDraft = previous
+                self.error = error.localizedDescription
+                AppHaptics.warning()
+            }
         }
     }
 
@@ -2002,11 +2084,13 @@ struct MailThreadView: View {
                 }
                 sendStatus = "Message envoyé."
                 replySent = true
-                replyDraft = nil
+                persistInboxDraft()
                 AppHaptics.success()
                 return
             }
-            guard let draftId = replyDraftId else { return }
+            guard let draftId = replyDraftId, !draftId.hasPrefix("local-") else {
+                throw APIClientError.decode
+            }
             let to = replyDraftTo
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2032,7 +2116,7 @@ struct MailThreadView: View {
             )
             sendStatus = "Message envoyé."
             replySent = true
-            replyDraft = nil
+            persistInboxDraft()
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription

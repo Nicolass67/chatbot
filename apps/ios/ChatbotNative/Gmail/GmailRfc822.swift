@@ -144,7 +144,9 @@ enum GmailRemoteIds {
     static func isPersistedGmailDraftId(_ id: String) -> Bool {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return UUID(uuidString: trimmed) == nil
+        if trimmed.hasPrefix("local-") { return false }
+        if UUID(uuidString: trimmed) != nil { return false }
+        return true
     }
 }
 

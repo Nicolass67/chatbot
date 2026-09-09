@@ -19,11 +19,13 @@ enum MailUserIntent: Equatable, Sendable {
     case genericMailbox
     case threadSummary
     case threadReply
+    /// Nouvel e-mail à rédiger dans Mail Assistant (pas une réponse chat).
+    case compose(recipientHint: String?)
     case none
 
     var needsGmailSearch: Bool {
         switch self {
-        case .none, .threadSummary, .threadReply: return false
+        case .none, .threadSummary, .threadReply, .compose: return false
         default: return true
         }
     }
@@ -36,9 +38,16 @@ enum MailIntentDetector {
         let lower = text.lowercased()
 
         if hasOpenThread {
+            if mailAdviceMatch(lower) { return .none }
             if isReply(lower) { return .threadReply }
             if isSummarizeCurrent(lower) && !isMailboxWide(lower) { return .threadSummary }
         }
+
+        if !mailAdviceMatch(lower), isCompose(lower) {
+            return .compose(recipientHint: recipientHint(in: text, lower: lower))
+        }
+
+        if mailAdviceMatch(lower) { return .none }
 
         // Contact / sujet AVANT « dernier mail » — sinon « dernier mail de la SPA » devient un latest inbox.
         if let contact = fromContact(in: text, lower: lower) { return .fromContact(contact) }
@@ -68,7 +77,7 @@ enum MailIntentDetector {
         case .aboutTopic(let topic):
             let safe = sanitizeGmailToken(topic)
             return "in:inbox (\(safe))"
-        case .threadSummary, .threadReply, .none:
+        case .threadSummary, .threadReply, .compose, .none:
             return sanitizeGmailToken(userText)
         }
     }
@@ -88,7 +97,51 @@ enum MailIntentDetector {
 
     private static func isReply(_ lower: String) -> Bool {
         ["répond", "repond", "reply", "rédige une réponse", "redige une reponse",
-         "écris une réponse", "ecris une reponse", "prépare une réponse"].contains { lower.contains($0) }
+         "écris une réponse", "ecris une reponse", "prépare une réponse", "prepare une reponse"].contains { lower.contains($0) }
+    }
+
+    private static let composeNeedles = [
+        "écris un mail", "ecris un mail", "écris-moi un mail", "ecris-moi un mail",
+        "écris un e-mail", "ecris un e-mail", "écris un email", "ecris un email",
+        "rédige un mail", "redige un mail", "rédige-moi un mail", "redige-moi un mail",
+        "rédige un e-mail", "redige un e-mail", "prépare un mail", "prepare un mail",
+        "write an email", "compose an email", "draft an email", "write me an email",
+    ]
+
+    private static func isCompose(_ lower: String) -> Bool {
+        composeNeedles.contains { lower.contains($0) }
+    }
+
+    private static func mailAdviceMatch(_ lower: String) -> Bool {
+        let advice = [
+            "comment rédiger", "comment rediger", "comment écrire un mail", "comment ecrire un mail",
+            "comment écrire un e-mail", "comment écrire un email",
+            "conseils pour un mail", "conseil pour un mail",
+            "que devrais-je répondre", "que devrais je repondre", "que dois-je répondre",
+            "que dois je repondre", "how should i reply", "how to write an email",
+        ]
+        if advice.contains(where: { lower.contains($0) }) { return true }
+        if lower.contains("comment") && (lower.contains("mail") || lower.contains("e-mail") || lower.contains("email")) {
+            if isCompose(lower) || isReply(lower) { return false }
+            return true
+        }
+        return false
+    }
+
+    private static func recipientHint(in text: String, lower: String) -> String? {
+        let markers = ["un mail à ", "un e-mail à ", "un email à ", "un mail a ", "mail to "]
+        for marker in markers {
+            guard let range = lower.range(of: marker) else { continue }
+            let idx = text.index(
+                text.startIndex,
+                offsetBy: lower.distance(from: lower.startIndex, to: range.upperBound)
+            )
+            let rest = String(text[idx...]).trimmingCharacters(in: CharacterSet(charactersIn: "«»\"' "))
+            let token = rest.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).first.map(String.init) ?? rest
+            let cleaned = stripLeadingArticles(token)
+            if cleaned.count >= 2, cleaned.lowercased() != "moi" { return cleaned }
+        }
+        return nil
     }
 
     private static func isSummarizeCurrent(_ lower: String) -> Bool {
@@ -108,7 +161,7 @@ enum MailIntentDetector {
             || lower.contains("lis-moi") || lower.contains("lis moi") || lower.contains("lis-moi mon")
     }
 
-    private static func looksLikeMailQuestion(_ lower: String) -> Bool {
+    static func looksLikeMailQuestion(_ lower: String) -> Bool {
         lower.contains("mail") || lower.contains("e-mail") || lower.contains("email")
             || lower.contains("courrier") || lower.contains("inbox") || lower.contains("gmail")
     }
@@ -157,6 +210,15 @@ enum MailIntentDetector {
 
     static func wantsReply(_ raw: String) -> Bool {
         isReply(raw.lowercased())
+    }
+
+    static func wantsCompose(_ raw: String) -> Bool {
+        let lower = raw.lowercased()
+        return isCompose(lower) && !mailAdviceMatch(lower)
+    }
+
+    static func isMailAdvice(_ raw: String) -> Bool {
+        mailAdviceMatch(raw.lowercased())
     }
 
     static func looksLikeMail(_ raw: String) -> Bool {
@@ -242,7 +304,8 @@ enum MailContextPrompt {
             Tu DOIS utiliser ces messages. N’écris JAMAIS que tu n’as pas accès aux mails, à Gmail ou à l’historique.
             Réponds en français, naturellement, à la USER REQUEST (expéditeur, objet, date, contenu utile).
             N’invente aucun message absent de la liste. Markdown autorisé.
-            Si l’utilisateur demande une réponse, propose un corps de mail à partir de ces messages.
+            Si l’utilisateur demande seulement un conseil, réponds dans le chat.
+            N’écris JAMAIS qu’un mail a été envoyé. La rédaction se fait dans Mail Assistant.
             """
         }
         return """

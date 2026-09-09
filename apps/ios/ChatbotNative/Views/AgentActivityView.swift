@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Hauteur du panneau Agent dans le VStack du transcript — jamais un overlay.
+enum AgentPanelLayout {
+    static func maxHeight(completed: Bool) -> CGFloat {
+        completed ? 220 : 260
+    }
+}
+
 struct AgentPlanStep: Identifiable, Equatable, Sendable {
     let id: String
     var title: String
@@ -103,22 +110,6 @@ enum AgentToolLabels {
     static func friendlyStepTitle(_ raw: String) -> String {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = t.lowercased()
-        if lower == "comprendre la demande" || lower.hasPrefix("comprendre ") {
-            return "Analyser ce que tu demandes"
-        }
-        if lower == "rechercher des informations" {
-            return "Chercher des infos utiles"
-        }
-        if lower == "analyser les résultats" {
-            return "Comparer ce qui a été trouvé"
-        }
-        if lower == "rédiger la réponse" || lower.hasPrefix("répondre") || lower.hasPrefix("repondre") {
-            return "Rédiger la réponse"
-        }
-        if lower.hasPrefix("répondre :") || lower.hasPrefix("repondre :") {
-            return "Rédiger la réponse"
-        }
-        // Laisser l’UI multiligne afficher le titre ; tronquer seulement les titres extrêmes.
         if t.count > 96 {
             t = String(t.prefix(93)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
         }
@@ -197,31 +188,35 @@ struct AgentActivityView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            thoughtHeader
-            progressTrack
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                thoughtHeader
+                progressTrack
 
-            if let summary = activityLine, !summary.isEmpty {
-                Text(summary)
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.mutedForeground)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                if let summary = activityLine, !summary.isEmpty {
+                    Text(summary)
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            if !state.planSteps.isEmpty {
-                todosCard
-            } else if !state.completed {
-                pendingCard
-            }
+                if !state.planSteps.isEmpty {
+                    todosCard
+                } else if !state.completed {
+                    pendingCard
+                }
 
-            if let err = state.lastError, !err.isEmpty {
-                Text(AgentToolLabels.friendlyError(err))
-                    .font(CNFont.caption)
-                    .foregroundStyle(AppTheme.danger)
+                if let err = state.lastError, !err.isEmpty {
+                    Text(AgentToolLabels.friendlyError(err))
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.danger)
+                }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: AgentPanelLayout.maxHeight(completed: state.completed), alignment: .top)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(AppTheme.surfaceElevated)

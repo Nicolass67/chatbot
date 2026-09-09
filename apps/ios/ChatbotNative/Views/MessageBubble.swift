@@ -189,25 +189,16 @@ struct MessageBubble: View {
                 }
             }
 
-            // Label au-dessus ; le stream garde sa place ; le panneau Agent se superpose.
-            ZStack(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: AppTheme.space8) {
-                    if let completed = completedAgentRun, liveAgentOverlay == nil {
-                        AgentActivityView(state: completed)
-                    }
-                    assistantBodyMarkdown
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .zIndex(0)
-
+            // Panel puis transcript — jamais un overlay qui masque le stream.
+            VStack(alignment: .leading, spacing: AppTheme.space8) {
                 if let live = liveAgentOverlay {
                     AgentActivityView(state: live)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .compositingGroup()
-                        .zIndex(10)
-                        .allowsHitTesting(true)
+                } else if let completed = completedAgentRun {
+                    AgentActivityView(state: completed)
                 }
+                assistantBodyMarkdown
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, AppTheme.space12)
         .background(alignment: .leading) {

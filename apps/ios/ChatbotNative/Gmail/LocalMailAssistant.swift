@@ -243,7 +243,7 @@ final class LocalMailAssistant: ObservableObject {
             subject: subject,
             proposedBody: proposed,
             threadId: thread.threadId ?? thread.id,
-            draftId: nil,
+            draftId: "local-\(UUID().uuidString)",
             inReplyTo: inReplyTo,
             references: references
         )

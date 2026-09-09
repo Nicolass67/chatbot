@@ -1178,6 +1178,94 @@ final class APIClient: @unchecked Sendable {
         let to: [String]
     }
 
+    struct MailRewriteDraftResult: Sendable {
+        let bodyText: String
+        let draftId: String?
+    }
+
+    func rewriteMailDraft(
+        instruction: String,
+        body: String,
+        to: String? = nil,
+        subject: String? = nil,
+        draftId: String? = nil
+    ) async throws -> MailRewriteDraftResult {
+        if UITestMode.isActive {
+            let lower = instruction.lowercased()
+            var out = body
+            if lower.contains("anglais") || lower.contains("english") {
+                out = "Hello,\n\nThis is the rewritten draft in English.\n\nBest regards"
+            } else if lower.contains("moins formel") || lower.contains("less formal") {
+                out = "Salut,\n\n" + String(body.prefix(400))
+            } else if lower.contains("plus court") || lower.contains("shorter") {
+                out = String(body.prefix(max(40, body.count / 3)))
+            } else if lower.contains("chaleureux") || lower.contains("warmer") {
+                out = "Bonjour,\n\nMerci beaucoup pour votre message — avec plaisir.\n\n" + body
+            } else {
+                out = body + "\n\n(" + instruction + ")"
+            }
+            return MailRewriteDraftResult(bodyText: out, draftId: draftId)
+        }
+        var req = authorizedRequest(path: "api/mail/ai/rewrite-draft", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = [
+            "instruction": instruction,
+            "body": body,
+        ]
+        if let to, !to.isEmpty { payload["to"] = to }
+        if let subject, !subject.isEmpty { payload["subject"] = subject }
+        if let draftId, !draftId.isEmpty, !draftId.hasPrefix("local-") {
+            payload["draftId"] = draftId
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bodyText = obj["bodyText"] as? String,
+              bodyText.count >= 8 else {
+            throw APIClientError.decode
+        }
+        return MailRewriteDraftResult(
+            bodyText: bodyText,
+            draftId: obj["draftId"] as? String ?? draftId
+        )
+    }
+
+    func composeMailDraft(
+        instruction: String,
+        recipientHint: String? = nil,
+        subject: String? = nil,
+        conversationId: String? = nil
+    ) async throws -> MailSuggestReplyResult {
+        if UITestMode.isActive {
+            return MailSuggestReplyResult(
+                draftId: "uitest-compose-1",
+                bodyText: "Hello,\n\nThis is a composed draft.\n",
+                subject: subject,
+                to: recipientHint.map { [$0] } ?? []
+            )
+        }
+        var req = authorizedRequest(path: "api/mail/ai/compose-draft", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = ["instruction": instruction]
+        if let recipientHint, !recipientHint.isEmpty { payload["recipientHint"] = recipientHint }
+        if let subject, !subject.isEmpty { payload["subject"] = subject }
+        if let conversationId, !conversationId.isEmpty { payload["conversationId"] = conversationId }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try throwIfNeeded(resp, data)
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bodyText = obj["bodyText"] as? String else {
+            throw APIClientError.decode
+        }
+        return MailSuggestReplyResult(
+            draftId: obj["draftId"] as? String,
+            bodyText: bodyText,
+            subject: obj["subject"] as? String ?? subject,
+            to: (obj["to"] as? [String]) ?? []
+        )
+    }
+
     func suggestMailReply(threadId: String, instruction: String? = nil) async throws -> MailSuggestReplyResult {
         if UITestMode.isActive {
             return MailSuggestReplyResult(

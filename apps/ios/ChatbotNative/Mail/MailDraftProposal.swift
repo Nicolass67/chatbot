@@ -158,7 +158,15 @@ struct MailDraftProposal: View {
 
     private var headerRow: some View {
         HStack(spacing: AppTheme.space8) {
-            Label(statusLabel, systemImage: isSent ? "checkmark.circle.fill" : "envelope")
+            Label(
+                MailDraftCardPolicy.statusLabel(
+                    sent: isSent,
+                    sending: isSending,
+                    streaming: isStreaming,
+                    stored: statusLabel
+                ),
+                systemImage: isSent ? "checkmark.circle.fill" : "envelope"
+            )
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(statusTint)
                 .padding(.horizontal, 10)

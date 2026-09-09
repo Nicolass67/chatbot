@@ -114,6 +114,10 @@ final class AppNavigation {
     /// Sources Files→Mail persistantes : survivent à « Nouveau chat » jusqu’à envoi / retrait.
     var mailStickyAttachSources: [MailAttachHandoff] = []
     var mailComposerPrefill: String?
+    /// Consigne « écris un mail… » à consommer par Mail Assistant (une seule fois).
+    var pendingMailComposeInstruction: String?
+    /// Brouillon déjà généré à poser dans Mail Assistant (évite une 2e génération).
+    var pendingMailDraft: MailSendConfirmation?
 
     /// Files Assistant sheet (in-place).
     var presentFilesAssistant = false
@@ -227,6 +231,18 @@ final class AppNavigation {
         mailAssistantContext = context
         presentMailAssistant = true
         selectedTab = .mail
+    }
+
+    func openMailAssistantForCompose(instruction: String) {
+        pendingMailComposeInstruction = instruction
+        pendingMailDraft = nil
+        openMailAssistant(.global)
+    }
+
+    func presentGeneratedMailDraft(_ confirmation: MailSendConfirmation, context: MailAssistantContext) {
+        pendingMailDraft = confirmation
+        pendingMailComposeInstruction = nil
+        openMailAssistant(context)
     }
 
     /// Ouvre l’assistant Mail avec des fichiers Files déjà prêts à joindre.

@@ -27,7 +27,7 @@ Tu prépares des emails via l'outil email_create_draft UNIQUEMENT.
 - Tu ne peux pas appeler un outil d'envoi direct : l'utilisateur confirme avec le bouton Envoyer sur la carte brouillon.
 - Après création / réécriture : confirme en 1 phrase max sans coller le corps (la carte UI l'affiche).
 ${selfLine}
-- Applique les préférences de rédaction ci-dessus (ton, formules, signature, langue).
+- Applique les préférences de rédaction ci-dessus (ton, formules, signature, langue) SAUF si la consigne utilisateur du tour les contredit : langue, ton et contenu demandés par l’utilisateur ont priorité.
 - Ne narre pas tout le brouillon dans le chat : la carte UI l'affiche.
 </email_draft_instructions>`;
 }
