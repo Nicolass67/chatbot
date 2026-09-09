@@ -120,7 +120,7 @@ struct FilesBrowserView: View {
 
     /// Files PC si runtime distant ; sandbox iPhone si IA locale.
     private var usesOnDeviceFiles: Bool {
-        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
+        session.localOnlyMode || executionMode.routesLocalCapableOnDevice
     }
 
     private var filesRequiresPc: Bool {
@@ -2428,7 +2428,7 @@ struct FilePreviewView: View {
                             .padding(.bottom, 8)
                     }
                 } else if let pdfURL {
-                    QuickLookPreview(url: pdfURL)
+                    PDFKitPreview(url: pdfURL)
                         .ignoresSafeArea(edges: .bottom)
                 } else if content?.kind == "pdf" {
                     SoftEmptyState(
@@ -2473,35 +2473,60 @@ struct FilePreviewView: View {
     private func load() async {
         loading = true
         defer { loading = false }
+        image = nil
+        pdfURL = nil
+        shareURL = nil
+        content = nil
         if fileId.hasPrefix("local:") {
-            let parsed = LocalFilesStore.parseFileId(fileId)
-            let rootId = parsed?.rootId ?? LocalFilesStore.documentsRootId
-            let rel = parsed?.relative ?? String(fileId.dropFirst("local:".count))
-            if let text = LocalFilesStore.readText(relativePath: rel, maxChars: 12_000, rootId: rootId) {
-                content = FileContentDTO(
-                    kind: "text",
-                    text: text,
-                    name: title,
-                    mime: "text/plain",
-                    truncated: text.count >= 12_000
-                )
-                error = nil
-                return
+            do {
+                let url = try LocalFilesStore.fileURL(forFileId: fileId)
+                let header = LocalFilesStore.peekHeader(fileId: fileId)
+                let kind = LocalFileTypeDetector.kind(for: url, sniffing: header)
+                shareURL = try? LocalFilesStore.exportableURL(fileId: fileId)
+                switch kind {
+                case .image:
+                    image = LocalImagePreviewLoader.load(url: url, maxPixelSize: 2048)
+                    if image == nil {
+                        error = "Impossible d’afficher cette image."
+                    } else {
+                        error = nil
+                    }
+                case .pdf:
+                    pdfURL = shareURL ?? url
+                    error = nil
+                case .text:
+                    if let text = LocalFilesStore.readText(
+                        relativePath: LocalFilesStore.parseFileId(fileId)?.relative ?? "",
+                        maxChars: 12_000,
+                        rootId: LocalFilesStore.parseFileId(fileId)?.rootId ?? LocalFilesStore.documentsRootId
+                    ) {
+                        content = FileContentDTO(
+                            kind: "text",
+                            text: text,
+                            name: title,
+                            mime: LocalFileTypeDetector.mimeType(for: url),
+                            truncated: text.count >= 12_000
+                        )
+                        error = nil
+                    } else {
+                        error = "Aperçu texte indisponible."
+                    }
+                case .unsupported:
+                    error = "Ce type de fichier n’a pas d’aperçu natif — utilise Partager."
+                }
+            } catch {
+                self.error = error.localizedDescription
             }
-            error = "Aperçu local indisponible pour ce type de fichier."
             return
         }
         do {
             let dto = try await client.fetchFileContent(fileId: fileId)
             content = dto
-            shareURL = nil
-            pdfURL = nil
-            image = nil
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ql-files", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
             if dto.kind == "image", let data = dto.binary {
-                image = UIImage(data: data)
+                image = LocalImagePreviewLoader.load(data: data, maxPixelSize: 2048)
                 let ext: String = {
                     if let name = dto.name {
                         let e = (name as NSString).pathExtension
@@ -2517,6 +2542,8 @@ struct FilePreviewView: View {
                 try data.write(to: dest, options: .atomic)
                 pdfURL = dest
                 shareURL = dest
+            } else if dto.kind != "text", dto.kind != "image", dto.kind != "pdf" {
+                // texte déjà dans dto
             }
             error = nil
         } catch {

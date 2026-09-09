@@ -269,7 +269,10 @@ struct ChatScreen: View {
         }
         .task {
             conversationTitle = conversation.title ?? ""
-            chatMode = conversation.chatMode ?? "chat"
+            if UserDefaults.standard.object(forKey: ConversationInteractionStore.defaultsKey) == nil {
+                ConversationInteractionStore.shared.set(stored: conversation.chatMode ?? "chat")
+            }
+            chatMode = ConversationInteractionStore.shared.mode.rawValue
             reasoningEffort = conversation.reasoningEffort ?? ""
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
             restoreDraftCardSnapshot()
@@ -994,7 +997,8 @@ struct ChatScreen: View {
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
-                    content: clean
+                    content: clean,
+                    id: summaryId
                 )
                 AppHaptics.success()
                 scrollToken += 1
@@ -2112,6 +2116,14 @@ private var sendBlockedHint: String {
         if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             let local = LocalChatStore.shared.messages(for: conversation.id)
             messages = local.map { $0.asMessageDTO() }
+            chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
+                conversationId: conversation.id,
+                messages: messages
+            )
+            chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                conversationId: conversation.id,
+                messages: messages
+            )
             hasMoreOlderMessages = false
             return
         }
@@ -2545,6 +2557,7 @@ private var sendBlockedHint: String {
         let previous = chatMode
         guard next != previous else { return }
         chatMode = next
+        ConversationInteractionStore.shared.set(stored: next)
         if usesOnDeviceAI {
             LocalChatStore.shared.setChatMode(next, conversationId: conversation.id)
             return
@@ -2975,11 +2988,7 @@ private var sendBlockedHint: String {
                     createdAt: nil
                 )
                 messages.append(userMsg)
-                _ = LocalChatStore.shared.appendMessage(
-                    conversationId: conversation.id,
-                    role: .user,
-                    content: shownText
-                )
+                persistLocalMessage(id: userMsg.id, role: .user, content: shownText)
             }
             thinkingKind = .custom("Files…")
             activeGeneration.workflow = "files"
@@ -3005,19 +3014,16 @@ private var sendBlockedHint: String {
                 sendTask = nil
                 return
             }
+            let filesAsstId = "asst-\(UUID().uuidString)"
             messages.append(
                 MessageDTO(
-                    id: "asst-\(UUID().uuidString)",
+                    id: filesAsstId,
                     role: "assistant",
                     content: reply,
                     createdAt: nil
                 )
             )
-            _ = LocalChatStore.shared.appendMessage(
-                conversationId: conversation.id,
-                role: .assistant,
-                content: reply
-            )
+            persistLocalMessage(id: filesAsstId, role: .assistant, content: reply)
             isSending = false
             thinkingKind = nil
             sendTask = nil
@@ -3025,19 +3031,16 @@ private var sendBlockedHint: String {
         }
 
         if options?.regenerate != true, !hideUserMessage {
+            let userId = "local-\(UUID().uuidString)"
             messages.append(
                 MessageDTO(
-                    id: "local-\(UUID().uuidString)",
+                    id: userId,
                     role: "user",
                     content: shownText,
                     createdAt: nil
                 )
             )
-            _ = LocalChatStore.shared.appendMessage(
-                conversationId: conversation.id,
-                role: .user,
-                content: shownText
-            )
+            persistLocalMessage(id: userId, role: .user, content: shownText)
         }
 
         thinkingKind = .reflecting
@@ -3124,11 +3127,7 @@ private var sendBlockedHint: String {
                 attachLocalChrome(sources: agentResult.sources, mailThreadId: agentResult.mailThreadId, finalize: true)
                 applyLocalAgentEvent(.completed)
                 streamSources = []
-                _ = LocalChatStore.shared.appendMessage(
-                    conversationId: conversation.id,
-                    role: .assistant,
-                    content: content
-                )
+                persistLocalMessage(id: asstId, role: .assistant, content: content)
                 isSending = false
                 sendTask = nil
                 streamingAssistantId = nil
@@ -3142,7 +3141,7 @@ private var sendBlockedHint: String {
             )
             let preferMailOverWeb = GmailOAuthSession.shared.isConnected
                 && (forcedScope == .mail || mailIntentForRoute.needsGmailSearch || MailIntentDetector.looksLikeMail(effectiveText))
-            let interaction = ConversationInteractionMode(stored: options?.mode ?? chatMode)
+            let interaction = ConversationInteractionStore.shared.mode
             let workflowKind = ConversationWorkflowRouter.kind(
                 interaction: interaction,
                 filesScope: false,
@@ -3211,11 +3210,7 @@ private var sendBlockedHint: String {
                 streamingText = ""
                 streamAccum.text = ""
                 streamSources = []
-                _ = LocalChatStore.shared.appendMessage(
-                    conversationId: conversation.id,
-                    role: .assistant,
-                    content: content
-                )
+                persistLocalMessage(id: asstId, role: .assistant, content: content)
                 isSending = false
                 sendTask = nil
                 activeGeneration.log("complete", extra: ["workflow": "web"])
@@ -3312,11 +3307,7 @@ private var sendBlockedHint: String {
                     finalize: true
                 )
                 streamingAssistantId = nil
-                _ = LocalChatStore.shared.appendMessage(
-                    conversationId: conversation.id,
-                    role: .assistant,
-                    content: answer
-                )
+                persistLocalMessage(id: asstId, role: .assistant, content: answer)
                 isSending = false
                 sendTask = nil
                 return
@@ -3358,11 +3349,7 @@ private var sendBlockedHint: String {
                         finalize: true
                     )
                     streamingAssistantId = nil
-                    _ = LocalChatStore.shared.appendMessage(
-                        conversationId: conversation.id,
-                        role: .assistant,
-                        content: mailbox.text
-                    )
+                    persistLocalMessage(id: asstId, role: .assistant, content: mailbox.text)
                     isSending = false
                     sendTask = nil
                     return
@@ -3398,19 +3385,16 @@ private var sendBlockedHint: String {
             guard !content.isEmpty else {
                 throw AIRuntimeError.emptyGeneration
             }
+            let chatAsstId = "asst-\(UUID().uuidString)"
             messages.append(
                 MessageDTO(
-                    id: "asst-\(UUID().uuidString)",
+                    id: chatAsstId,
                     role: "assistant",
                     content: content,
                     createdAt: nil
                 )
             )
-            _ = LocalChatStore.shared.appendMessage(
-                conversationId: conversation.id,
-                role: .assistant,
-                content: content
-            )
+            persistLocalMessage(id: chatAsstId, role: .assistant, content: content)
         } catch is CancellationError {
             await LocalInferenceEngine.shared.cancel()
             thinkingKind = nil
@@ -4097,11 +4081,22 @@ private var sendBlockedHint: String {
         shouldShowLiveAgentStrip
     }
 
-    /// Panel agent live : uniquement si un vrai run Agent a démarré.
+    /// Panel agent live : uniquement si l’utilisateur a choisi Agent.
     /// Chat + web search seul → ThinkingStatusView (pas « Préparation du plan… »).
     private var shouldShowLiveAgentStrip: Bool {
+        guard userChoseAgent else { return false }
         guard !agentActivity.completed else { return false }
         return agentActivity.visible
+    }
+
+    private var userChoseAgent: Bool {
+        ConversationInteractionStore.shared.mode == .agent
+    }
+
+    /// Ne jamais ouvrir l’UI Agent depuis un outil Web / Mail / Chat.
+    private func armAgentActivityIfUserChoseAgent() {
+        guard userChoseAgent else { return }
+        agentActivity.visible = true
     }
 
     /// Query outil depuis le payload SSE (`query` top-level ou `input.query`).
@@ -4200,10 +4195,11 @@ private var sendBlockedHint: String {
 
     /// Runtime local → même `AgentActivityState` que le SSE PC.
     private func applyLocalAgentEvent(_ event: AgentOrchestrationEvent) {
+        guard userChoseAgent else { return }
         switch event {
         case .started:
             thinkingKind = nil
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.completed = false
             agentActivity.lastError = nil
             agentActivity.phase = "planning"
@@ -4218,7 +4214,7 @@ private var sendBlockedHint: String {
             _ = ensureAgentRunAnchorMessage(forceNew: true)
             activeGeneration.messageId = streamingAssistantId
         case .plan(let steps):
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.planSteps = steps
             agentActivity.totalSteps = steps.count
             if let first = steps.first {
@@ -4226,7 +4222,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case .stepStarted(let id, let title):
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.phase = "executing"
             if let i = agentActivity.planSteps.firstIndex(where: { $0.id == id }) {
                 agentActivity.planSteps[i].status = "running"
@@ -4249,7 +4245,7 @@ private var sendBlockedHint: String {
             agentActivity.lastError = AgentToolLabels.friendlyError(message)
             syncAgentChromeToStreamingMessage()
         case .toolStarted(let tool, let query):
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             let label = AgentToolLabels.humanize(tool)
             agentActivity.currentStepTitle = label
             if tool.lowercased().contains("web") || tool.lowercased().contains("search") {
@@ -4276,7 +4272,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case .webSearch(let query):
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.webQuery = query
             agentActivity.webPhase = .searching
             activeGeneration.phase = .searching
@@ -4422,7 +4418,7 @@ private var sendBlockedHint: String {
             chrome.mailHandoff = resolvedHandoff
             streamMailHandoff = resolvedHandoff
         }
-        if agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.completed {
+        if userChoseAgent, agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.completed {
             var snap = agentActivity.snapshot()
             if finalize || agentActivity.completed {
                 snap.completed = true
@@ -4431,6 +4427,15 @@ private var sendBlockedHint: String {
         }
         chromeById[id] = chrome
         ConversationSessionStore.setChrome(chrome, conversationId: conversation.id, messageId: id)
+    }
+
+    private func persistLocalMessage(id: String, role: LocalMessage.Role, content: String) {
+        _ = LocalChatStore.shared.appendMessage(
+            conversationId: conversation.id,
+            role: role,
+            content: content,
+            id: id
+        )
     }
 
     /// Active l’étape `index` sans inventer de « done » sur les précédentes.
@@ -4529,7 +4534,7 @@ private var sendBlockedHint: String {
                 agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
             }
             agentActivity.completed = true
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             syncAgentChromeToStreamingMessage(completed: true)
             agentActivity = AgentActivityState()
         } else {
@@ -4715,7 +4720,7 @@ private var sendBlockedHint: String {
         case "agent_start":
             let startedFresh = !agentActivity.visible
             thinkingKind = nil
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.completed = false
             agentActivity.lastError = nil
             agentActivity.phase = "planning"
@@ -4728,7 +4733,7 @@ private var sendBlockedHint: String {
             if startedFresh { AppHaptics.light() }
         case "agent_plan":
             thinkingKind = nil
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.completed = false
             agentActivity.phase = "planning"
             if agentActivity.startedAt == nil { agentActivity.startedAt = Date() }
@@ -4756,7 +4761,7 @@ private var sendBlockedHint: String {
             syncAgentChromeToStreamingMessage()
         case "agent_step", "agent_step_update":
             thinkingKind = nil
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.phase = "executing"
             if let idx = obj["stepIndex"] as? Int { agentActivity.stepIndex = idx }
             if let total = obj["totalSteps"] as? Int { agentActivity.totalSteps = total }
@@ -4777,7 +4782,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case "agent_action_start":
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.phase = "executing"
             if let stepId = obj["stepId"] as? String {
                 activateAgentPlanStep(id: stepId)
@@ -4810,7 +4815,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case "agent_action_done":
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             if let summary = obj["summary"] as? String, !summary.isEmpty {
                 agentActivity.currentStepTitle = AgentToolLabels.humanize(summary)
             }
@@ -4828,7 +4833,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case "agent_status":
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             if let phase = obj["phase"] as? String {
                 agentActivity.phase = phase
                 if phase == "synthesizing" || phase == "synthesis" {
@@ -4847,7 +4852,7 @@ private var sendBlockedHint: String {
             }
             syncAgentChromeToStreamingMessage()
         case "agent_done":
-            agentActivity.visible = true
+            armAgentActivityIfUserChoseAgent()
             agentActivity.phase = "synthesis"
             if let plan = obj["plan"] as? [String: Any] {
                 applyAgentPlanFromPayload(plan)
@@ -5115,7 +5120,7 @@ private var sendBlockedHint: String {
                 }
                 agentActivity.completed = true
                 agentActivity.phase = "synthesis"
-                agentActivity.visible = true
+                armAgentActivityIfUserChoseAgent()
                 for i in agentActivity.planSteps.indices
                 where agentActivity.planSteps[i].status == "running" {
                     agentActivity.planSteps[i].status = "done"

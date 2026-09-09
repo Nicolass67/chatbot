@@ -52,7 +52,6 @@ struct MailDraftProposal: View {
         isSent || busy || isStreaming
             || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || confirmedRecipients.isEmpty
-            || draftId == nil
     }
 
     private var statusTint: Color {

@@ -236,6 +236,46 @@ final class DirectGmailClient {
         )
     }
 
+    func markRead(messageId: String, threadId: String? = nil) async throws {
+        let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
+        }
+        _ = try await jsonObject(
+            url: baseURL
+                .appendingPathComponent("messages")
+                .appendingPathComponent(trimmed)
+                .appendingPathComponent("modify"),
+            method: "POST",
+            jsonBody: ["removeLabelIds": ["UNREAD"]]
+        )
+        let thread = (threadId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !thread.isEmpty {
+            _ = try? await jsonObject(
+                url: baseURL
+                    .appendingPathComponent("threads")
+                    .appendingPathComponent(thread)
+                    .appendingPathComponent("modify"),
+                method: "POST",
+                jsonBody: ["removeLabelIds": ["UNREAD"]]
+            )
+        }
+    }
+
+    func trashMessage(messageId: String) async throws {
+        let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
+        }
+        _ = try await jsonObject(
+            url: baseURL
+                .appendingPathComponent("messages")
+                .appendingPathComponent(trimmed)
+                .appendingPathComponent("trash"),
+            method: "POST"
+        )
+    }
+
     // MARK: - HTTP (401 → refresh once)
 
     private func getMessageMetadata(id: String) async throws -> DirectMailMessage {

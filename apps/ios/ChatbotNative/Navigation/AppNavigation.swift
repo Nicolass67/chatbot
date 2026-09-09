@@ -26,8 +26,38 @@ enum AppTab: Int, CaseIterable, Identifiable, Hashable {
 
 struct MailDeepLink: Equatable, Sendable {
     var threadId: String?
+    var messageId: String?
     var query: String?
     var label: String?
+    var subject: String?
+    var sender: String?
+
+    init(
+        threadId: String? = nil,
+        messageId: String? = nil,
+        query: String? = nil,
+        label: String? = nil,
+        subject: String? = nil,
+        sender: String? = nil
+    ) {
+        self.threadId = threadId
+        self.messageId = messageId
+        self.query = query
+        self.label = label
+        self.subject = subject
+        self.sender = sender
+    }
+
+    init(_ reference: MailHandoffDTO) {
+        self.init(
+            threadId: reference.threadId,
+            messageId: reference.messageId,
+            query: reference.query,
+            label: reference.label,
+            subject: reference.subject,
+            sender: reference.sender
+        )
+    }
 }
 
 /// Handoff Files → Assistant Mail (PJ préchargée).
@@ -93,8 +123,14 @@ final class AppNavigation {
     var qaIntent: QaNavIntent?
 
     func openMail(threadId: String? = nil, query: String? = nil, label: String? = nil) {
+        openMail(
+            MailHandoffDTO(intent: "open", query: query, threadId: threadId, label: label)
+        )
+    }
+
+    func openMail(_ reference: MailHandoffDTO) {
         dismissAssistantSheets()
-        mailDeepLink = MailDeepLink(threadId: threadId, query: query, label: label)
+        mailDeepLink = MailDeepLink(reference)
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 80_000_000)
             selectedTab = .mail
@@ -198,7 +234,21 @@ final class AppNavigation {
         prefill: String? = nil
     ) {
         guard !files.isEmpty else { return }
-        let handoffs = files.map {
+        let local = files.filter { $0.fileId.hasPrefix("local:") }
+        let remote = files.filter { !$0.fileId.hasPrefix("local:") }
+        if !local.isEmpty {
+            let urls: [URL] = local.compactMap { item in
+                try? LocalFilesStore.exportableURL(fileId: item.fileId)
+            }
+            if !urls.isEmpty {
+                NativeMailShare.present(
+                    fileURLs: urls,
+                    subject: local.count == 1 ? local[0].filename : "Fichiers"
+                )
+            }
+        }
+        guard !remote.isEmpty else { return }
+        let handoffs = remote.map {
             MailAttachHandoff(fileId: $0.fileId, filename: $0.filename)
         }
         for handoff in handoffs {

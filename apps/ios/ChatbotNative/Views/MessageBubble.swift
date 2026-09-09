@@ -93,8 +93,8 @@ struct MessageBubble: View {
 
                 if let mailHandoff {
                     HandoffBanner(
-                        title: "Ouvrir dans Mail",
-                        subtitle: mailHandoff.reason ?? mailHandoff.query ?? "Handoff mail",
+                        title: mailHandoff.bannerTitle,
+                        subtitle: mailHandoff.bannerSubtitle,
                         systemImage: "envelope.open"
                     ) { onMailHandoff?() }
                 }

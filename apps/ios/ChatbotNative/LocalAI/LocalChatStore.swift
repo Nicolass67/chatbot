@@ -161,11 +161,24 @@ final class LocalChatStore: ObservableObject {
     func appendMessage(
         conversationId: String,
         role: LocalMessage.Role,
-        content: String
+        content: String,
+        id: String? = nil
     ) -> LocalMessage? {
         guard conversations.contains(where: { $0.id == conversationId }) else { return nil }
         var list = messages(for: conversationId)
-        let message = LocalMessage(conversationId: conversationId, role: role, content: content)
+        let messageId = {
+            let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? UUID().uuidString : trimmed
+        }()
+        if list.contains(where: { $0.id == messageId }) {
+            return list.first { $0.id == messageId }
+        }
+        let message = LocalMessage(
+            id: messageId,
+            conversationId: conversationId,
+            role: role,
+            content: content
+        )
         list.append(message)
         persistMessages(list, for: conversationId)
         if let idx = conversations.firstIndex(where: { $0.id == conversationId }) {

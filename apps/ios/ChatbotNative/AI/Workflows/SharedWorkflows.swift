@@ -483,6 +483,7 @@ enum MailMailboxWorkflow {
     struct Result: Sendable {
         var text: String
         var mailThreadId: String?
+        var mailHandoff: MailHandoffDTO?
         var sourcesLabel: String?
     }
 
@@ -516,6 +517,8 @@ enum MailMailboxWorkflow {
             "gmail_q": String(gmailQ.prefix(80)),
         ])
 
+        let handoff = result.mailHandoff ?? MailReference.first(fromToolText: result.text)
+
         if hasMessages, MailIntentDetector.wantsReply(request.userText),
            let threadId = result.mailThreadId, !threadId.isEmpty {
             let confirmation = try await MailReplyWorkflow.run(
@@ -530,7 +533,7 @@ enum MailMailboxWorkflow {
 
             L’envoi réel nécessite une confirmation explicite.
             """
-            return Result(text: text, mailThreadId: threadId, sourcesLabel: nil)
+            return Result(text: text, mailThreadId: threadId, mailHandoff: handoff, sourcesLabel: nil)
         }
 
         let clipped = GenerationContextBudget.clip(result.text, maxChars: profile.toolResultCharBudget)
@@ -560,7 +563,7 @@ enum MailMailboxWorkflow {
                 maxTokens: profile.outputTokens(for: .mailSummary)
             )
         }
-        return Result(text: text, mailThreadId: result.mailThreadId, sourcesLabel: nil)
+        return Result(text: text, mailThreadId: result.mailThreadId, mailHandoff: handoff, sourcesLabel: nil)
     }
 }
 
@@ -625,6 +628,7 @@ enum FilesWorkflow {
     struct Request: Sendable {
         var path: String
         var userQuestion: String
+        var fileId: String? = nil
     }
 
     @MainActor
@@ -635,6 +639,10 @@ enum FilesWorkflow {
     ) async throws -> String {
         let profile = runtime.executionProfile
         do {
+            var extra = ""
+            if let fileId = request.fileId, let extracted = LocalDocumentExtractor.extract(fileId: fileId) {
+                extra = "\n\nContenu du fichier ouvert:\n\(extracted)"
+            }
             let searchFirst = !request.userQuestion.isEmpty
             let data: AIToolResult
             if searchFirst {
@@ -649,13 +657,13 @@ enum FilesWorkflow {
                     profile: profile
                 )
             }
-            if request.userQuestion.isEmpty { return data.text }
+            if request.userQuestion.isEmpty { return data.text + extra }
             return try await runtime.generate(
                 system: "Aide sur les fichiers accessibles à l’app. Utilise uniquement les données fournies. Markdown autorisé.",
                 messages: [
                     LLMChatMessage(
                         role: .user,
-                        content: "Question: \(request.userQuestion)\n\nDonnées:\n\(data.text)"
+                        content: "Question: \(request.userQuestion)\n\nDonnées:\n\(data.text)\(extra)"
                     ),
                 ],
                 maxTokens: profile.outputTokens(for: .files)

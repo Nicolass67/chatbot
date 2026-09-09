@@ -45,6 +45,11 @@ struct MailInboxView: View {
     @State private var assistantContext: MailAssistantContext = .global
     @State private var sheetContext: MailAssistantContext = .global
     @State private var assistantDetent: PresentationDetent = .large
+    @State private var pendingMailDeepLink: MailDeepLink?
+    @State private var mailDeepLinkError: String?
+    @State private var mutationError: String?
+    @State private var locallyReadIds: Set<String> = []
+    @State private var locallyDeletedIds: Set<String> = []
 
     /// Pagination Gmail (tri « plus récents »).
     @State private var nextPageToken: String?
@@ -125,20 +130,93 @@ struct MailInboxView: View {
 
     private func handleMailDeepLink(_ link: MailDeepLink?) {
         guard let link else { return }
-        if let threadId = link.threadId {
+        if messages.isEmpty && loading {
+            pendingMailDeepLink = link
+            return
+        }
+        Task { await openMailReference(link) }
+    }
+
+    private func mailServing() -> GmailServing {
+        useDirectGmail ? DirectGmailProvider() : RemoteGmailProvider(client: client)
+    }
+
+    private func openMailReference(_ link: MailDeepLink) async {
+        defer {
+            nav.mailDeepLink = nil
+            pendingMailDeepLink = nil
+        }
+        if let messageId = link.messageId, !messageId.isEmpty {
+            if let match = messages.first(where: { $0.id == messageId || $0.threadId == messageId }) {
+                path.append(match)
+                return
+            }
+            do {
+                let msg = try await mailServing().getMessage(id: messageId)
+                path.append(Self.mapDirectMessage(msg))
+                return
+            } catch {
+                if let threadId = link.threadId, !threadId.isEmpty {
+                    await openThreadReference(threadId, fallbackError: error)
+                    return
+                }
+                mailDeepLinkError = friendlyMissingMailError(error)
+                return
+            }
+        }
+        if let threadId = link.threadId, !threadId.isEmpty {
             if let match = messages.first(where: { $0.threadId == threadId || $0.id == threadId }) {
                 path.append(match)
+                return
             }
-        } else if let q = link.query?.lowercased(), !q.isEmpty {
+            await openThreadReference(threadId, fallbackError: nil)
+            return
+        }
+        if let q = link.query?.lowercased(), !q.isEmpty {
             if let match = messages.first(where: { msg in
                 let subject = (msg.subject ?? "").lowercased()
                 let snippet = (msg.snippet ?? "").lowercased()
                 return subject.contains(q) || snippet.contains(q)
             }) {
                 path.append(match)
+                return
             }
+            mailDeepLinkError = "Ce mail n'est plus disponible"
         }
-        nav.mailDeepLink = nil
+    }
+
+    private func openThreadReference(_ threadId: String, fallbackError: Error?) async {
+        do {
+            let thread = try await mailServing().getThread(id: threadId)
+            let last = thread.messages.last ?? DirectMailMessage(
+                id: thread.id,
+                threadId: thread.threadId ?? thread.id,
+                subject: thread.subject,
+                from: thread.from,
+                snippet: thread.snippet,
+                date: thread.date,
+                bodyPlain: thread.bodyPlain,
+                bodyHtml: nil,
+                labelIds: thread.labelIds
+            )
+            path.append(Self.mapDirectMessage(last))
+        } catch {
+            mailDeepLinkError = friendlyMissingMailError(fallbackError ?? error)
+        }
+    }
+
+    private func friendlyMissingMailError(_ error: Error) -> String {
+        if case DirectGmailError.http(let code, _) = error, code == 404 {
+            return "Ce mail n'est plus disponible"
+        }
+        if case APIClientError.http(let code, _) = error, code == 404 {
+            return "Ce mail n'est plus disponible"
+        }
+        let desc = error.localizedDescription.lowercased()
+        if desc.contains("404") || desc.contains("not found") || desc.contains("n’existe") {
+            return "Ce mail n'est plus disponible"
+        }
+        return error.localizedDescription
     }
 
     private func handleQaIntent(_ intent: QaNavIntent?) {
@@ -204,6 +282,21 @@ struct MailInboxView: View {
             localPageIndex: localPageIndex,
             windowExhausted: windowExhausted
         )
+    }
+
+    /// Overlay local après mutation Gmail — un `load()` en vol ne doit pas réafficher « non lu ».
+    private func applyOptimisticMutations(_ items: [MailMessageSummary]) -> [MailMessageSummary] {
+        items
+            .filter { !locallyDeletedIds.contains($0.id) }
+            .map { msg in
+                if locallyReadIds.contains(msg.id) {
+                    return msg.withUnread(false)
+                }
+                if let threadId = msg.threadId, locallyReadIds.contains(threadId) {
+                    return msg.withUnread(false)
+                }
+                return msg
+            }
     }
 
     /// Enforce unread filter client-side (API can lag / mis-estimate).
@@ -314,6 +407,10 @@ struct MailInboxView: View {
                 }
                 .navigationDestination(for: MailMessageSummary.self) { msg in
                     MailThreadView(summary: msg) {
+                        locallyReadIds.insert(msg.id)
+                        if let threadId = msg.threadId {
+                            locallyReadIds.insert(threadId)
+                        }
                         applyLocalRead(msg.id)
                     }
                     .accessibilityIdentifier(A11yID.Mail.detail)
@@ -355,6 +452,17 @@ struct MailInboxView: View {
                     }
                 } message: {
                     Text(trashTarget?.subject ?? "Le message sera mis à la corbeille.")
+                }
+                .alert(
+                    "Mail introuvable",
+                    isPresented: Binding(
+                        get: { mailDeepLinkError != nil },
+                        set: { if !$0 { mailDeepLinkError = nil } }
+                    )
+                ) {
+                    Button("OK", role: .cancel) { mailDeepLinkError = nil }
+                } message: {
+                    Text(mailDeepLinkError ?? "Ce mail n'est plus disponible")
                 }
         }
     }
@@ -399,6 +507,9 @@ struct MailInboxView: View {
     private func bootMailInbox() async {
         restoreMailCacheIfNeeded()
         await loadOAuth()
+        if let link = nav.mailDeepLink {
+            handleMailDeepLink(link)
+        }
         if messages.isEmpty {
             scheduleLoad()
         }
@@ -435,6 +546,22 @@ struct MailInboxView: View {
 
     private var mailChrome: some View {
         VStack(spacing: 10) {
+            if let mutationError, !mutationError.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(AppTheme.danger)
+                    Text(mutationError)
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.foreground)
+                    Spacer(minLength: 0)
+                    Button("OK") { self.mutationError = nil }
+                        .font(CNFont.caption.weight(.semibold))
+                }
+                .padding(AppTheme.space12)
+                .background(AppTheme.danger.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                .padding(.horizontal, AppTheme.space12)
+            }
             if oauthCheckCompleted && oauthEmails.isEmpty {
                 HStack(alignment: .top, spacing: AppTheme.space12) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -682,7 +809,7 @@ struct MailInboxView: View {
             return
         }
         let end = min(start + pageSize, sortedWindow.count)
-        messages = Array(sortedWindow[start..<end])
+        messages = applyOptimisticMutations(Array(sortedWindow[start..<end]))
     }
 
     private func load(pageToken: String?) async {
@@ -714,7 +841,7 @@ struct MailInboxView: View {
                     pageToken: pageToken
                 )
                 guard gen == loadGeneration, !Task.isCancelled else { return }
-                let filtered = applyUnreadFilter(page.messages)
+                let filtered = applyOptimisticMutations(applyUnreadFilter(page.messages))
                 messages = sortedMessages(filtered, by: activeSort)
                 nextPageToken = page.nextPageToken
                 let est = page.resultSizeEstimate ?? 0
@@ -744,7 +871,7 @@ struct MailInboxView: View {
                     guard gen == loadGeneration, !Task.isCancelled else { return }
                     if let est = page.resultSizeEstimate, est > 0 { estimate = est }
                     if page.messages.isEmpty { break }
-                    collected.append(contentsOf: applyUnreadFilter(page.messages))
+                    collected.append(contentsOf: applyOptimisticMutations(applyUnreadFilter(page.messages)))
                     if let next = page.nextPageToken, !next.isEmpty {
                         token = next
                         exhausted = false
@@ -765,6 +892,9 @@ struct MailInboxView: View {
                 applyLocalPage()
                 error = nil
                 publishMailUnreadFromInbox(estimate: estimate, page: unique)
+            }
+            if let pending = pendingMailDeepLink ?? nav.mailDeepLink {
+                await openMailReference(pending)
             }
         } catch is CancellationError {
             return
@@ -1028,45 +1158,39 @@ struct MailInboxView: View {
     }
 
     private func trashMessage(_ msg: MailMessageSummary) async {
-        // UX : disparition immédiate ; propose+confirm serveur en arrière-plan.
-        let wasUnread = msg.isUnread == true
+        mutationError = nil
+        locallyDeletedIds.insert(msg.id)
+        let snapshot = msg
         let indices = removeMessageLocally(msg.id)
-        if wasUnread { bumpWidgetUnread(by: -1) }
-        AppHaptics.warning()
         do {
-            let proposal = try await client.proposeMailTrash(messageId: msg.id)
-            try await client.confirmMailTrash(
-                actionId: proposal.actionId,
-                confirmationToken: proposal.confirmationToken
-            )
+            try await mailServing().trashMessage(messageId: msg.id)
+            if snapshot.isUnread == true { bumpWidgetUnread(by: -1) }
+            AppHaptics.warning()
         } catch {
-            restoreMessageLocally(msg, messageIndex: indices.messageIndex, windowIndex: indices.windowIndex)
-            if wasUnread { bumpWidgetUnread(by: 1) }
-            self.error = error.localizedDescription
+            locallyDeletedIds.remove(msg.id)
+            restoreMessageLocally(snapshot, messageIndex: indices.messageIndex, windowIndex: indices.windowIndex)
+            mutationError = error.localizedDescription
             AppHaptics.warning()
         }
     }
 
     private func markRead(_ msg: MailMessageSummary) async {
-        applyLocalRead(msg.id)
-        AppHaptics.light()
+        mutationError = nil
+        locallyReadIds.insert(msg.id)
+        if let threadId = msg.threadId {
+            locallyReadIds.insert(threadId)
+        }
         do {
-            try await client.markMailRead(id: msg.id)
+            try await mailServing().markRead(messageId: msg.id, threadId: msg.threadId)
+            applyLocalRead(msg.id)
+            AppHaptics.light()
         } catch {
-            // Restaure l’état non-lu sans refresh liste.
-            if unreadOnly {
-                restoreMessageLocally(msg, messageIndex: 0, windowIndex: 0)
-            } else {
-                if let i = messages.firstIndex(where: { $0.id == msg.id }) {
-                    messages[i] = messages[i].withUnread(true)
-                }
-                if let i = sortedWindow.firstIndex(where: { $0.id == msg.id }) {
-                    sortedWindow[i] = sortedWindow[i].withUnread(true)
-                }
-                persistMailCache()
+            locallyReadIds.remove(msg.id)
+            if let threadId = msg.threadId {
+                locallyReadIds.remove(threadId)
             }
-            bumpWidgetUnread(by: 1)
-            self.error = error.localizedDescription
+            mutationError = error.localizedDescription
+            AppHaptics.warning()
         }
     }
 
@@ -1211,7 +1335,7 @@ struct MailThreadView: View {
     }
 
     private var usesOnDeviceAI: Bool {
-        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
+        session.localOnlyMode || executionMode.routesLocalCapableOnDevice
     }
 
     private var threadId: String {
@@ -1407,11 +1531,22 @@ struct MailThreadView: View {
                     }
                 )
                 error = nil
+                do {
+                    try await DirectGmailProvider().markRead(messageId: summary.id, threadId: threadId)
+                    notifyReadLocallyIfNeeded()
+                } catch {
+                    // Fil ouvert ; pastille inbox conservée tant que Gmail n’a pas accepté.
+                }
                 return
             }
             thread = try await client.fetchMailThread(id: threadId)
             error = nil
-            try? await client.markMailRead(id: summary.id)
+            do {
+                try await client.markMailRead(id: summary.id)
+                notifyReadLocallyIfNeeded()
+            } catch {
+                // même règle : pas de succès faux
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -1536,14 +1671,53 @@ struct MailThreadView: View {
     }
 
     private func sendDraft() async {
-        guard let draftId = replyDraftId, var body = replyDraft else { return }
+        guard var body = replyDraft else { return }
+        body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
         aiBusy = true
         defer { aiBusy = false }
         do {
-            body = body.trimmingCharacters(in: .whitespacesAndNewlines)
             if usesOnDeviceAI {
                 body = MailThreadPromptBuilder.plainBodyForSend(body)
+                let toJoined = replyDraftTo
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ", ")
+                if GmailOAuthSession.shared.isConnected {
+                    let gmail = DirectGmailProvider()
+                    if let draftId = replyDraftId, !draftId.isEmpty {
+                        try await gmail.sendDraft(id: draftId)
+                    } else if !toJoined.isEmpty {
+                        try await gmail.sendMessage(
+                            to: toJoined,
+                            subject: replyDraftSubject,
+                            body: body,
+                            threadId: threadId
+                        )
+                    } else {
+                        NativeMailShare.presentComposer(
+                            to: replyDraftTo,
+                            subject: replyDraftSubject,
+                            body: body
+                        )
+                        sendStatus = "Brouillon ouvert dans Mail."
+                        return
+                    }
+                } else {
+                    NativeMailShare.presentComposer(
+                        to: replyDraftTo,
+                        subject: replyDraftSubject,
+                        body: body
+                    )
+                    sendStatus = "Brouillon ouvert dans Mail."
+                    return
+                }
+                sendStatus = "Message envoyé."
+                AppHaptics.success()
+                return
             }
+            guard let draftId = replyDraftId else { return }
             let to = replyDraftTo
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1556,7 +1730,6 @@ struct MailThreadView: View {
             )
             try await client.validateEmailDraft(id: draftId)
             let proposal = try await client.proposeEmailSend(draftId: draftId)
-            // Workspace conversation for confirm API
             let conv = try await client.createConversation(
                 scope: .mail,
                 contextKey: threadId,

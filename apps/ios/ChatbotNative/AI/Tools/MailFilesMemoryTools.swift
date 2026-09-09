@@ -41,9 +41,19 @@ struct MailSearchTool: AITool {
         let fetchBodies = (arguments["fetchBodies"] ?? "true").lowercased() != "false"
         var blocks: [String] = []
         var firstThread: String?
+        var firstHandoff: MailHandoffDTO?
         for (idx, m) in page.messages.prefix(limitCount).enumerated() {
             try Task.checkCancellation()
             if firstThread == nil { firstThread = m.threadId ?? m.id }
+            if firstHandoff == nil {
+                firstHandoff = MailReference.make(
+                    messageId: m.id,
+                    threadId: m.threadId ?? m.id,
+                    subject: m.subject,
+                    sender: m.from,
+                    date: m.date
+                )
+            }
             var bodySnippet = m.snippet ?? ""
             if fetchBodies {
                 if let full = try? await client.getMessage(id: m.id) {
@@ -69,7 +79,8 @@ struct MailSearchTool: AITool {
             ok: true,
             text: blocks.joined(separator: "\n\n"),
             truncated: false,
-            mailThreadId: firstThread
+            mailThreadId: firstThread,
+            mailHandoff: firstHandoff
         )
     }
 }

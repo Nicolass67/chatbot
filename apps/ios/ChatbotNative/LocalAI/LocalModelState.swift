@@ -77,7 +77,7 @@ enum ExecutionModePreference: String, Codable, CaseIterable, Identifiable, Senda
     var helpText: String {
         switch self {
         case .automatic:
-            return "Utilise le PC quand il est joignable ; bascule sur l’IA locale uniquement si le PC est indisponible et le modèle prêt."
+            return "Si un modèle local est chargé, Chat, Mail, Files et les pièces jointes restent sur l’iPhone. Le PC n’est utilisé que pour les opérations vraiment distantes."
         case .forceRemote:
             return "Force l’assistant distant (LM Studio sur le PC). Aucune génération locale."
         case .forceLocal:

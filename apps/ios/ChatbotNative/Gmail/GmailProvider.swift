@@ -31,6 +31,9 @@ protocol GmailServing: AnyObject {
         body: String,
         threadId: String?
     ) async throws
+
+    func markRead(messageId: String, threadId: String?) async throws
+    func trashMessage(messageId: String) async throws
 }
 
 // MARK: - Remote (PC)
@@ -154,6 +157,19 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
     ) async throws {
         throw DirectGmailError.invalidArgument(
             "Envoi Gmail API direct indisponible en mode distant — utilise la confirmation d’envoi existante."
+        )
+    }
+
+    func markRead(messageId: String, threadId: String?) async throws {
+        try await client.markMailRead(id: messageId)
+        _ = threadId
+    }
+
+    func trashMessage(messageId: String) async throws {
+        let proposal = try await client.proposeMailTrash(messageId: messageId)
+        try await client.confirmMailTrash(
+            actionId: proposal.actionId,
+            confirmationToken: proposal.confirmationToken
         )
     }
 
@@ -285,6 +301,16 @@ final class DirectGmailProvider: GmailServing {
             body: body,
             threadId: threadId
         )
+    }
+
+    func markRead(messageId: String, threadId: String?) async throws {
+        try await ensureConnected()
+        try await client.markRead(messageId: messageId, threadId: threadId)
+    }
+
+    func trashMessage(messageId: String) async throws {
+        try await ensureConnected()
+        try await client.trashMessage(messageId: messageId)
     }
 
     private func ensureConnected() async throws {

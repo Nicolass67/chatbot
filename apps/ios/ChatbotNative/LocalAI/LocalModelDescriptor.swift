@@ -287,7 +287,7 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             expectedBytes: 3_349_516_256,
             filename: "gemma-4-E2B_q4_0-it.gguf",
             downloadURL: nil,
-            sha256: nil,
+            sha256: "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
             version: "0",
             license: "Gemma",
             contextLength: 32_768,

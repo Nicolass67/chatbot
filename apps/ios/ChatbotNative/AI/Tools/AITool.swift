@@ -16,6 +16,8 @@ struct AIToolResult: Equatable, Sendable {
     var sources: [SearchSourceDTO]
     /// Fil mail principal si l’outil en a identifié un.
     var mailThreadId: String?
+    /// Référence structurée (tile persistante).
+    var mailHandoff: MailHandoffDTO?
 
     init(
         action: String,
@@ -23,7 +25,8 @@ struct AIToolResult: Equatable, Sendable {
         text: String,
         truncated: Bool,
         sources: [SearchSourceDTO] = [],
-        mailThreadId: String? = nil
+        mailThreadId: String? = nil,
+        mailHandoff: MailHandoffDTO? = nil
     ) {
         self.action = action
         self.ok = ok
@@ -31,6 +34,7 @@ struct AIToolResult: Equatable, Sendable {
         self.truncated = truncated
         self.sources = sources
         self.mailThreadId = mailThreadId
+        self.mailHandoff = mailHandoff
     }
 
     static func failure(action: String, message: String) -> AIToolResult {
@@ -172,7 +176,8 @@ final class AIToolRegistry {
             text: clipped,
             truncated: true,
             sources: result.sources,
-            mailThreadId: result.mailThreadId
+            mailThreadId: result.mailThreadId,
+            mailHandoff: result.mailHandoff
         )
     }
 

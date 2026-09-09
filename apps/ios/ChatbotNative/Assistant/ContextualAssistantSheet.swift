@@ -157,7 +157,7 @@ struct ContextualAssistantSheet: View {
     }
 
     private var useLocalAssistant: Bool {
-        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
+        session.localOnlyMode || ExecutionModeStore.shared.routesLocalCapableOnDevice
     }
 
     private func boot() async {
@@ -340,7 +340,7 @@ struct ScopedConversationSwitcher: View {
     }
 
     private var useLocalAssistant: Bool {
-        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
+        session.localOnlyMode || ExecutionModeStore.shared.routesLocalCapableOnDevice
     }
 
     private var filtered: [ConversationDTO] {

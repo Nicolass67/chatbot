@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Source unique Chat vs Agent (sélection utilisateur).
 /// Distinct de `EffectiveExecutionMode` (PC vs runtime local).
@@ -8,6 +9,32 @@ enum ConversationInteractionMode: String, Codable, CaseIterable, Sendable {
 
     init(stored: String?) {
         self = ConversationInteractionMode(rawValue: stored ?? "") ?? .chat
+    }
+}
+
+/// Une seule source de vérité pour Chat vs Agent — survit à la navigation et au relance.
+@MainActor
+final class ConversationInteractionStore: ObservableObject {
+    static let shared = ConversationInteractionStore()
+    static let defaultsKey = "ctxchat.conversationInteractionMode"
+
+    @Published private(set) var mode: ConversationInteractionMode
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let raw = defaults.string(forKey: Self.defaultsKey)
+        mode = ConversationInteractionMode(stored: raw)
+    }
+
+    func set(_ next: ConversationInteractionMode) {
+        guard next != mode else { return }
+        mode = next
+        defaults.set(next.rawValue, forKey: Self.defaultsKey)
+    }
+
+    func set(stored: String) {
+        set(ConversationInteractionMode(stored: stored))
     }
 }
 

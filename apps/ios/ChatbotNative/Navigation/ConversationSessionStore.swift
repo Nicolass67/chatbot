@@ -59,6 +59,44 @@ enum ConversationSessionStore {
     private struct PersistedChromeSlice: Codable {
         var filesFound: [FilesFoundFileDTO]
         var savedMemories: [SavedMemoryChipDTO]
+        var mailHandoff: MailHandoffDTO?
+        var sources: [SearchSourceDTO] = []
+        var filesHandoff: FilesHandoffDTO?
+
+        var hasPersistentPayload: Bool {
+            !filesFound.isEmpty
+                || !savedMemories.isEmpty
+                || mailHandoff != nil
+                || !sources.isEmpty
+                || filesHandoff != nil
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case filesFound, savedMemories, mailHandoff, sources, filesHandoff
+        }
+
+        init(
+            filesFound: [FilesFoundFileDTO],
+            savedMemories: [SavedMemoryChipDTO],
+            mailHandoff: MailHandoffDTO?,
+            sources: [SearchSourceDTO],
+            filesHandoff: FilesHandoffDTO?
+        ) {
+            self.filesFound = filesFound
+            self.savedMemories = savedMemories
+            self.mailHandoff = mailHandoff
+            self.sources = sources
+            self.filesHandoff = filesHandoff
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            filesFound = try c.decodeIfPresent([FilesFoundFileDTO].self, forKey: .filesFound) ?? []
+            savedMemories = try c.decodeIfPresent([SavedMemoryChipDTO].self, forKey: .savedMemories) ?? []
+            mailHandoff = try c.decodeIfPresent(MailHandoffDTO.self, forKey: .mailHandoff)
+            sources = try c.decodeIfPresent([SearchSourceDTO].self, forKey: .sources) ?? []
+            filesHandoff = try c.decodeIfPresent(FilesHandoffDTO.self, forKey: .filesHandoff)
+        }
     }
 
     private static func chromeDefaultsKey(_ conversationId: String) -> String {
@@ -71,8 +109,11 @@ enum ConversationSessionStore {
         else { return nil }
         var map: [String: MessageChromeMeta] = [:]
         for (messageId, slice) in raw {
-            guard !slice.filesFound.isEmpty || !slice.savedMemories.isEmpty else { continue }
+            guard slice.hasPersistentPayload else { continue }
             map[messageId] = MessageChromeMeta(
+                sources: slice.sources,
+                mailHandoff: slice.mailHandoff,
+                filesHandoff: slice.filesHandoff,
                 filesFound: slice.filesFound,
                 savedMemories: slice.savedMemories
             )
@@ -84,11 +125,15 @@ enum ConversationSessionStore {
         let map = chromeMemory[conversationId] ?? [:]
         var payload: [String: PersistedChromeSlice] = [:]
         for (messageId, meta) in map {
-            guard !meta.filesFound.isEmpty || !meta.savedMemories.isEmpty else { continue }
-            payload[messageId] = PersistedChromeSlice(
+            let slice = PersistedChromeSlice(
                 filesFound: meta.filesFound,
-                savedMemories: meta.savedMemories
+                savedMemories: meta.savedMemories,
+                mailHandoff: meta.mailHandoff,
+                sources: meta.sources,
+                filesHandoff: meta.filesHandoff
             )
+            guard slice.hasPersistentPayload else { continue }
+            payload[messageId] = slice
         }
         let key = chromeDefaultsKey(conversationId)
         if payload.isEmpty {
@@ -301,6 +346,46 @@ enum ConversationSessionStore {
             )
         }
         return out
+    }
+
+    /// Rattache un mailHandoff orphelin (id local `asst-*`) après reload.
+    static func reattachOrphanMailHandoff(
+        conversationId: String,
+        messages: [MessageDTO]
+    ) -> [String: MessageChromeMeta] {
+        var map = chrome(for: conversationId)
+        let liveIds = Set(messages.map(\.id))
+        let orphans = map.filter { id, meta in
+            !liveIds.contains(id) && meta.mailHandoff != nil
+        }
+        if !orphans.isEmpty {
+            let assistants = messages.filter { $0.role == "assistant" }
+            for (orphanId, meta) in orphans {
+                let target = assistants.last
+                guard let target else { continue }
+                var merged = map[target.id] ?? MessageChromeMeta()
+                if merged.mailHandoff == nil { merged.mailHandoff = meta.mailHandoff }
+                if merged.sources.isEmpty { merged.sources = meta.sources }
+                map[target.id] = merged
+                map.removeValue(forKey: orphanId)
+            }
+            chromeMemory[conversationId] = map
+            persistChromeToDisk(conversationId)
+        }
+        var changed = false
+        for msg in messages where msg.role == "assistant" {
+            var meta = map[msg.id] ?? MessageChromeMeta()
+            guard meta.mailHandoff == nil else { continue }
+            guard let ref = MailReference.first(fromToolText: msg.content) else { continue }
+            meta.mailHandoff = ref
+            map[msg.id] = meta
+            changed = true
+        }
+        if changed {
+            chromeMemory[conversationId] = map
+            persistChromeToDisk(conversationId)
+        }
+        return map
     }
 
     // MARK: - Draft card snapshot (survit au kill app via UserDefaults)

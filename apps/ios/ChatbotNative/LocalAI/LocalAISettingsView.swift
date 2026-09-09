@@ -196,7 +196,7 @@ struct LocalAISettingsView: View {
                         .font(CNFont.caption2)
                         .foregroundStyle(AppTheme.mutedForeground)
                     if let mmproj = model.mmproj, installed {
-                        visionProjectorRow(model, mmproj: mmproj)
+                        visionProjectorRow(model)
                     }
                 }
                 Spacer(minLength: 0)
@@ -263,15 +263,11 @@ struct LocalAISettingsView: View {
     }
 
     @ViewBuilder
-    private func visionProjectorRow(_ model: LocalModelDescriptor, mmproj: LocalMmprojDescriptor) -> some View {
+    private func visionProjectorRow(_ model: LocalModelDescriptor) -> some View {
         let installedVision = models.isVisionProjectorInstalled(model)
         VStack(alignment: .leading, spacing: 4) {
-            Text("Vision (mmproj \(mmproj.quant) · \(mmproj.expectedSizeLabel))")
+            Text("Analyse d’images (optionnel)")
                 .font(CNFont.caption.weight(.semibold))
-            Text(mmproj.compatibilityNote)
-                .font(CNFont.caption2)
-                .foregroundStyle(AppTheme.mutedForeground)
-                .fixedSize(horizontal: false, vertical: true)
             if models.visionProjectorBusy, models.activeModelId == model.id {
                 ProgressView(value: models.visionProjectorProgress)
                     .tint(AppTheme.accent)
@@ -288,7 +284,7 @@ struct LocalAISettingsView: View {
                             await models.deleteVisionProjector(for: model)
                         }
                     } label: {
-                        localAIActionLabel("Retirer vision")
+                        localAIActionLabel("Retirer")
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(AppTheme.danger)
@@ -301,7 +297,7 @@ struct LocalAISettingsView: View {
                             await models.installVisionProjector(for: model)
                         }
                     } label: {
-                        localAIActionLabel("Installer vision")
+                        localAIActionLabel("Installer")
                     }
                     .buttonStyle(.borderless)
                     .tint(AppTheme.accent)

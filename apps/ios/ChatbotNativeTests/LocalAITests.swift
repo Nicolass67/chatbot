@@ -1417,6 +1417,70 @@ final class WorkflowSyncTests: XCTestCase {
         } else {
             XCTFail("expected failure")
         }
+        let unread = MailMessageSummary(
+            id: "m1",
+            threadId: "t1",
+            from: nil,
+            subject: "SPA",
+            snippet: nil,
+            date: nil,
+            isUnread: true,
+            hasAttachments: nil
+        )
+        XCTAssertEqual(unread.withUnread(false).isUnread, false)
+        XCTAssertEqual(unread.id, unread.withUnread(false).id)
+    }
+
+    @MainActor
+    func testConversationInteractionStoreIsSingleSourceOfTruth() {
+        let suite = "test.conversation.interaction.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let store = ConversationInteractionStore(defaults: defaults)
+        XCTAssertEqual(store.mode, .chat)
+        store.set(.agent)
+        XCTAssertEqual(store.mode, .agent)
+        store.set(stored: "chat")
+        XCTAssertEqual(store.mode, .chat)
+        XCTAssertEqual(defaults.string(forKey: ConversationInteractionStore.defaultsKey), "chat")
+        XCTAssertEqual(
+            ConversationWorkflowRouter.kind(
+                interaction: store.mode,
+                filesScope: false,
+                preferMail: false,
+                webEnabled: true
+            ),
+            .web
+        )
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    func testMailDeepLinkPrefersMessageId() {
+        let ref = MailReference.make(
+            messageId: "msgSPA",
+            threadId: "thrSPA",
+            subject: "Don",
+            sender: "SPA",
+            date: "hier"
+        )
+        let link = MailDeepLink(ref)
+        XCTAssertEqual(link.messageId, "msgSPA")
+        XCTAssertEqual(link.threadId, "thrSPA")
+        XCTAssertEqual(link.subject, "Don")
+    }
+
+    func testQwen35NativeVisionRequiresMmproj() {
+        let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!
+        XCTAssertTrue(qwen.capabilities.vision)
+        XCTAssertNotNil(qwen.mmproj)
+        XCTAssertTrue(qwen.nativeVision)
+        XCTAssertTrue(qwen.recommended)
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")!
+        XCTAssertTrue(gemma.capabilities.vision)
+        XCTAssertNil(gemma.mmproj)
+        XCTAssertFalse(gemma.nativeVision)
+        XCTAssertFalse(gemma.isDownloadable)
+        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id == gemma.id })
     }
 
     func testScrollFollowsBottomUnlessUserReleased() {
