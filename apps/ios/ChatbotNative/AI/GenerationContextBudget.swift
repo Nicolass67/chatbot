@@ -55,21 +55,58 @@ struct GenerationContextBudget: Equatable, Sendable {
     }
 }
 
+enum GenerationRunPhase: String, Equatable, Sendable {
+    case started
+    case planning
+    case searching
+    case analyzing
+    case generating
+    case completed
+    case failed
+    case cancelled
+}
+
 /// Isolation d’une génération (sources / tools / stream ne fuient pas vers le tour suivant).
+/// Les sources appartiennent au run, jamais au « dernier assistant » de la conversation.
 struct GenerationRunState: Equatable, Sendable {
     var id: String
     var messageId: String?
     var startedAt: Date
-    var sources: [SearchSourceDTO]
+    var workflow: String
+    var phase: GenerationRunPhase
+    var query: String?
+    var discoveredSources: [SearchSourceDTO]
+    var finalSources: [SearchSourceDTO]
+    var mailContext: Bool
+    var webContext: Bool
     var mailThreadId: String?
 
-    static func start() -> GenerationRunState {
+    /// Compat lecture : finales si le run est clos, sinon découvertes.
+    var sources: [SearchSourceDTO] {
+        get { finalSources.isEmpty ? discoveredSources : finalSources }
+        set { discoveredSources = newValue }
+    }
+
+    static func start(workflow: String = "chat") -> GenerationRunState {
         GenerationRunState(
             id: UUID().uuidString,
             messageId: nil,
             startedAt: Date(),
-            sources: [],
+            workflow: workflow,
+            phase: .started,
+            query: nil,
+            discoveredSources: [],
+            finalSources: [],
+            mailContext: false,
+            webContext: false,
             mailThreadId: nil
         )
+    }
+
+    func log(_ event: String, extra: [String: String] = [:]) {
+        var fields = extra
+        fields["id"] = id
+        if fields["workflow"] == nil { fields["workflow"] = workflow }
+        WorkflowTrace.log("run:\(event)", fields)
     }
 }

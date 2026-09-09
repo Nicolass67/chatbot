@@ -73,7 +73,7 @@ struct AgentActivityState: Equatable {
             webQuery: webQuery,
             activitySummary: activitySummary,
             lastError: lastError,
-            completed: true
+            completed: completed
         )
     }
 }

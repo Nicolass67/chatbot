@@ -970,12 +970,16 @@ final class LocalParityWorkflowTests: XCTestCase {
             profile: profile
         )
         XCTAssertLessThanOrEqual(packet.promptBlock.count, profile.toolResultCharBudget)
-        XCTAssertTrue(packet.promptBlock.contains("WebSearchTool"))
+        XCTAssertTrue(packet.promptBlock.contains("USER REQUEST"))
+        XCTAssertTrue(packet.promptBlock.contains("TITLE:"))
+        XCTAssertTrue(packet.promptBlock.contains("DOMAIN:"))
+        XCTAssertTrue(packet.promptBlock.contains("EXCERPT:"))
         XCTAssertTrue(packet.sources.contains(where: { $0.domain == "planetvegan.example" }))
         XCTAssertEqual(packet.sources.first?.domain, "planetvegan.example")
         XCTAssertEqual(packet.sources.first?.id, "web_1")
         XCTAssertLessThanOrEqual(packet.sources.count, profile.maxWebResults)
         XCTAssertFalse(packet.promptBlock.contains("Je n'ai pas accès à Internet"))
+        XCTAssertFalse(packet.promptBlock.contains("WebSearchTool a été exécuté"))
     }
 
     func testShrinkMessagesDropsOldest() {
@@ -987,9 +991,10 @@ final class LocalParityWorkflowTests: XCTestCase {
 
     func testGroundingPromptForbidsNoInternetDenial() {
         let sys = WebGroundingPrompt.system()
-        XCTAssertTrue(sys.contains("WebSearchTool"))
+        XCTAssertTrue(sys.contains("USER REQUEST"))
         XCTAssertTrue(sys.contains("JAMAIS"))
         XCTAssertTrue(sys.contains("web_N"))
+        XCTAssertFalse(sys.contains("WebSearchTool a été exécuté"))
     }
 
     func testAgentEventsCarryPlanNotStepText() {
@@ -1043,10 +1048,10 @@ final class LocalParityWorkflowTests: XCTestCase {
     }
 
     func testGroundingPromptForbidsHallucination() {
-        XCTAssertTrue(WebGroundingPrompt.system().contains("UNIQUEMENT"))
+        XCTAssertTrue(WebGroundingPrompt.system().contains("USER REQUEST"))
         XCTAssertTrue(WebGroundingPrompt.system().contains("web_N"))
-        XCTAssertTrue(WebGroundingPrompt.system().contains("WebSearchTool"))
         XCTAssertTrue(WebGroundingPrompt.system().contains("JAMAIS"))
+        XCTAssertTrue(WebGroundingPrompt.system().contains("extraits indiquent"))
     }
 
     func testGraniteAndPhiTemplatesAreModelSpecific() {
@@ -1103,5 +1108,200 @@ final class LocalParityWorkflowTests: XCTestCase {
         XCTAssertFalse(hits.isEmpty)
         XCTAssertTrue(hits[0].url.contains("tomshardware.com"))
         XCTAssertEqual(hits[0].id, "web_1")
+    }
+}
+
+final class WorkflowSyncTests: XCTestCase {
+    func testGenerationRunSourcesStayOnSameRun() {
+        var first = GenerationRunState.start(workflow: "web")
+        first.discoveredSources = [
+            SearchSourceDTO(id: "web_1", title: "A", url: "https://a.example", domain: "a.example", snippet: "a"),
+        ]
+        first.finalSources = first.discoveredSources
+        first.messageId = "asst-1"
+        var second = GenerationRunState.start(workflow: "chat")
+        second.messageId = "asst-2"
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.finalSources.count, 1)
+        XCTAssertTrue(second.finalSources.isEmpty)
+        XCTAssertTrue(second.discoveredSources.isEmpty)
+        XCTAssertNotEqual(first.messageId, second.messageId)
+    }
+
+    func testPreviousRunSourcesDoNotLeakOntoNewRun() {
+        var previous = GenerationRunState.start(workflow: "web")
+        previous.finalSources = [
+            SearchSourceDTO(id: "web_1", title: "Old", url: "https://old.example", domain: "old.example"),
+        ]
+        let next = GenerationRunState.start(workflow: "web")
+        XCTAssertTrue(next.sources.isEmpty)
+        XCTAssertFalse(next.finalSources.contains(where: { $0.domain == "old.example" }))
+    }
+
+    func testStructuredEvidenceContainsTitleDomainExcerpt() {
+        let evidence = [
+            WebEvidence(
+                sourceId: "web_1",
+                title: "Nouilles au wok",
+                domain: "cuisine.example",
+                url: "https://cuisine.example/wok",
+                excerpt: "Faire sauter les nouilles."
+            ),
+        ]
+        let block = WebEvidenceBuilder.structuredPromptBlock(
+            userRequest: "Donne-moi une recette de nouilles sautées au wok",
+            evidence: evidence,
+            charBudget: 4000
+        )
+        XCTAssertTrue(block.contains("USER REQUEST"))
+        XCTAssertTrue(block.contains("nouilles sautées au wok"))
+        XCTAssertTrue(block.contains("SOURCE_ID: web_1"))
+        XCTAssertTrue(block.contains("TITLE: Nouilles au wok"))
+        XCTAssertTrue(block.contains("DOMAIN: cuisine.example"))
+        XCTAssertTrue(block.contains("EXCERPT: Faire sauter"))
+        XCTAssertFalse(block.contains("Extrait de"))
+    }
+
+    func testOffTopicWebResultsAreFiltered() {
+        let sources = [
+            SearchSourceDTO(
+                id: "web_1",
+                title: "Nuggets végétaux PST",
+                url: "https://vegan.example/pst",
+                domain: "vegan.example",
+                snippet: "Recette de nuggets au simili-poulet."
+            ),
+            SearchSourceDTO(
+                id: "web_2",
+                title: "Nouilles sautées au wok",
+                url: "https://wok.example/nouilles",
+                domain: "wok.example",
+                snippet: "Recette de nouilles sautées au wok avec légumes."
+            ),
+        ]
+        let filtered = WebEvidenceBuilder.filterRelevant(sources, query: "recette de nouilles sautées au wok")
+        XCTAssertEqual(filtered.first?.domain, "wok.example")
+        XCTAssertFalse(filtered.contains(where: { $0.domain == "vegan.example" }))
+    }
+
+    func testMailIntentLastMailFromSenderBeatsLatest() {
+        let intent = MailIntentDetector.detect(
+            "Lis-moi mon dernier mail de la part de la SPA",
+            hasOpenThread: false
+        )
+        guard case .fromContact(let name) = intent else {
+            return XCTFail("expected fromContact, got \(intent)")
+        }
+        XCTAssertTrue(name.localizedCaseInsensitiveContains("SPA"))
+        XCTAssertFalse(name.localizedCaseInsensitiveContains("la part"))
+        let q = MailIntentDetector.gmailQuery(for: intent, userText: "x")
+        XCTAssertTrue(q.contains("from:"))
+        XCTAssertTrue(q.lowercased().contains("spa"))
+        XCTAssertNotEqual(q, "in:inbox")
+    }
+
+    func testMailIntentLatestFromMailboxList() {
+        let intent = MailIntentDetector.detect("Lis-moi mon dernier mail.", hasOpenThread: false)
+        XCTAssertEqual(intent, .latest(count: 1))
+        XCTAssertTrue(intent.needsGmailSearch)
+    }
+
+    func testMailContextPromptForbidsAccessDenialWhenMessagesExist() {
+        let tool = """
+        [1] messageId=m1 threadId=t1
+        De: SPA <spa@example.org>
+        Objet: Don
+        Date: hier
+        Merci pour votre don.
+        """
+        XCTAssertTrue(MailContextPrompt.containsMessages(toolText: tool, ok: true))
+        let sys = MailContextPrompt.system(hasMessages: true)
+        XCTAssertTrue(sys.contains("MAIL CONTEXT AVAILABLE"))
+        XCTAssertTrue(sys.contains("JAMAIS"))
+        let user = MailContextPrompt.userMessage(userRequest: "Lis le dernier mail de la SPA", toolText: tool, hasMessages: true)
+        XCTAssertTrue(user.contains("USER REQUEST"))
+        XCTAssertTrue(user.contains("MAIL CONTEXT AVAILABLE"))
+        XCTAssertTrue(user.contains("SPA"))
+        XCTAssertFalse(MailContextPrompt.containsMessages(toolText: "Aucun mail Gmail pour cette recherche (q=in:inbox).", ok: true))
+    }
+
+    func testMailboxWithoutSelectionStillNeedsSearch() {
+        XCTAssertTrue(MailIntentDetector.detect("Quel est le dernier mail que j'ai reçu ?", hasOpenThread: false).needsGmailSearch)
+        XCTAssertTrue(MailIntentDetector.detect("Résume mon dernier mail.", hasOpenThread: false).needsGmailSearch)
+        XCTAssertTrue(MailIntentDetector.wantsReply("Réponds à mon dernier mail."))
+        XCTAssertTrue(MailIntentDetector.detect("Réponds à mon dernier mail.", hasOpenThread: false).needsGmailSearch)
+    }
+
+    func testAgentTimerLocksWhenRunCompletes() {
+        var state = AgentActivityState()
+        state.visible = true
+        state.startedAt = Date().addingTimeInterval(-12)
+        state.planSteps = [
+            AgentPlanStep(id: "act", title: "Rechercher sur le web", status: "running"),
+            AgentPlanStep(id: "answer", title: "Rédiger la réponse", status: "pending"),
+        ]
+        XCTAssertNil(state.lockedThoughtSeconds)
+        state.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(state.startedAt!)))
+        state.completed = true
+        for i in state.planSteps.indices where state.planSteps[i].status == "running" || state.planSteps[i].status == "pending" {
+            state.planSteps[i].status = "done"
+        }
+        let snap = state.snapshot()
+        XCTAssertTrue(snap.completed)
+        XCTAssertEqual(snap.thoughtSeconds, state.lockedThoughtSeconds)
+        XCTAssertTrue(snap.planSteps.allSatisfy { $0.status == "done" })
+        XCTAssertGreaterThanOrEqual(snap.thoughtSeconds ?? 0, 1)
+    }
+
+    func testFilesRootOpensOnceAndDoubleTapIsIgnored() {
+        let root = FilesDestination.folder(rootId: "docs", path: "", title: "Documents")
+        var path: [FilesDestination] = []
+        let first = FilesPathOps.push(path, root)
+        XCTAssertEqual(first.path.count, 1)
+        path = first.path
+        let second = FilesPathOps.push(path, root)
+        XCTAssertEqual(second.result, .ignoredDuplicate)
+        XCTAssertEqual(second.path.count, 1)
+        let titled = FilesDestination.folder(rootId: "docs", path: "", title: "Fichiers de l’app")
+        let third = FilesPathOps.push(path, titled)
+        XCTAssertEqual(third.result, .ignoredDuplicate)
+        XCTAssertEqual(FilesPathOps.breadcrumb(path), "Documents")
+    }
+
+    func testFilesFolderPathAndBackToRoot() {
+        let root = FilesDestination.folder(rootId: "docs", path: "", title: "Documents")
+        let a = FilesDestination.folder(rootId: "docs", path: "Projet", title: "Projet")
+        let b = FilesDestination.folder(rootId: "docs", path: "Projet/Photos", title: "Photos")
+        var path = FilesPathOps.push([], root).path
+        path = FilesPathOps.push(path, a).path
+        path = FilesPathOps.push(path, b).path
+        XCTAssertEqual(path.count, 3)
+        XCTAssertEqual(FilesPathOps.breadcrumb(path), "Documents / Projet / Photos")
+        let back = FilesPathOps.push(path, root)
+        XCTAssertEqual(back.path.count, 1)
+        XCTAssertEqual(FilesPathOps.breadcrumb(back.path), "Documents")
+        XCTAssertEqual(FilesPathOps.dedupe([root, root, a, a, b]).count, 3)
+    }
+
+    func testScrollFollowsBottomUnlessUserReleased() {
+        XCTAssertTrue(ChatScrollPolicy.shouldFollowNewContent(userReleasedAutoScroll: false, pinToTopActive: false))
+        XCTAssertFalse(ChatScrollPolicy.shouldFollowNewContent(userReleasedAutoScroll: true, pinToTopActive: false))
+        XCTAssertFalse(ChatScrollPolicy.shouldFollowNewContent(userReleasedAutoScroll: false, pinToTopActive: true))
+        let sendingPin = ChatScrollPolicy.bottomSlack(
+            isSending: true,
+            pinToTopActive: true,
+            agentOrStreamActive: false,
+            chromePadding: 160,
+            viewportHeight: 700
+        )
+        XCTAssertEqual(sendingPin, 688)
+        let agent = ChatScrollPolicy.bottomSlack(
+            isSending: true,
+            pinToTopActive: true,
+            agentOrStreamActive: true,
+            chromePadding: 160,
+            viewportHeight: 700
+        )
+        XCTAssertEqual(agent, 160)
     }
 }

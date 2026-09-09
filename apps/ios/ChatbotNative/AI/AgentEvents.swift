@@ -20,10 +20,9 @@ enum AgentOrchestrationEvent: Sendable, Equatable {
 }
 
 enum WorkflowTrace {
+    /// Logs ciblés run/files — toujours émis (validation appareil, pas seulement DEBUG).
     static func log(_ category: String, _ fields: [String: String]) {
-        #if DEBUG
         let body = fields.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
         print("[\(category)] \(body)")
-        #endif
     }
 }

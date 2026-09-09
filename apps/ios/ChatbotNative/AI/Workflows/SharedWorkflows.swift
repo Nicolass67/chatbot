@@ -237,14 +237,20 @@ enum AgentWorkflow {
         mark("answer")
         onEvent?(.synthesizing)
         let synthSystem = collectedSources.isEmpty
-            ? "Synthétise à partir des observations. Pas de JSON. Markdown autorisé."
-            : WebGroundingPrompt.system() + "\nSynthétise à partir des extraits. Pas de JSON."
+            ? "Réponds à la USER REQUEST à partir des observations. Pas de JSON. Markdown autorisé."
+            : WebGroundingPrompt.system()
         var synthMessages = packet.messages
         let obs = scratch.isEmpty
             ? "(aucune observation outil)"
             : GenerationContextBudget.clip(scratch.joined(separator: "\n---\n"), maxChars: profile.toolResultCharBudget)
-        let userContent = "Demande: \(request.userText)\n\n\(obs)"
-        synthMessages.append(LLMChatMessage(role: .user, content: userContent + "\n\nRéponds à l’utilisateur."))
+        let userContent = """
+        USER REQUEST
+        \(request.userText)
+
+        OBSERVATIONS
+        \(obs)
+        """
+        synthMessages.append(LLMChatMessage(role: .user, content: userContent))
         let finalText: String
         if let onFinalToken {
             finalText = try await runtime.generateStream(
@@ -503,30 +509,53 @@ enum MailMailboxWorkflow {
             ]
         )
         let result = try await tools.execute(call, profile: profile)
-        let system = """
-        Tu es l’assistant mail. Tu as accès aux mails via l’application (résultats ci-dessous).
-        N’écris JAMAIS que tu n’as pas accès aux mails.
-        Réponds en français, naturellement, à partir UNIQUEMENT des messages fournis.
-        Mentionne expéditeur, objet, date. Markdown autorisé.
-        Si la liste est vide, dis-le clairement.
-        """
+        let hasMessages = MailContextPrompt.containsMessages(toolText: result.text, ok: result.ok)
+        WorkflowTrace.log("run:context", [
+            "mailContext": hasMessages ? "true" : "false",
+            "webContext": "false",
+            "gmail_q": String(gmailQ.prefix(80)),
+        ])
+
+        if hasMessages, MailIntentDetector.wantsReply(request.userText),
+           let threadId = result.mailThreadId, !threadId.isEmpty {
+            let confirmation = try await MailReplyWorkflow.run(
+                .init(threadId: threadId, instruction: request.userText),
+                runtime: runtime,
+                onToken: onToken
+            )
+            let text = """
+            Proposition de réponse (non envoyée) :
+
+            \(confirmation.proposedBody)
+
+            L’envoi réel nécessite une confirmation explicite.
+            """
+            return Result(text: text, mailThreadId: threadId, sourcesLabel: nil)
+        }
+
+        let clipped = GenerationContextBudget.clip(result.text, maxChars: profile.toolResultCharBudget)
         let messages = [
             LLMChatMessage(
                 role: .user,
-                content: "Question: \(request.userText)\n\nMails:\n\(GenerationContextBudget.clip(result.text, maxChars: profile.toolResultCharBudget))"
+                content: MailContextPrompt.userMessage(
+                    userRequest: request.userText,
+                    toolText: clipped,
+                    hasMessages: hasMessages
+                )
             ),
         ]
+        WorkflowTrace.log("run:llm", ["workflow": "mail", "mailContext": hasMessages ? "true" : "false"])
         let text: String
         if let onToken {
             text = try await runtime.generateStream(
-                system: system,
+                system: MailContextPrompt.system(hasMessages: hasMessages),
                 messages: messages,
                 maxTokens: profile.outputTokens(for: .mailSummary),
                 onToken: onToken
             )
         } else {
             text = try await runtime.generate(
-                system: system,
+                system: MailContextPrompt.system(hasMessages: hasMessages),
                 messages: messages,
                 maxTokens: profile.outputTokens(for: .mailSummary)
             )
@@ -567,7 +596,12 @@ enum WebSearchWorkflow {
         let messages = [
             LLMChatMessage(role: .user, content: packet.promptBlock),
         ]
+        WorkflowTrace.log("run:context", [
+            "mailContext": "false",
+            "webContext": packet.evidence.isEmpty ? "false" : "true",
+        ])
         onEvent?(.synthesizing)
+        WorkflowTrace.log("run:llm", ["workflow": "web"])
         let text: String
         if let onToken {
             text = try await runtime.generateStream(

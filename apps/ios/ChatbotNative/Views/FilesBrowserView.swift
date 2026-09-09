@@ -112,6 +112,7 @@ struct FilesBrowserView: View {
     @State private var selectionError: String?
     @State private var organizerScope: OrganizationScope?
     @State private var showLocalFolderImporter = false
+    @State private var lastFilesNavAt: Date = .distantPast
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -275,12 +276,16 @@ struct FilesBrowserView: View {
                             || ($0.label ?? "").localizedCaseInsensitiveContains("fichiers de l")
                             || ($0.absolutePath ?? "").localizedCaseInsensitiveContains("Documents")
                     }) ?? roots.first {
-                        path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Documents"))
+                        pushDestination(
+                            FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Documents")
+                        )
                     }
                     nav.qaIntent = nil
                 case .filesNested:
                     if let root = roots.first {
-                        path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Root"))
+                        pushDestination(
+                            FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Root")
+                        )
                     }
                     nav.qaIntent = nil
                 case .filesFile:
@@ -324,7 +329,8 @@ struct FilesBrowserView: View {
                 }
                 // Restaure l’emplacement (dossier ouvert) après un remount TabView Mail ↔ Files.
                 if path.isEmpty, let saved = TabMemoryCache.filesPath, !saved.isEmpty {
-                    path = saved
+                    path = FilesPathOps.dedupe(saved)
+                    WorkflowTrace.log("files:breadcrumb", ["path": FilesPathOps.breadcrumb(path)])
                 }
                 // Deep-link posé avant l’apparition de l’onglet (ex. « Ouvrir le dossier » depuis Mail).
                 consumePendingFilesDeepLink()
@@ -564,7 +570,7 @@ struct FilesBrowserView: View {
                 let rootId = link.rootId
                     ?? roots.first?.id
                     ?? ""
-                path.append(
+                pushDestination(
                     FilesDestination.file(
                         fileId: fileId,
                         title: title,
@@ -615,6 +621,42 @@ struct FilesBrowserView: View {
             }
         }
         path = next
+        WorkflowTrace.log("files:navigate", ["action": "folder", "path": FilesPathOps.breadcrumb(path)])
+        WorkflowTrace.log("files:breadcrumb", ["path": FilesPathOps.breadcrumb(path)])
+    }
+
+    /// Navigation idempotente : une root ne s’empile jamais sur elle-même.
+    private func pushDestination(_ dest: FilesDestination) {
+        if Date().timeIntervalSince(lastFilesNavAt) < 0.35, FilesPathOps.isSameLocation(path.last, dest) {
+            WorkflowTrace.log("files:navigate", [
+                "ignored": "duplicate",
+                "path": FilesPathOps.breadcrumb(path),
+            ])
+            return
+        }
+        let pushed = FilesPathOps.push(path, dest)
+        if pushed.result == .ignoredDuplicate {
+            WorkflowTrace.log("files:navigate", [
+                "ignored": "duplicate",
+                "path": FilesPathOps.breadcrumb(pushed.path),
+            ])
+            return
+        }
+        lastFilesNavAt = Date()
+        path = pushed.path
+        let action: String
+        if FilesPathOps.isRootFolder(dest) {
+            action = "root"
+        } else if case .file = dest {
+            action = "file"
+        } else {
+            action = "folder"
+        }
+        WorkflowTrace.log("files:navigate", [
+            "action": action,
+            "path": FilesPathOps.breadcrumb(path),
+        ])
+        WorkflowTrace.log("files:breadcrumb", ["path": FilesPathOps.breadcrumb(path)])
     }
 
     @ViewBuilder
@@ -628,7 +670,7 @@ struct FilesBrowserView: View {
                     title: title,
                     selection: selection,
                     onOpenFolder: { entry in
-                        path.append(
+                        pushDestination(
                             FilesDestination.folder(
                                 rootId: root.id,
                                 path: entry.relativePath,
@@ -638,7 +680,7 @@ struct FilesBrowserView: View {
                     },
                     onOpenFile: { entry in
                         guard let fileId = entry.fileId, !fileId.isEmpty else { return }
-                        path.append(
+                        pushDestination(
                             FilesDestination.file(
                                 fileId: fileId,
                                 title: entry.name ?? entry.relativePath,
@@ -707,7 +749,7 @@ struct FilesBrowserView: View {
                             HStack(spacing: 10) {
                                 Button("Importer un fichier") {
                                     // L’import fichier se fait depuis un dossier (sandbox).
-                                    path.append(
+                                    pushDestination(
                                         FilesDestination.folder(
                                             rootId: LocalFilesStore.documentsRootId,
                                             path: "",
@@ -727,13 +769,15 @@ struct FilesBrowserView: View {
                         .padding(.vertical, 12)
                     }
                     ForEach(roots.filter { $0.enabled != false }) { root in
-                        NavigationLink(
-                            value: FilesDestination.folder(
-                                rootId: root.id,
-                                path: "",
-                                title: root.label ?? "Root"
+                        Button {
+                            pushDestination(
+                                FilesDestination.folder(
+                                    rootId: root.id,
+                                    path: "",
+                                    title: root.label ?? "Root"
+                                )
                             )
-                        ) {
+                        } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: "externaldrive.fill")
                                     .foregroundStyle(AppTheme.accent)
@@ -758,7 +802,6 @@ struct FilesBrowserView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .navigationLinkIndicatorVisibility(.hidden)
                         .accessibilityIdentifier(A11yID.Files.folder)
                         .contextMenu {
                             Button {
@@ -869,7 +912,7 @@ struct FilesBrowserView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(searchHits) { hit in
                         Button {
-                            path.append(
+                            pushDestination(
                                 FilesDestination.file(
                                     fileId: hit.fileId,
                                     title: hit.name ?? hit.filename ?? hit.relativePath ?? "Fichier",

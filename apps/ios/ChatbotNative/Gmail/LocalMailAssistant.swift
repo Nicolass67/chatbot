@@ -137,15 +137,14 @@ final class LocalMailAssistant: ObservableObject {
             )
         }
 
+        let toolText = contextBlocks.joined(separator: "\n\n")
         return try await generateMessages(
-            system: LocalPrompts.mailMailbox,
-            user: """
-            Question de l’utilisateur :
-            \(query)
-
-            Mails Gmail (ne rien inventer hors de cette liste ; tu as accès à ces mails via l’application) :
-            \(contextBlocks.joined(separator: "\n\n"))
-            """,
+            system: MailContextPrompt.system(hasMessages: true),
+            user: MailContextPrompt.userMessage(
+                userRequest: query,
+                toolText: toolText,
+                hasMessages: true
+            ),
             maxTokens: executionProfile.outputTokens(for: .mailSummary)
         )
     }

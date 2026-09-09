@@ -40,12 +40,13 @@ enum MailIntentDetector {
             if isSummarizeCurrent(lower) && !isMailboxWide(lower) { return .threadSummary }
         }
 
+        // Contact / sujet AVANT « dernier mail » — sinon « dernier mail de la SPA » devient un latest inbox.
+        if let contact = fromContact(in: text, lower: lower) { return .fromContact(contact) }
+        if let topic = aboutTopic(in: text, lower: lower) { return .aboutTopic(topic) }
         if let n = latestCount(in: lower) { return .latest(count: n) }
         if isUnread(lower) && looksLikeMailQuestion(lower) { return .unread(count: 8) }
         if isToday(lower) && looksLikeMailQuestion(lower) { return .today }
         if isSummarizeRecent(lower) { return .summarizeRecent(count: recentCount(in: lower)) }
-        if let contact = fromContact(in: text, lower: lower) { return .fromContact(contact) }
-        if let topic = aboutTopic(in: text, lower: lower) { return .aboutTopic(topic) }
         if looksLikeMailQuestion(lower) || isMailboxWide(lower) {
             return .genericMailbox
         }
@@ -104,6 +105,7 @@ enum MailIntentDetector {
             || lower.contains("qui m'a écrit") || lower.contains("qui m’a écrit")
             || lower.contains("ai-je reçu") || lower.contains("ai je recu")
             || lower.contains("est-ce que j'ai reçu") || lower.contains("est-ce que j’ai reçu")
+            || lower.contains("lis-moi") || lower.contains("lis moi") || lower.contains("lis-moi mon")
     }
 
     private static func looksLikeMailQuestion(_ lower: String) -> Bool {
@@ -153,20 +155,48 @@ enum MailIntentDetector {
         return min(max(n, 1), 20)
     }
 
+    static func wantsReply(_ raw: String) -> Bool {
+        isReply(raw.lowercased())
+    }
+
+    static func looksLikeMail(_ raw: String) -> Bool {
+        let lower = raw.lowercased()
+        return looksLikeMailQuestion(lower) || isMailboxWide(lower)
+    }
+
     private static func fromContact(in text: String, lower: String) -> String? {
-        let markers = ["mail de ", "e-mail de ", "email de ", "reçu de ", "recu de ",
-                       "réponse de ", "reponse de ", "écrit ", "ecrit ", "de la part de "]
+        // Plus spécifique d’abord : « mail de la part de » ne doit pas matcher « mail de ».
+        let markers = ["de la part de ", "e-mail de ", "email de ", "reçu de ", "recu de ",
+                       "réponse de ", "reponse de ", "mail de ", "écrit ", "ecrit "]
         for marker in markers where lower.contains(marker) {
             if let range = lower.range(of: marker) {
                 let idx = text.index(text.startIndex, offsetBy: lower.distance(from: lower.startIndex, to: range.upperBound))
                 var rest = String(text[idx...])
                 rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: "«»\"' "))
                 let token = rest.split(whereSeparator: { $0.isPunctuation || $0 == "?" || $0 == "!" }).first.map(String.init) ?? rest
-                let cleaned = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleaned = stripLeadingArticles(token)
                 if cleaned.count >= 2, cleaned.lowercased() != "moi" { return cleaned }
             }
         }
         return nil
+    }
+
+    private static func stripLeadingArticles(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let articles = ["la ", "le ", "les ", "du ", "de ", "des ", "l'", "l’", "the "]
+        var folded = t.lowercased()
+        for article in articles where folded.hasPrefix(article) {
+            t = String(t.dropFirst(article.count))
+            folded = t.lowercased()
+        }
+        let stop: Set<String> = ["et", "pour", "avec", "dans", "sur", "qui", "que"]
+        var keep: [String] = []
+        for word in t.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+            if stop.contains(word.lowercased()) { break }
+            keep.append(word)
+            if keep.count >= 3 { break }
+        }
+        return keep.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func aboutTopic(in text: String, lower: String) -> String? {
@@ -190,5 +220,55 @@ enum MailIntentDetector {
         var out = String(String.UnicodeScalarView(filtered))
         while out.contains("  ") { out = out.replacingOccurrences(of: "  ", with: " ") }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Contexte Mail injecté au LLM — jamais un déni d’accès si des messages ont été récupérés.
+enum MailContextPrompt {
+    static func containsMessages(toolText: String, ok: Bool) -> Bool {
+        guard ok else { return false }
+        let t = toolText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return false }
+        let lower = t.lowercased()
+        if lower.hasPrefix("aucun mail") { return false }
+        if lower.contains("gmail non connecté") { return false }
+        return t.contains("threadId=") || t.contains("De:") || t.contains("Objet:")
+    }
+
+    static func system(hasMessages: Bool) -> String {
+        if hasMessages {
+            return """
+            Tu es l’assistant mail. MAIL CONTEXT AVAILABLE : l’application a récupéré les messages ci-dessous depuis la boîte Gmail de l’utilisateur.
+            Tu DOIS utiliser ces messages. N’écris JAMAIS que tu n’as pas accès aux mails, à Gmail ou à l’historique.
+            Réponds en français, naturellement, à la USER REQUEST (expéditeur, objet, date, contenu utile).
+            N’invente aucun message absent de la liste. Markdown autorisé.
+            Si l’utilisateur demande une réponse, propose un corps de mail à partir de ces messages.
+            """
+        }
+        return """
+        Tu es l’assistant mail. La recherche Gmail n’a renvoyé aucun message exploitable.
+        Dis-le clairement. N’invente pas de mails. Markdown autorisé.
+        """
+    }
+
+    static func userMessage(userRequest: String, toolText: String, hasMessages: Bool) -> String {
+        if hasMessages {
+            return """
+            USER REQUEST
+            \(userRequest)
+
+            MAIL CONTEXT AVAILABLE
+            The application retrieved the following messages from the user's mailbox.
+
+            \(toolText)
+            """
+        }
+        return """
+        USER REQUEST
+        \(userRequest)
+
+        MAIL SEARCH RESULT
+        \(toolText)
+        """
     }
 }

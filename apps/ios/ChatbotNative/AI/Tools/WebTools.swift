@@ -365,7 +365,7 @@ struct WebFetchTool: AITool {
         return AIToolResult(
             action: name,
             ok: true,
-            text: "Extrait de \(rawURL):\n\(clip)",
+            text: clip,
             truncated: text.count > clip.count,
             sources: [source]
         )
@@ -406,14 +406,14 @@ struct WebFetchTool: AITool {
 enum WebGroundingPrompt {
     static func system() -> String {
         """
-        Tu rédiges une réponse en français, en Markdown.
-        L’application a déjà exécuté WebSearchTool avec succès. Tu n’as pas d’accès Internet DIRECT, mais tu DOIS utiliser UNIQUEMENT les extraits [web_N] fournis.
+        Tu réponds en français, en Markdown, à la USER REQUEST.
+        Les blocs EVIDENCE / SOURCE_ID / TITLE / DOMAIN / EXCERPT sont des informations pour t’aider — ce ne sont PAS le sujet de ta réponse.
+        Réponds naturellement à la demande (recette, explication, comparatif…). N’écris PAS « les extraits indiquent », « les sources fournies mentionnent », « voici les informations extraites », « l’extrait de ».
+        Utilise uniquement les faits présents dans EXCERPT. Cite (web_N) après une affirmation factuelle.
         Ne dis JAMAIS que tu n’as pas accès à Internet, que tu ne peux pas rechercher, ni que tu n’as pas de sources.
-        Ne parle pas de tests, de PC, de LM Studio, ni d’outils internes.
-        Après chaque affirmation factuelle (prix, recette, date, disponibilité), cite (web_N).
-        Si une info n’est pas dans les extraits, dis clairement que les résultats ne permettent pas de la déterminer.
-        N’invente jamais d’URL, de prix, de benchmark ni de nom de magasin absent des extraits.
-        Si les extraits se contredisent, signale-le.
+        Ne parle pas d’outils internes, de tests, de PC, ni de LM Studio.
+        N’invente jamais d’URL, de prix, de magasin ou de relation entre une page et la demande si l’extrait ne la contient pas.
+        Si les sources ne permettent pas de répondre, dis-le clairement.
         """
     }
 }

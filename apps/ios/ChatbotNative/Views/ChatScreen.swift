@@ -107,6 +107,8 @@ struct ChatScreen: View {
     @State private var stickBottomThroughKeyboard = false
     /// Collé en bas → suivi auto du stream. Remontée utilisateur / pin envoi → false.
     @State private var isPinnedToBottom = true
+    /// L’utilisateur a remonté volontairement — ne pas recoller le stream.
+    @State private var userReleasedAutoScroll = false
     /// Pendant un scroll programmé (envoi / stream / bouton), ignore les pics de distance.
     @State private var suppressScrollGeometryUntil: Date = .distantPast
     /// Afficher « bas » seulement après une vraie remontée (pas quasi en bas).
@@ -466,7 +468,7 @@ struct ChatScreen: View {
                                 token: session.token,
                                 baseURL: session.baseURL,
                                 isEditing: false,
-                                sources: streamSources,
+                                sources: [],
                                 mailHandoff: streamMailHandoff,
                                 filesHandoff: streamFilesHandoff,
                                 filesFound: streamFilesFound,
@@ -591,6 +593,7 @@ struct ChatScreen: View {
                         // Remontée volontaire → coupe le suivi auto (le bouton n’apparaît qu’assez haut).
                         if value.translation.height > 28 {
                             isPinnedToBottom = false
+                            userReleasedAutoScroll = true
                         }
                     }
                 )
@@ -674,6 +677,11 @@ struct ChatScreen: View {
                     }
                 }
                 .onChange(of: streamingText) { _, text in
+                    if !text.isEmpty, !userReleasedAutoScroll, pinToTopMessageId != nil {
+                        pinToTopMessageId = nil
+                        isPinnedToBottom = true
+                        showScrollDown = false
+                    }
                     guard isPinnedToBottom, !text.isEmpty else { return }
                     scheduleStreamScroll(proxy: proxy)
                 }
@@ -714,6 +722,7 @@ struct ChatScreen: View {
                 .onChange(of: scrollToken) { _, _ in
                     pinToTopMessageId = nil
                     isPinnedToBottom = true
+                    userReleasedAutoScroll = false
                     showScrollDown = false
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.45)
                     withAnimation(.easeOut(duration: 0.35)) {
@@ -731,6 +740,16 @@ struct ChatScreen: View {
                 .onChange(of: agentActivity.planSteps) { _, _ in
                     guard isPinnedToBottom, shouldShowLiveAgentStrip else { return }
                     suppressScrollGeometryUntil = Date().addingTimeInterval(0.3)
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo("agent-live", anchor: .bottom)
+                    }
+                }
+                .onChange(of: shouldShowLiveAgentStrip) { _, show in
+                    guard show, !userReleasedAutoScroll else { return }
+                    pinToTopMessageId = nil
+                    isPinnedToBottom = true
+                    showScrollDown = false
+                    suppressScrollGeometryUntil = Date().addingTimeInterval(0.35)
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo("agent-live", anchor: .bottom)
                     }
@@ -774,7 +793,7 @@ struct ChatScreen: View {
             token: session.token,
             baseURL: session.baseURL,
             isEditing: editingMessageId == msg.id,
-            sources: chrome.sources,
+            sources: (liveStreaming && isSending) ? [] : chrome.sources,
             mailHandoff: chrome.mailHandoff,
             filesHandoff: chrome.filesHandoff,
             filesFound: chrome.filesFound,
@@ -1659,9 +1678,13 @@ Corps actuel:
     /// Uniquement pendant `isSending` — garder le slack après l’envoi laissait un
     /// trou d’une hauteur d’écran (scroll trop bas dès qu’un message a été envoyé).
     private var chatBottomScrollSlack: CGFloat {
-        let chrome = composerChromeScrollPadding
-        guard isSending, scrollViewportHeight > 80 else { return chrome }
-        return max(chrome, scrollViewportHeight - 12)
+        ChatScrollPolicy.bottomSlack(
+            isSending: isSending,
+            pinToTopActive: pinToTopMessageId != nil,
+            agentOrStreamActive: shouldShowLiveAgentStrip || !streamingText.isEmpty,
+            chromePadding: composerChromeScrollPadding,
+            viewportHeight: scrollViewportHeight
+        )
     }
 
     /// Ancre le message user en haut après un envoi (coupe le suivi bas/stream).
@@ -1669,6 +1692,7 @@ Corps actuel:
         pinToTopMessageId = messageId
         pinToTopToken += 1
         isPinnedToBottom = false
+        userReleasedAutoScroll = false
     }
 
     /// Fin d’envoi : retire l’ancre pin (marge 22pt) sans forcer un scroll bas.
@@ -2823,7 +2847,7 @@ private var sendBlockedHint: String {
         let gen = sendGeneration
         error = nil
         canRetrySend = false
-        beginLocalGenerationRun()
+        beginLocalGenerationRun(workflow: "local")
 
         if options?.regenerate != true {
             draft = ""
@@ -2847,6 +2871,8 @@ private var sendBlockedHint: String {
                 )
             }
             thinkingKind = .custom("Files…")
+            activeGeneration.workflow = "files"
+            activeGeneration.log("start", extra: ["workflow": "files"])
             let runtime = LocalAIRuntime.shared
             let tools = AIToolRegistry.makeLocalDefault()
             let reply: String
@@ -2924,6 +2950,8 @@ private var sendBlockedHint: String {
             // Agent mode : mêmes événements / même AgentActivityView que le PC.
             let effectiveMode = options?.mode ?? chatMode
             if effectiveMode == "agent" {
+                activeGeneration.workflow = "agent"
+                activeGeneration.log("start", extra: ["workflow": "agent"])
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let history: [LLMChatMessage] = messages.compactMap { msg in
@@ -2981,7 +3009,7 @@ private var sendBlockedHint: String {
                 streamingAssistantId = asstId
                 activeGeneration.messageId = asstId
                 streamSources = agentResult.sources
-                attachLocalChrome(sources: agentResult.sources, mailThreadId: agentResult.mailThreadId)
+                attachLocalChrome(sources: agentResult.sources, mailThreadId: agentResult.mailThreadId, finalize: true)
                 applyLocalAgentEvent(.completed)
                 streamSources = []
                 _ = LocalChatStore.shared.appendMessage(
@@ -2992,11 +3020,20 @@ private var sendBlockedHint: String {
                 isSending = false
                 sendTask = nil
                 streamingAssistantId = nil
-                agentActivity = AgentActivityState()
+                activeGeneration.log("complete", extra: ["workflow": "agent"])
                 return
             }
 
-            if (toolChannel == .web || webSearchEnabled), forcedScope == nil {
+            let mailIntentForRoute = MailIntentDetector.detect(
+                effectiveText,
+                hasOpenThread: !(forcedActiveContext?.mailThreadId ?? "").isEmpty
+            )
+            let preferMailOverWeb = GmailOAuthSession.shared.isConnected
+                && (forcedScope == .mail || mailIntentForRoute.needsGmailSearch || MailIntentDetector.looksLikeMail(effectiveText))
+            if (toolChannel == .web || webSearchEnabled), forcedScope == nil, !preferMailOverWeb {
+                activeGeneration.workflow = "web"
+                activeGeneration.query = effectiveText
+                activeGeneration.log("start", extra: ["workflow": "web"])
                 thinkingKind = nil
                 applyLocalAgentEvent(.started)
                 applyLocalAgentEvent(.plan(steps: [
@@ -3052,7 +3089,7 @@ private var sendBlockedHint: String {
                 streamingAssistantId = asstId
                 activeGeneration.messageId = asstId
                 streamSources = web.sources
-                attachLocalChrome(sources: web.sources, mailThreadId: nil)
+                attachLocalChrome(sources: web.sources, mailThreadId: nil, finalize: true)
                 applyLocalAgentEvent(.stepCompleted(id: "answer"))
                 applyLocalAgentEvent(.completed)
                 streamingAssistantId = nil
@@ -3066,12 +3103,14 @@ private var sendBlockedHint: String {
                 )
                 isSending = false
                 sendTask = nil
-                agentActivity.visible = false
+                activeGeneration.log("complete", extra: ["workflow": "web"])
                 return
             }
 
             // Mail : fil ouvert OU boîte (liste) — Gmail device, jamais « pas d’accès ».
             if forcedScope == .mail, GmailOAuthSession.shared.isConnected {
+                activeGeneration.workflow = "mail"
+                activeGeneration.log("start", extra: ["workflow": "mail"])
                 let assistant = LocalMailAssistant()
                 let threadId = forcedActiveContext?.mailThreadId
                 let intent = MailIntentDetector.detect(
@@ -3149,7 +3188,7 @@ private var sendBlockedHint: String {
                     )
                 )
                 streamingAssistantId = asstId
-                attachLocalChrome(sources: [], mailThreadId: mailThreadHandoff)
+                attachLocalChrome(sources: [], mailThreadId: mailThreadHandoff, finalize: true)
                 streamingAssistantId = nil
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
@@ -3163,7 +3202,9 @@ private var sendBlockedHint: String {
 
             if forcedScope != .files, GmailOAuthSession.shared.isConnected {
                 let intent = MailIntentDetector.detect(effectiveText, hasOpenThread: false)
-                if intent.needsGmailSearch {
+                if intent.needsGmailSearch || MailIntentDetector.looksLikeMail(effectiveText) {
+                    activeGeneration.workflow = "mail"
+                    activeGeneration.log("start", extra: ["workflow": "mail"])
                     thinkingKind = .custom("Consultation Gmail…")
                     let mailbox = try await MailMailboxWorkflow.run(
                         .init(userText: effectiveText, context: .mailbox),
@@ -3188,7 +3229,7 @@ private var sendBlockedHint: String {
                         MessageDTO(id: asstId, role: "assistant", content: mailbox.text, createdAt: nil)
                     )
                     streamingAssistantId = asstId
-                    attachLocalChrome(sources: [], mailThreadId: mailbox.mailThreadId)
+                    attachLocalChrome(sources: [], mailThreadId: mailbox.mailThreadId, finalize: true)
                     streamingAssistantId = nil
                     _ = LocalChatStore.shared.appendMessage(
                         conversationId: conversation.id,
@@ -3203,6 +3244,13 @@ private var sendBlockedHint: String {
 
             let promptKind: LocalPromptKind =
                 forcedScope == .mail ? .mailExtract : .conversation
+            if promptKind == .mailExtract {
+                activeGeneration.workflow = "mail"
+                activeGeneration.log("start", extra: ["workflow": "mail"])
+            } else {
+                activeGeneration.workflow = "chat"
+                activeGeneration.log("start", extra: ["workflow": "chat"])
+            }
             let finalText = try await streamLocalChatReply(
                 userText: effectiveText,
                 promptKind: promptKind,
@@ -3238,15 +3286,18 @@ private var sendBlockedHint: String {
         } catch is CancellationError {
             await LocalInferenceEngine.shared.cancel()
             thinkingKind = nil
+            applyLocalAgentEvent(.cancelled)
         } catch {
             if Self.isUserCancellation(error) {
                 thinkingKind = nil
+                applyLocalAgentEvent(.cancelled)
             } else {
                 self.error = error.localizedDescription
                 canRetrySend = true
                 thinkingKind = nil
                 streamingText = ""
                 streamAccum.text = ""
+                applyLocalAgentEvent(.failed(error.localizedDescription))
             }
         }
 
@@ -4062,13 +4113,18 @@ private var sendBlockedHint: String {
             agentActivity.visible = true
             agentActivity.webQuery = query
             agentActivity.webPhase = .searching
+            activeGeneration.phase = .searching
+            activeGeneration.query = query
+            activeGeneration.log("web-search", extra: ["query": String(query.prefix(80))])
             thinkingKind = agentActivity.visible ? nil : .searching
             syncAgentChromeToStreamingMessage()
         case .sources(let sources):
-            if agentActivity.runId == activeGeneration.id {
-                streamSources = sources
-                activeGeneration.sources = sources
-                attachLocalChrome(sources: sources, mailThreadId: nil)
+            if agentActivity.runId == activeGeneration.id || agentActivity.runId == nil {
+                activeGeneration.discoveredSources = sources
+                activeGeneration.webContext = !sources.isEmpty
+                activeGeneration.phase = .analyzing
+                activeGeneration.log("sources", extra: ["count": "\(sources.count)"])
+                // Découvertes → panneau Agent uniquement. Pas de chrome.sources avant finalize.
             }
             agentActivity.webPhase = .analyzing
             let names = sources.compactMap { $0.domain ?? URL(string: $0.url)?.host }.prefix(6)
@@ -4092,7 +4148,18 @@ private var sendBlockedHint: String {
             syncAgentChromeToStreamingMessage()
         case .synthesizing:
             agentActivity.phase = "synthesis"
-            activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
+            activeGeneration.phase = .generating
+            activeGeneration.log("llm", extra: [:])
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == "act" }) {
+                agentActivity.planSteps[i].status = "done"
+            }
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == "answer" }) {
+                agentActivity.planSteps[i].status = "running"
+                agentActivity.currentStepTitle = agentActivity.planSteps[i].title
+                agentActivity.stepIndex = i
+            } else {
+                activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
+            }
             syncAgentChromeToStreamingMessage()
         case .completed:
             if let start = agentActivity.startedAt {
@@ -4104,16 +4171,23 @@ private var sendBlockedHint: String {
             }
             agentActivity.completed = true
             agentActivity.phase = "synthesis"
+            activeGeneration.phase = .completed
             syncAgentChromeToStreamingMessage(completed: true)
+            activeGeneration.log("complete", extra: ["workflow": activeGeneration.workflow])
         case .cancelled:
             if let start = agentActivity.startedAt {
                 agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
             }
             agentActivity.completed = true
+            activeGeneration.phase = .cancelled
             syncAgentChromeToStreamingMessage(completed: true)
         case .failed(let message):
+            if let start = agentActivity.startedAt {
+                agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+            }
             agentActivity.lastError = AgentToolLabels.friendlyError(message)
             agentActivity.completed = true
+            activeGeneration.phase = .failed
             syncAgentChromeToStreamingMessage(completed: true)
         }
     }
@@ -4135,8 +4209,8 @@ private var sendBlockedHint: String {
         )
     }
 
-    private func beginLocalGenerationRun() {
-        activeGeneration = GenerationRunState.start()
+    private func beginLocalGenerationRun(workflow: String = "chat") {
+        activeGeneration = GenerationRunState.start(workflow: workflow)
         streamSources = []
         streamMailHandoff = nil
         streamFilesHandoff = nil
@@ -4145,20 +4219,25 @@ private var sendBlockedHint: String {
         streamAccum.text = ""
         agentActivity = AgentActivityState()
         agentActivity.runId = activeGeneration.id
+        userReleasedAutoScroll = false
     }
 
-    private func attachLocalChrome(sources: [SearchSourceDTO], mailThreadId: String?) {
+    /// `finalize: true` → sources finales sur CE run/message. Sinon : pas de pastilles message.
+    private func attachLocalChrome(sources: [SearchSourceDTO], mailThreadId: String?, finalize: Bool = false) {
         let id = streamingAssistantId ?? activeGeneration.messageId
         guard let id else { return }
         activeGeneration.messageId = id
-        if !sources.isEmpty {
-            activeGeneration.sources = sources
+        if finalize {
+            activeGeneration.finalSources = sources
+        } else if !sources.isEmpty {
+            activeGeneration.discoveredSources = sources
         }
         if let mailThreadId {
             activeGeneration.mailThreadId = mailThreadId
+            activeGeneration.mailContext = !mailThreadId.isEmpty
         }
         var chrome = chromeById[id] ?? MessageChromeMeta()
-        if !sources.isEmpty {
+        if finalize {
             chrome.sources = sources
         }
         if let mailThreadId, !mailThreadId.isEmpty {
@@ -4170,8 +4249,12 @@ private var sendBlockedHint: String {
                 label: nil
             )
         }
-        if agentActivity.visible || !agentActivity.planSteps.isEmpty {
-            chrome.agentRun = agentActivity.snapshot()
+        if agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.completed {
+            var snap = agentActivity.snapshot()
+            if finalize || agentActivity.completed {
+                snap.completed = true
+            }
+            chrome.agentRun = snap
         }
         chromeById[id] = chrome
         ConversationSessionStore.setChrome(chrome, conversationId: conversation.id, messageId: id)

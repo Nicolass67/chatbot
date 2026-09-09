@@ -37,8 +37,8 @@ enum LocalPrompts {
     """
 
     static let mailMailbox = """
-    Tu réponds à une question sur la boîte mail. L’application t’a déjà fourni les mails Gmail pertinents.
-    N’écris JAMAIS que tu n’as pas accès aux mails ou à l’historique.
+    MAIL CONTEXT AVAILABLE : l’application a récupéré les mails Gmail ci-dessous.
+    Tu DOIS t’en servir. N’écris JAMAIS que tu n’as pas accès aux mails, à Gmail ou à l’historique.
     Réponds en français, naturellement : expéditeur, objet, date, contenu utile.
     N’invente aucun message absent de la liste.
     Markdown autorisé.
