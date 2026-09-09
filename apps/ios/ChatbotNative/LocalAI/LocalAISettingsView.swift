@@ -17,6 +17,10 @@ struct LocalAISettingsView: View {
                     .tint(AppTheme.accent)
                     .accessibilityLabel("Progression du téléchargement")
             }
+            if case .loading = models.state {
+                ProgressView("Chargement du modèle en mémoire…")
+                    .tint(AppTheme.accent)
+            }
             if let err = models.lastError, !err.isEmpty {
                 Text(err)
                     .font(CNFont.caption)
@@ -38,7 +42,7 @@ struct LocalAISettingsView: View {
             Text("IA locale")
         } footer: {
             Text(
-                "Le modèle tourne sur l’iPhone (Metal). Il est indépendant de LM Studio sur le PC — aucune bascule automatique du modèle distant."
+                "Le modèle tourne sur l’iPhone (Metal). Après Installer, attendez « Installé » puis Charger. Le fichier reste sur l’appareil même si le chargement mémoire échoue."
             )
         }
         .listRowBackground(AppTheme.surface)
@@ -59,6 +63,12 @@ struct LocalAISettingsView: View {
             LabeledContent("Modèle", value: models.activeDescriptor.displayName)
             LabeledContent("Quantification", value: models.activeDescriptor.quant)
             LabeledContent("Taille", value: models.activeDescriptor.expectedSizeLabel)
+            if models.installedBytes > 0 {
+                LabeledContent(
+                    "Sur disque",
+                    value: String(format: "%.0f Mo", Double(models.installedBytes) / 1_048_576.0)
+                )
+            }
             LabeledContent(
                 "Metal",
                 value: models.isMetalAvailable ? "Disponible" : "Indisponible (simulateur)"
@@ -101,7 +111,7 @@ struct LocalAISettingsView: View {
                     }
                 }
                 .foregroundStyle(AppTheme.danger)
-                .disabled(busyAction)
+                .disabled(busyAction || models.state == .loading)
             }
 
             Spacer()
@@ -126,14 +136,14 @@ struct LocalAISettingsView: View {
                             execution.refreshDerived()
                         }
                     }
-                    .disabled(busyAction || !LocalInferenceEngine.isLlamaRuntimeAvailable)
+                    .disabled(busyAction || models.state == .loading || !LocalInferenceEngine.isLlamaRuntimeAvailable)
                     .tint(AppTheme.accent)
                 }
 
                 Button("Tester") {
                     showTestSheet = true
                 }
-                .disabled(!models.isReady && !models.isInstalled)
+                .disabled(!models.isReady)
                 .tint(AppTheme.accent)
             }
         }
@@ -154,7 +164,7 @@ private struct LocalModelTestSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: AppTheme.space16) {
-                Text("Génère une courte réponse pour vérifier le modèle local.")
+                Text("Génère une courte réponse pour vérifier le modèle local (déjà chargé).")
                     .font(CNFont.callout)
                     .foregroundStyle(AppTheme.mutedForeground)
 
@@ -201,32 +211,25 @@ private struct LocalModelTestSheet: View {
                         }
                     }
                     .fontWeight(.semibold)
-                }
-            }
-            .task {
-                if !models.isReady, models.isInstalled {
-                    await models.loadIntoEngine()
+                    .disabled(!models.isReady && !running)
                 }
             }
         }
+        .interactiveDismissDisabled(running)
     }
 
     private func runTest() async {
         errorText = nil
         output = ""
+        guard models.isReady else {
+            errorText = LocalInferenceError.notLoaded.localizedDescription
+            return
+        }
         running = true
         models.markGenerating(true)
         defer {
             running = false
             models.markGenerating(false)
-        }
-
-        if !models.isReady {
-            await models.loadIntoEngine()
-            guard models.isReady else {
-                errorText = models.lastError ?? LocalInferenceError.notAvailable.localizedDescription
-                return
-            }
         }
 
         let provider = LocalLLMProvider(promptKind: .conversation)

@@ -29,7 +29,7 @@ func llama_batch_add(
     batch.n_tokens += 1
 }
 
-/// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 4096`.
+/// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 2048` (KV cache iPhone).
 /// Metal sur appareil ; `n_gpu_layers = 0` sur simulateur.
 /// Classe `@unchecked Sendable` (pointeurs C) : accès sérialisé via `LocalInferenceEngine` (actor).
 final class LlamaContext: @unchecked Sendable {
@@ -72,11 +72,15 @@ final class LlamaContext: @unchecked Sendable {
     static func create_context(path: String) throws -> LlamaContext {
         llama_backend_init()
         var model_params = llama_model_default_params()
+        // mmap = moins de RAM résidente ; pas de mlock (évite jetsam iPhone).
+        model_params.use_mmap = true
+        model_params.use_mlock = false
 
 #if targetEnvironment(simulator)
         model_params.n_gpu_layers = 0
 #else
-        // Metal sur appareil (couches GPU gérées par le backend llama Metal).
+        // Offload Metal — laisse le CPU mapper le fichier plutôt que tout charger en RAM.
+        model_params.n_gpu_layers = 99
 #endif
 
         let model = llama_model_load_from_file(path, model_params)
@@ -87,8 +91,8 @@ final class LlamaContext: @unchecked Sendable {
         let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
 
         var ctx_params = llama_context_default_params()
-        // Budget contexte Qwen3 1.7B.
-        ctx_params.n_ctx = 4096
+        // Budget réduit pour limiter la KV cache en RAM sur iPhone.
+        ctx_params.n_ctx = 2048
         ctx_params.n_threads = Int32(n_threads)
         ctx_params.n_threads_batch = Int32(n_threads)
 

@@ -4,6 +4,7 @@ import Foundation
 enum LocalInferenceError: Error, LocalizedError, Sendable {
     case notAvailable
     case modelMissing
+    case notLoaded
     case loadFailed(String)
     case outOfMemory
     case cancelled
@@ -15,10 +16,12 @@ enum LocalInferenceError: Error, LocalizedError, Sendable {
             return "Le runtime llama.cpp n’est pas disponible dans ce build."
         case .modelMissing:
             return "Modèle GGUF introuvable. Installez-le d’abord."
+        case .notLoaded:
+            return "Modèle non chargé en mémoire. Appuyez sur Charger."
         case .loadFailed(let detail):
             return "Échec de chargement du modèle : \(detail)"
         case .outOfMemory:
-            return "Mémoire insuffisante pour charger le modèle."
+            return "Mémoire insuffisante pour charger le modèle. Fermez d’autres apps et réessayez."
         case .cancelled:
             return "Génération annulée."
         case .generatingFailed(let detail):
@@ -170,7 +173,7 @@ actor LocalInferenceEngine {
     ) async throws {
 #if canImport(llama)
         guard let llama, isLoaded else {
-            throw LocalInferenceError.modelMissing
+            throw LocalInferenceError.notLoaded
         }
         cancelGeneration = false
         generationInFlight = true

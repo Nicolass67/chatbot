@@ -22,7 +22,7 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 
 - llama.cpp XCFramework (Metal, arm64 device)
 - Fetch : `npm.cmd run ios:fetch-llama`
-- `n_ctx = 4096` — budgets prompts locaux réduits
+- `n_ctx = 2048` — budgets prompts locaux réduits (KV cache iPhone)
 
 ## Modes d’exécution (Réglages)
 
