@@ -85,8 +85,8 @@ actor LocalInferenceEngine {
             LocalModelFileAudit.logFSOp(
                 "unloadInternal",
                 phase: "before-reload",
-                watchedFinalPath: path,
-                result: "pending"
+                result: "pending",
+                watchedFinalPath: path
             )
             LocalModelFileAudit.snapshotFS(point: "E-before-unloadInternal", finalPath: path)
             await unloadInternal()
@@ -94,8 +94,8 @@ actor LocalInferenceEngine {
             LocalModelFileAudit.logFSOp(
                 "unloadInternal",
                 phase: "after-reload",
-                watchedFinalPath: path,
-                result: "done"
+                result: "done",
+                watchedFinalPath: path
             )
         }
 

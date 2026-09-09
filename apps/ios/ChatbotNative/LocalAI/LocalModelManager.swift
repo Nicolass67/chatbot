@@ -329,8 +329,8 @@ final class LocalModelManager: ObservableObject {
         LocalModelFileAudit.logFSOp(
             "refreshInstalledState",
             phase: "before",
-            watchedFinalPath: modelFilePath,
-            result: "pending"
+            result: "pending",
+            watchedFinalPath: modelFilePath
         )
         LocalModelFileAudit.snapshotFS(point: "E-before-refreshInstalledState", finalPath: modelFilePath)
         refreshInstalledState()
@@ -338,8 +338,8 @@ final class LocalModelManager: ObservableObject {
         LocalModelFileAudit.logFSOp(
             "refreshInstalledState",
             phase: "after",
-            watchedFinalPath: modelFilePath,
-            result: "done"
+            result: "done",
+            watchedFinalPath: modelFilePath
         )
         // Strict : aucun appel llama si le GGUF n’est pas réellement installé.
         guard isInstalled else {

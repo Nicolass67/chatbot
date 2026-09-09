@@ -118,9 +118,9 @@ enum LocalModelFileAudit {
     static func logFSOp(
         _ operation: String,
         phase: String,
+        result: String,
         source: String? = nil,
         destination: String? = nil,
-        result: String,
         watchedFinalPath: String? = nil
     ) {
         var fields: [String: any CustomStringConvertible] = [

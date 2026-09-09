@@ -254,9 +254,9 @@ final class LlamaContext: @unchecked Sendable {
                     LocalModelFileAudit.logFSOp(
                         "stageForLlama",
                         phase: "enter",
+                        result: "pending",
                         source: path,
-                        watchedFinalPath: path,
-                        result: "pending"
+                        watchedFinalPath: path
                     )
                     if let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
                         LocalModelFileAudit.snapshotFS(point: "after-stageForLlama", finalPath: path)
@@ -264,10 +264,10 @@ final class LlamaContext: @unchecked Sendable {
                         LocalModelFileAudit.logFSOp(
                             "stageForLlama",
                             phase: "exit",
+                            result: "ok",
                             source: path,
                             destination: stagedPath,
-                            watchedFinalPath: path,
-                            result: "ok"
+                            watchedFinalPath: path
                         )
                         LlamaLogCapture.shared.clear()
                         let stagedModel = loadModel(at: stagedPath, params: model_params)
@@ -279,9 +279,9 @@ final class LlamaContext: @unchecked Sendable {
                         LocalModelFileAudit.logFSOp(
                             "stageForLlama",
                             phase: "exit",
+                            result: "failed-or-nil",
                             source: path,
-                            watchedFinalPath: path,
-                            result: "failed-or-nil"
+                            watchedFinalPath: path
                         )
                     }
                 }
@@ -331,20 +331,21 @@ final class LlamaContext: @unchecked Sendable {
         let directory = library.appendingPathComponent("ChatbotModels", isDirectory: true)
 
         LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-createDirectory", finalPath: sourcePath)
+        let directoryPath = directory.path(percentEncoded: false)
         LocalModelFileAudit.logFSOp(
             "createDirectory",
             phase: "before",
-            destination: directory.path(percentEncoded: false),
-            watchedFinalPath: sourcePath,
-            result: "pending"
+            result: "pending",
+            destination: directoryPath,
+            watchedFinalPath: sourcePath
         )
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         LocalModelFileAudit.logFSOp(
             "createDirectory",
             phase: "after",
-            destination: directory.path(percentEncoded: false),
-            watchedFinalPath: sourcePath,
-            result: "ok"
+            result: "ok",
+            destination: directoryPath,
+            watchedFinalPath: sourcePath
         )
         LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-createDirectory", finalPath: sourcePath)
 
@@ -355,18 +356,18 @@ final class LlamaContext: @unchecked Sendable {
             LocalModelFileAudit.logFSOp(
                 "removeItem",
                 phase: "before",
+                result: "pending",
                 source: destPath,
-                watchedFinalPath: sourcePath,
-                result: "pending"
+                watchedFinalPath: sourcePath
             )
             // Ne touche que la copie ChatbotModels, pas l'original Application Support.
             try fm.removeItem(at: destination)
             LocalModelFileAudit.logFSOp(
                 "removeItem",
                 phase: "after",
+                result: "ok",
                 source: destPath,
-                watchedFinalPath: sourcePath,
-                result: "ok"
+                watchedFinalPath: sourcePath
             )
             LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-staged", finalPath: sourcePath)
         }
@@ -374,19 +375,19 @@ final class LlamaContext: @unchecked Sendable {
         LocalModelFileAudit.logFSOp(
             "copyItem",
             phase: "before",
+            result: "pending",
             source: sourcePath,
             destination: destPath,
-            watchedFinalPath: sourcePath,
-            result: "pending"
+            watchedFinalPath: sourcePath
         )
         try fm.copyItem(at: source, to: destination)
         LocalModelFileAudit.logFSOp(
             "copyItem",
             phase: "after",
+            result: "ok",
             source: sourcePath,
             destination: destPath,
-            watchedFinalPath: sourcePath,
-            result: "ok"
+            watchedFinalPath: sourcePath
         )
         LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-copyItem", finalPath: sourcePath)
 
@@ -397,9 +398,9 @@ final class LlamaContext: @unchecked Sendable {
             LocalModelFileAudit.logFSOp(
                 "removeItem",
                 phase: "before-incomplete-staged",
+                result: "pending",
                 source: destPath,
-                watchedFinalPath: sourcePath,
-                result: "pending"
+                watchedFinalPath: sourcePath
             )
             try? fm.removeItem(at: destination)
             LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-incomplete", finalPath: sourcePath)
@@ -414,9 +415,9 @@ final class LlamaContext: @unchecked Sendable {
             LocalModelFileAudit.logFSOp(
                 "removeItem",
                 phase: "before-invalid-staged",
+                result: "pending",
                 source: destPath,
-                watchedFinalPath: sourcePath,
-                result: "pending"
+                watchedFinalPath: sourcePath
             )
             try? fm.removeItem(at: destination)
             LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-invalid", finalPath: sourcePath)
