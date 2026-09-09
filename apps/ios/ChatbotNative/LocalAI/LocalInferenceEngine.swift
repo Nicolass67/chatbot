@@ -73,9 +73,7 @@ actor LocalInferenceEngine {
 #if canImport(llama)
         if generationInFlight {
             cancelGeneration = true
-            if let llama {
-                await llama.stop()
-            }
+            llama?.stop()
             generationInFlight = false
         }
         if isLoaded {
@@ -84,7 +82,7 @@ actor LocalInferenceEngine {
 
         let started = Date()
         do {
-            let ctx = try await LlamaContext.create_context(path: path)
+            let ctx = try LlamaContext.create_context(path: path)
             llama = ctx
             isLoaded = true
             loadedPath = path
@@ -113,9 +111,7 @@ actor LocalInferenceEngine {
     func unload() async {
 #if canImport(llama)
         cancelGeneration = true
-        if let llama {
-            await llama.stop()
-        }
+        llama?.stop()
         await unloadInternal()
 #else
         isLoaded = false
@@ -127,9 +123,7 @@ actor LocalInferenceEngine {
     func cancel() async {
         cancelGeneration = true
 #if canImport(llama)
-        if let llama {
-            await llama.stop()
-        }
+        llama?.stop()
 #endif
     }
 
@@ -188,7 +182,7 @@ actor LocalInferenceEngine {
         do {
             try await llama.generate(prompt: prompt, maxTokens: Int32(maxTokens)) { piece in
                 if Task.isCancelled {
-                    await llama.stop()
+                    llama.stop()
                     return
                 }
                 if !piece.isEmpty {
@@ -234,9 +228,7 @@ actor LocalInferenceEngine {
 
 #if canImport(llama)
     private func unloadInternal() async {
-        if let llama {
-            await llama.clear()
-        }
+        llama?.clear()
         llama = nil
         isLoaded = false
         loadedPath = nil

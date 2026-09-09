@@ -31,7 +31,8 @@ func llama_batch_add(
 
 /// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 4096`.
 /// Metal sur appareil ; `n_gpu_layers = 0` sur simulateur.
-actor LlamaContext {
+/// Classe `@unchecked Sendable` (pointeurs C) : accès sérialisé via `LocalInferenceEngine` (actor).
+final class LlamaContext: @unchecked Sendable {
     private var model: OpaquePointer
     private var context: OpaquePointer
     private var vocab: OpaquePointer
