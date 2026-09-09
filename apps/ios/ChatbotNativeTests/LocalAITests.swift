@@ -309,4 +309,73 @@ final class LocalModelManagerConcurrencyTests: XCTestCase {
     }
 }
 
+final class LocalAISettingsActionGateTests: XCTestCase {
+    func testBusyActionBlocksBeforeTaskWouldStart() {
+        XCTAssertFalse(
+            LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: true,
+                exclusiveOperation: nil,
+                state: .installed
+            )
+        )
+    }
+
+    func testExclusiveDeleteBlocksCharger() {
+        XCTAssertFalse(
+            LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: false,
+                exclusiveOperation: .delete,
+                state: .installed
+            )
+        )
+    }
+
+    func testExclusiveLoadBlocksDelete() {
+        XCTAssertFalse(
+            LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: false,
+                exclusiveOperation: .load,
+                state: .loading
+            )
+        )
+    }
+
+    func testUnloadingDisablesMutations() {
+        XCTAssertFalse(
+            LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: false,
+                exclusiveOperation: nil,
+                state: .unloading
+            )
+        )
+    }
+
+    func testInstalledIdleAllowsMutation() {
+        XCTAssertTrue(
+            LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: false,
+                exclusiveOperation: nil,
+                state: .installed
+            )
+        )
+    }
+
+    /// Simule double-tap : 1er pose busy, 2ᵉ refuse — un seul Task serait créé.
+    func testSecondTapRejectedAfterBusySetSynchronously() {
+        var busy = false
+        func beginUIAction() -> Bool {
+            guard LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: busy,
+                exclusiveOperation: nil,
+                state: .installed
+            ) else { return false }
+            busy = true
+            return true
+        }
+        XCTAssertTrue(beginUIAction())
+        XCTAssertTrue(busy)
+        XCTAssertFalse(beginUIAction())
+    }
+}
+
 

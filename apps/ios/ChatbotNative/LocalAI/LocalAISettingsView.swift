@@ -1,5 +1,25 @@
 import SwiftUI
 
+/// Politique UI (pas un second verrou) : décide si un bouton peut encore créer un Task.
+/// `ModelExclusiveOperation` reste la source de vérité côté `LocalModelManager`.
+enum LocalAISettingsActionGate {
+    /// `busyAction` doit déjà être consulté/posé **avant** `Task { }` par l’appelant.
+    static func allowsNewMutationTask(
+        busyAction: Bool,
+        exclusiveOperation: ModelExclusiveOperation?,
+        state: LocalModelInstallState
+    ) -> Bool {
+        if busyAction { return false }
+        if exclusiveOperation != nil { return false }
+        switch state {
+        case .loading, .unloading, .generating:
+            return false
+        default:
+            return true
+        }
+    }
+}
+
 /// Section Réglages « IA locale » — téléchargement, chargement, test du modèle on-device.
 struct LocalAISettingsView: View {
     @ObservedObject private var models = LocalModelManager.shared
@@ -7,6 +27,15 @@ struct LocalAISettingsView: View {
 
     @State private var showTestSheet = false
     @State private var busyAction = false
+
+    /// Désactive les boutons mutatifs : busy UI + exclusive manager + états incompatibles.
+    private var mutationsDisabled: Bool {
+        !LocalAISettingsActionGate.allowsNewMutationTask(
+            busyAction: busyAction,
+            exclusiveOperation: models.exclusiveOperation,
+            state: models.state
+        )
+    }
 
     var body: some View {
         Section {
@@ -19,6 +48,10 @@ struct LocalAISettingsView: View {
             }
             if case .loading = models.state {
                 ProgressView("Chargement du modèle en mémoire…")
+                    .tint(AppTheme.accent)
+            }
+            if case .unloading = models.state {
+                ProgressView("Déchargement…")
                     .tint(AppTheme.accent)
             }
             if let err = models.lastError, !err.isEmpty {
@@ -86,6 +119,18 @@ struct LocalAISettingsView: View {
         LabeledContent("État", value: models.state.statusLabel)
     }
 
+    /// Pose `busyAction` synchrone avant tout `Task` — empêche un 2ᵉ Task avant le prochain frame.
+    @discardableResult
+    private func beginUIAction() -> Bool {
+        guard LocalAISettingsActionGate.allowsNewMutationTask(
+            busyAction: busyAction,
+            exclusiveOperation: models.exclusiveOperation,
+            state: models.state
+        ) else { return false }
+        busyAction = true
+        return true
+    }
+
     @ViewBuilder
     private var actionButtons: some View {
         HStack(spacing: AppTheme.space8) {
@@ -96,24 +141,24 @@ struct LocalAISettingsView: View {
                 .foregroundStyle(AppTheme.danger)
             } else if !models.isInstalled {
                 Button("Installer") {
+                    guard beginUIAction() else { return }
                     Task {
-                        busyAction = true
                         defer { busyAction = false }
                         await models.install()
                     }
                 }
-                .disabled(!models.activeDescriptor.isDownloadable || busyAction)
+                .disabled(!models.activeDescriptor.isDownloadable || mutationsDisabled)
                 .tint(AppTheme.accent)
             } else {
                 Button("Supprimer") {
+                    guard beginUIAction() else { return }
                     Task {
-                        busyAction = true
                         defer { busyAction = false }
                         await models.deleteModel()
                     }
                 }
                 .foregroundStyle(AppTheme.danger)
-                .disabled(busyAction || models.state == .loading)
+                .disabled(mutationsDisabled)
             }
 
             Spacer()
@@ -121,18 +166,18 @@ struct LocalAISettingsView: View {
             if models.isInstalled {
                 if models.isReady {
                     Button("Décharger") {
+                        guard beginUIAction() else { return }
                         Task {
-                            busyAction = true
                             defer { busyAction = false }
                             await models.unload()
                             execution.refreshDerived()
                         }
                     }
-                    .disabled(busyAction)
+                    .disabled(mutationsDisabled)
                 } else {
                     Button("Charger") {
+                        guard beginUIAction() else { return }
                         Task {
-                            busyAction = true
                             defer { busyAction = false }
                             LocalModelFileAudit.snapshotFS(
                                 point: "D-charger-button",
@@ -142,14 +187,17 @@ struct LocalAISettingsView: View {
                             execution.refreshDerived()
                         }
                     }
-                    .disabled(busyAction || models.state == .loading || !LocalInferenceEngine.isLlamaRuntimeAvailable)
+                    .disabled(
+                        mutationsDisabled
+                            || !LocalInferenceEngine.isLlamaRuntimeAvailable
+                    )
                     .tint(AppTheme.accent)
                 }
 
                 Button("Tester") {
                     showTestSheet = true
                 }
-                .disabled(!models.isReady)
+                .disabled(!models.isReady || mutationsDisabled)
                 .tint(AppTheme.accent)
             }
         }
