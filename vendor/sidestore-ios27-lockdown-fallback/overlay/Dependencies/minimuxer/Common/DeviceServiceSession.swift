@@ -11,8 +11,8 @@ import Foundation
 
 public enum DeviceServiceSession {
     public static let maxAttempts = 3
-    public static let defaultRetryDelayMs = [150, 400]
-    public static let postCloseSettleMs = 80
+    public static let defaultRetryDelayMs = [400, 1200]
+    public static let postCloseSettleMs = 200
 
     private static let lockdownLock = NSLock()
     private static let misagentLock = NSLock()

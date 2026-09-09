@@ -55,6 +55,9 @@ jobs:
           test -f "$OVERLAY/Dependencies/minimuxer/Common/DeviceTransport.swift"
           rsync -a "$OVERLAY/" sidestore-build/
           grep -q "DeviceTransportSelector" sidestore-build/Dependencies/minimuxer/Common/DeviceTransport.swift
+          grep -q "UsbmuxConnectRouting" sidestore-build/Dependencies/minimuxer/Common/UsbmuxConnectRouting.swift
+          grep -q "handleConnect" sidestore-build/Dependencies/minimuxer/Sources/Services/UsbmuxdProxyServer.swift
+          grep -q "performWithLockdownServicePreferringUsbmux" sidestore-build/Dependencies/minimuxer/DeviceGateway/idevice/IdeviceGateway.swift
           grep -q "requiresRemotePairing" sidestore-build/Dependencies/minimuxer/Sources/MinimuxerError.swift
           grep -q "requiresRemotePairing" sidestore-build/SideStore/Core/Operations/Errors/OperationError.swift
           MM_SHA=$(git -C sidestore-build/Dependencies/minimuxer rev-parse HEAD)
@@ -88,7 +91,7 @@ jobs:
         env:
           NSUnbufferedIO: YES
           BUILD_CONFIG: Release
-          MARKETING_VERSION: 0.7.0-startfb
+          MARKETING_VERSION: 0.7.0-muxconn
         run: |
           set -euo pipefail
           echo "Building SideStore ${SIDESTORE_REF} MARKETING_VERSION=${MARKETING_VERSION}"

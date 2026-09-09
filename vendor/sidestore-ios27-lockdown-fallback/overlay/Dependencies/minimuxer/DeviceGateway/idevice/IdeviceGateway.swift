@@ -399,6 +399,20 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         serviceName: String,
         action: (OpaquePointer) throws -> T
     ) throws -> T {
+        try performWithUsbmuxdServiceUnlocked(
+            connect: connect,
+            cleanup: cleanup,
+            serviceName: serviceName,
+            action: action
+        )
+    }
+
+    private func performWithUsbmuxdServiceUnlocked<T>(
+        connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
+        cleanup: @escaping (OpaquePointer?) -> Void,
+        serviceName: String,
+        action: (OpaquePointer) throws -> T
+    ) throws -> T {
         verboseLog("[IdeviceGateway] performWithUsbmuxdService(\(serviceName)) started")
         
         var addr: OpaquePointer? = nil
@@ -561,17 +575,46 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         serviceName: String,
         action: (OpaquePointer) throws -> T
     ) throws -> T {
-        verboseLog("[IdeviceGateway] performWithTcpService(\(serviceName)) started")
-        
-        guard let deviceEndpointIp = deviceEndpointIp else {
-            debugLog("[IdeviceGateway] performWithTcpService(\(serviceName)) failed because deviceEndpointIp is nil")
-            throw IdeviceGatewayError(.deviceEndpointIpNotAvailable)
+        let loopbackOpen = NetworkUtils.testTCP(
+            ip: "127.0.0.1",
+            port: MinimuxerConstants.lockdowndPort
+        )
+        let hosts = UsbmuxConnectRouting.lockdownTcpHosts(
+            deviceIp: deviceEndpointIp,
+            loopbackLockdownOpen: loopbackOpen
+        )
+        debugLog("[IdeviceGateway] performWithTcpService(\(serviceName)) hosts=\(hosts)")
+        var lastError: Error?
+        for host in hosts {
+            do {
+                return try performWithTcpServiceTo(
+                    host: host,
+                    connect: connect,
+                    cleanup: cleanup,
+                    serviceName: serviceName,
+                    action: action
+                )
+            } catch {
+                lastError = error
+                debugLog("[IdeviceGateway] performWithTcpService(\(serviceName)) host=\(host) failed: \(error.localizedDescription)")
+            }
         }
+        throw lastError ?? IdeviceGatewayError(.deviceEndpointIpNotAvailable)
+    }
+
+    private func performWithTcpServiceTo<T>(
+        host: String,
+        connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
+        cleanup: @escaping (OpaquePointer?) -> Void,
+        serviceName: String,
+        action: (OpaquePointer) throws -> T
+    ) throws -> T {
+        verboseLog("[IdeviceGateway] performWithTcpService(\(serviceName)) started host=\(host)")
         
         var sockAddr = sockaddr_in()
         sockAddr.sin_family = sa_family_t(AF_INET)
         sockAddr.sin_port = MinimuxerConstants.lockdowndPort.bigEndian
-        sockAddr.sin_addr.s_addr = inet_addr(deviceEndpointIp)
+        sockAddr.sin_addr.s_addr = inet_addr(host)
         #if os(macOS) || os(iOS)
         sockAddr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
         #endif
@@ -655,12 +698,53 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
                 if case .use(.lockdown) = fallback {
                     debugLog("[transport] RPPairing tunnel failed for \(serviceName), falling back to Lockdown")
                     try applySelectedTransport(.lockdown)
-                    return try performWithTcpService(connect: connectLockdown, cleanup: cleanup, serviceName: serviceName, action: action)
+                    return try performWithLockdownServicePreferringUsbmux(
+                        connect: connectLockdown,
+                        cleanup: cleanup,
+                        serviceName: serviceName,
+                        action: action
+                    )
                 }
                 throw error
             }
         } else {
-            return try performWithTcpService(connect: connectLockdown, cleanup: cleanup, serviceName: serviceName, action: action)
+            return try performWithLockdownServicePreferringUsbmux(
+                connect: connectLockdown,
+                cleanup: cleanup,
+                serviceName: serviceName,
+                action: action
+            )
+        }
+    }
+
+    private func performWithLockdownServicePreferringUsbmux<T>(
+        connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
+        cleanup: @escaping (OpaquePointer?) -> Void,
+        serviceName: String,
+        action: (OpaquePointer) throws -> T
+    ) throws -> T {
+        try DeviceServiceSession.withLockdownSession {
+            try DeviceServiceSession.retryTransient(operation: "lockdown.\(serviceName)") {
+                if getenv(MinimuxerConstants.usbmuxdEnvKey) != nil {
+                    do {
+                        debugLog("[IdeviceGateway] \(serviceName) via fake usbmuxd")
+                        return try self.performWithUsbmuxdServiceUnlocked(
+                            connect: connect,
+                            cleanup: cleanup,
+                            serviceName: serviceName,
+                            action: action
+                        )
+                    } catch {
+                        debugLog("[IdeviceGateway] usbmux \(serviceName) failed: \(error.localizedDescription) — TCP fallback")
+                    }
+                }
+                return try self.performWithTcpServiceOnce(
+                    connect: connect,
+                    cleanup: cleanup,
+                    serviceName: serviceName,
+                    action: action
+                )
+            }
         }
     }
 
@@ -849,6 +933,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         debugLog("[IdeviceGateway] installProvisioningProfile() called, profile length: \(profile.count)")
         try verifyInitialized()
         try DeviceServiceSession.withMisagent(step: "install") {
+            debugLog("[misagent] install via \(pairingFileType) muxerEnv=\(getenv(MinimuxerConstants.usbmuxdEnvKey) != nil)")
             try performWithEitherService(
                 connectRP: misagent_connect_rsd,
                 connectLockdown: misagent_connect,

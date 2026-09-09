@@ -91,8 +91,9 @@ public enum DeviceTransportSelector {
         }
     }
 
-    /// Idevice lockdown talks to 62078 directly. The fake usbmuxd on :27015 is
-    /// only required when that endpoint is down.
+    /// Start() can mark ready from Lockdown TCP 62078 alone. Refresh/misagent
+    /// still prefers the fake usbmuxd so StartService ports can be opened on
+    /// loopback instead of 10.7.0.1.
     public static func fakeMuxerRequiredForLockdown(
         muxerListening: Bool,
         lockdownReachable: Bool

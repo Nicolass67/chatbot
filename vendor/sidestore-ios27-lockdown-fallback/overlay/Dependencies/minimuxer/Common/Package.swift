@@ -27,7 +27,8 @@ let package = Package(
                 "MinimuxerConstants.swift",
                 "NetworkUtils.swift",
                 "PairingFile.swift",
-                "PairingProtocol.swift"
+                "PairingProtocol.swift",
+                "UsbmuxConnectRouting.swift"
             ]
         ),
         .testTarget(

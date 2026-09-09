@@ -15,6 +15,7 @@ SideStore 0.7.0 classifies a hybrid iLoader pairing file as `.rppairing` because
 4. Returns `requiresRemotePairing` for JIT / iOS 17+ debug instead of faking a 62078 debug proxy
 5. Serializes lockdown/misagent sessions and retries BrokenPipe with a fresh connection (max 3 attempts)
 6. Does not leave minimuxer stuck in `inprogress` if the fake usbmuxd fails; lockdown TCP 62078 is enough to start
+7. Fake usbmuxd implements Connect: lockdownd on Device IP, misagent/AFC ports on 127.0.0.1 first (avoids iOS 27 BrokenPipe on 10.7.0.1:dynamic-port)
 
 Pairing files, LocalDevVPN, and Device IP are not modified by this overlay.
 
