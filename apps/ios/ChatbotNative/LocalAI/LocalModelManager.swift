@@ -51,14 +51,25 @@ final class LocalModelManager: ObservableObject {
         modelsDirectory.appendingPathComponent(activeDescriptor.filename + ".download")
     }
 
-    /// Installé = fichier GGUF valide sur disque (pas seulement un état UI).
+    var actualFileExists: Bool {
+        fileManager.fileExists(atPath: modelFilePath)
+    }
+
+    var actualFileIsReadable: Bool {
+        fileManager.isReadableFile(atPath: modelFilePath)
+    }
+
+    var actualFileSize: Int64 {
+        (try? fileManager.attributesOfItem(atPath: modelFilePath)[.size] as? Int64) ?? 0
+    }
+
+    /// Installé = fichier GGUF réellement présent, à la bonne taille et lisible.
     var isInstalled: Bool {
-        switch state {
-        case .installed, .loading, .ready, .generating, .unloading:
-            return fileManager.fileExists(atPath: modelFilePath)
-        default:
-            return false
-        }
+        guard actualFileExists,
+              actualFileSize > 0,
+              validateSize(actualFileSize, expected: activeDescriptor.expectedBytes),
+              isGGUFMagic(at: modelFileURL) else { return false }
+        return true
     }
 
     var isReady: Bool {
@@ -82,6 +93,7 @@ final class LocalModelManager: ObservableObject {
 
     func refreshInstalledState() {
         let path = modelFilePath
+        recordStorageAudit("refresh")
         guard fileManager.fileExists(atPath: path) else {
             if case .downloading = state { return }
             if case .verifying = state { return }
@@ -385,6 +397,7 @@ final class LocalModelManager: ObservableObject {
             )
         }
         installedBytes = size
+        recordStorageAudit("validation après téléchargement/move")
     }
 
     private func validateSize(_ actual: Int64, expected: Int64) -> Bool {
@@ -415,6 +428,20 @@ final class LocalModelManager: ObservableObject {
             return "Modèle GGUF introuvable dans Models/. Relancez Installer."
         }
         return "Modèle GGUF introuvable (\(activeDescriptor.filename)). Dossier Models: \(contents.joined(separator: ", ")). Relancez Installer."
+    }
+
+    /// Trace de cycle de vie sans contenu de fichier ni donnée utilisateur.
+    private func recordStorageAudit(_ event: String) {
+        let path = modelFilePath
+        let partial = partialDownloadURL
+        let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+        let magic = fileManager.fileExists(atPath: path) && isGGUFMagic(at: modelFileURL)
+        print(
+            "[local-ai:storage] event=\(event), final.exists=\(fileManager.fileExists(atPath: path)), " +
+            "final.readable=\(fileManager.isReadableFile(atPath: path)), final.size=\(size), " +
+            "final.ggufMagic=\(magic), partial.exists=\(fileManager.fileExists(atPath: fileSystemPath(partial))), " +
+            "final.path=\(path)"
+        )
     }
 }
 
@@ -501,6 +528,21 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                 try fm.removeItem(at: destinationURL)
             }
             try Self.moveOrCopy(partialURL, to: destinationURL)
+            let destinationPath = destinationURL.path(percentEncoded: false)
+            let destinationExists = fm.fileExists(atPath: destinationPath)
+            let destinationSize = (try? fm.attributesOfItem(atPath: destinationPath)[.size] as? Int64) ?? 0
+            let partialExists = fm.fileExists(atPath: partialURL.path(percentEncoded: false))
+            print(
+                "[local-ai:download-move] partial.exists=\(partialExists), final.exists=\(destinationExists), " +
+                "final.size=\(destinationSize), final.path=\(destinationPath)"
+            )
+            guard destinationExists, destinationSize > 0 else {
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "Move GGUF terminé sans fichier final lisible."]
+                )
+            }
             finish(.success(()))
         } catch {
             finish(.failure(error))

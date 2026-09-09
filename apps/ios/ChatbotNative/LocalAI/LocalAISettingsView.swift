@@ -62,13 +62,15 @@ struct LocalAISettingsView: View {
         Group {
             LabeledContent("Modèle", value: models.activeDescriptor.displayName)
             LabeledContent("Quantification", value: models.activeDescriptor.quant)
-            LabeledContent("Taille", value: models.activeDescriptor.expectedSizeLabel)
-            if models.installedBytes > 0 {
-                LabeledContent(
-                    "Sur disque",
-                    value: String(format: "%.0f Mo", Double(models.installedBytes) / 1_048_576.0)
-                )
-            }
+            LabeledContent("Taille attendue", value: models.activeDescriptor.expectedSizeLabel)
+            LabeledContent(
+                "Taille réelle",
+                value: models.actualFileSize > 0
+                    ? String(format: "%.0f Mo", Double(models.actualFileSize) / 1_048_576.0)
+                    : "—"
+            )
+            LabeledContent("Fichier présent", value: models.actualFileExists ? "Oui" : "Non")
+            LabeledContent("Fichier lisible", value: models.actualFileIsReadable ? "Oui" : "Non")
             LabeledContent(
                 "Metal",
                 value: models.isMetalAvailable ? "Disponible" : "Indisponible (simulateur)"

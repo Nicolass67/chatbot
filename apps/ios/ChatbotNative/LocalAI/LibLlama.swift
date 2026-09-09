@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 #if canImport(llama)
 import llama
@@ -22,10 +23,12 @@ private final class LlamaLogCapture: @unchecked Sendable {
     static let shared = LlamaLogCapture()
     private let lock = NSLock()
     private var lines: [String] = []
+    private var fileDiagnostics: [String] = []
 
     func clear() {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
+        fileDiagnostics.removeAll(keepingCapacity: true)
         lock.unlock()
     }
 
@@ -38,12 +41,24 @@ private final class LlamaLogCapture: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordFileDiagnostic(_ report: String) {
+        lock.lock()
+        fileDiagnostics.append(report)
+        if fileDiagnostics.count > 3 { fileDiagnostics.removeFirst(fileDiagnostics.count - 3) }
+        lock.unlock()
+        print("[local-ai:file-diagnostic] \(report)")
+    }
+
     var summary: String {
         lock.lock()
         defer { lock.unlock() }
         let tail = lines.suffix(6)
-        guard !tail.isEmpty else { return "" }
-        return " — " + tail.joined(separator: " · ")
+        let logs = tail.joined(separator: " · ")
+        let diagnostics = fileDiagnostics.joined(separator: "\n\n")
+        guard !logs.isEmpty || !diagnostics.isEmpty else { return "" }
+        if diagnostics.isEmpty { return " — " + logs }
+        if logs.isEmpty { return " — " + diagnostics }
+        return " — \(logs)\n\n\(diagnostics)"
     }
 
     var reportsMissingGGUF: Bool {
@@ -53,6 +68,66 @@ private final class LlamaLogCapture: @unchecked Sendable {
             line.localizedCaseInsensitiveContains("failed to open GGUF file")
                 || line.localizedCaseInsensitiveContains("no such file or directory")
         }
+    }
+}
+
+/// Audit temporaire du fichier transmis à llama.cpp. Les appels POSIX utilisent
+/// exactement la même C-string que `llama_model_load_from_file`.
+private enum LlamaFileDiagnostics {
+    static func report(path: String, phase: String) -> String {
+        let fm = FileManager.default
+        let url = URL(fileURLWithPath: path)
+        let attrs = (try? fm.attributesOfItem(atPath: path)) ?? [:]
+        let parent = url.deletingLastPathComponent()
+        let entries = ((try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])) ?? [])
+            .map { entry -> String in
+                let values = try? entry.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                let size = values?.fileSize.map { String($0) } ?? "—"
+                let regular = values?.isRegularFile.map { String($0) } ?? "—"
+                return "\(entry.lastPathComponent){path=\(entry.path(percentEncoded: false)),size=\(size),regular=\(regular)}"
+            }
+            .joined(separator: "; ")
+
+        let posix = path.withCString { cPath -> String in
+            func failure(_ code: Int32) -> String {
+                "errno=\(code): \(String(cString: strerror(code)))"
+            }
+
+            let bytes = Array(path.utf8).map { String(format: "%02X", $0) }.joined(separator: " ")
+            errno = 0
+            let exists = access(cPath, F_OK)
+            let existsErrno = errno
+            errno = 0
+            let readable = access(cPath, R_OK)
+            let readableErrno = errno
+            var info = stat()
+            errno = 0
+            let statResult = stat(cPath, &info)
+            let statErrno = errno
+            errno = 0
+            let descriptor = open(cPath, O_RDONLY)
+            let openErrno = errno
+            if descriptor >= 0 { _ = close(descriptor) }
+            errno = 0
+            let stream = fopen(cPath, "rb")
+            let fopenErrno = errno
+            if let stream { _ = fclose(stream) }
+
+            let accessF = exists == 0 ? "PASS" : "FAIL(\(failure(existsErrno)))"
+            let accessR = readable == 0 ? "PASS" : "FAIL(\(failure(readableErrno)))"
+            let statText = statResult == 0
+                ? "PASS(size=\(info.st_size),mode=\(info.st_mode))"
+                : "FAIL(\(failure(statErrno)))"
+            let openText = descriptor >= 0 ? "PASS(fd=\(descriptor))" : "FAIL(\(failure(openErrno)))"
+            let fopenText = stream == nil ? "FAIL(\(failure(fopenErrno)))" : "PASS"
+            return "cString.length=\(strlen(cPath)),utf8.length=\(path.utf8.count),utf8.hex=[\(bytes)],debug=\(String(reflecting: path)),access(F_OK)=\(accessF),access(R_OK)=\(accessR),stat=\(statText),open=\(openText),fopen=\(fopenText)"
+        }
+
+        let size = attrs[.size].map { String(describing: $0) } ?? "—"
+        let modified = attrs[.modificationDate].map { String(describing: $0) } ?? "—"
+        let type = attrs[.type].map { String(describing: $0) } ?? "—"
+        let protection = attrs[.protectionKey].map { String(describing: $0) } ?? "—"
+        return "[\(phase)] absolute=\(url.absoluteString),path=\(url.path(percentEncoded: false)),standardized=\(url.standardizedFileURL.path(percentEncoded: false)),symlinks=\(url.resolvingSymlinksInPath().path(percentEncoded: false)); FileManager{exists=\(fm.fileExists(atPath: path)),readable=\(fm.isReadableFile(atPath: path)),size=\(size),modified=\(modified),type=\(type),protection=\(protection)}; parent.entries=[\(entries.isEmpty ? "<empty>" : entries)]; POSIX{\(posix)}"
     }
 }
 
@@ -189,19 +264,29 @@ final class LlamaContext: @unchecked Sendable {
     }
 
     private static func loadModel(at path: String, params: llama_model_params) -> OpaquePointer? {
+        let phase = path.contains("/Library/ChatbotModels/")
+            ? "before llama (Library/ChatbotModels sans espace)"
+            : "before llama (Application Support)"
+        LlamaLogCapture.shared.recordFileDiagnostic(LlamaFileDiagnostics.report(path: path, phase: phase))
         path.withCString { cPath in
             llama_model_load_from_file(cPath, params)
         }
     }
 
     /// Copie de secours, uniquement quand le runtime C ne sait pas ouvrir un
-    /// GGUF que Foundation vient de lire. `tmp` n'a pas le segment avec espace
-    /// de `Library/Application Support` et n'est jamais la source persistante.
+    /// GGUF que Foundation vient de lire. Le test est volontairement placé dans
+    /// `Library/ChatbotModels`, sans espace, et ne supprime jamais l'original.
     private static func stageForLlama(from sourcePath: String, expectedSize: Int64) throws -> String {
         let fm = FileManager.default
         let source = URL(fileURLWithPath: sourcePath)
-        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("chatbot-models", isDirectory: true)
+        LlamaLogCapture.shared.recordFileDiagnostic(
+            LlamaFileDiagnostics.report(path: sourcePath, phase: "before copy source")
+        )
+        let library = source
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let directory = library.appendingPathComponent("ChatbotModels", isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let destination = directory.appendingPathComponent(source.lastPathComponent)
@@ -224,6 +309,9 @@ final class LlamaContext: @unchecked Sendable {
             try? fm.removeItem(at: destination)
             throw LlamaError.couldNotInitializeContext("copie de secours GGUF invalide")
         }
+        LlamaLogCapture.shared.recordFileDiagnostic(
+            LlamaFileDiagnostics.report(path: stagedPath, phase: "after copy destination")
+        )
         return stagedPath
     }
 
