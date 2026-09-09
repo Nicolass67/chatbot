@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Audit / présence du fichier GGUF — purement filesystem, sans llama.cpp.
 /// Règle unique : « installé » = exists + taille dans tolérance + magic `GGUF`.
@@ -24,6 +25,12 @@ enum LocalModelPresence: Equatable, Sendable {
 
 enum LocalModelFileAudit {
     static let sizeToleranceFraction: Double = 0.05
+
+    /// Visible via `pymobiledevice3 syslog` (contrairement à `print` en Release).
+    private static let logger = Logger(
+        subsystem: "fr.nicolazer.chatbot.native",
+        category: "local-ai"
+    )
 
     static func validateSize(_ actual: Int64, expected: Int64) -> Bool {
         guard expected > 0, actual > 0 else { return false }
@@ -66,11 +73,14 @@ enum LocalModelFileAudit {
     }
 
     /// Log metadata-only (jamais le contenu GGUF).
+    /// `Logger` + `NSLog` : visibles dans syslog device ; `print` Release ne l’est pas.
     static func log(_ channel: String, _ fields: [String: any CustomStringConvertible]) {
         let body = fields
             .map { "\($0.key)=\($0.value)" }
             .sorted()
             .joined(separator: ", ")
-        print("[\(channel)] \(body)")
+        let line = "[\(channel)] \(body)"
+        logger.notice("\(line, privacy: .public)")
+        NSLog("%@", line)
     }
 }
