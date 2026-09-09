@@ -8,8 +8,10 @@ struct MailSendConfirmation: Identifiable, Hashable, Sendable {
     let subject: String
     let proposedBody: String
     let threadId: String?
-    /// Brouillon Gmail créé avant confirmation (optionnel).
+    /// Brouillon Gmail distant — ne plus créer à la rédaction ; conservé pour nettoyer un legacy.
     let draftId: String?
+    let inReplyTo: String?
+    let references: String?
 
     init(
         id: UUID = UUID(),
@@ -17,7 +19,9 @@ struct MailSendConfirmation: Identifiable, Hashable, Sendable {
         subject: String,
         proposedBody: String,
         threadId: String? = nil,
-        draftId: String? = nil
+        draftId: String? = nil,
+        inReplyTo: String? = nil,
+        references: String? = nil
     ) {
         self.id = id
         self.to = to
@@ -25,6 +29,8 @@ struct MailSendConfirmation: Identifiable, Hashable, Sendable {
         self.proposedBody = proposedBody
         self.threadId = threadId
         self.draftId = draftId
+        self.inReplyTo = inReplyTo
+        self.references = references
     }
 }
 
@@ -221,27 +227,25 @@ final class LocalMailAssistant: ObservableObject {
             ).trimmingCharacters(in: .whitespacesAndNewlines)
         )
 
-        var draftId: String?
-        if !to.isEmpty {
-            do {
-                let draft = try await gmail.createDraft(
-                    to: to,
-                    subject: subject,
-                    body: MailThreadPromptBuilder.plainBodyForSend(proposed),
-                    threadId: thread.threadId ?? thread.id
-                )
-                draftId = draft.id
-            } catch {
-                lastError = "Proposition prête (brouillon Gmail non créé : \(error.localizedDescription))"
-            }
-        }
+        let last = MailThreadPromptBuilder.chronological(thread.messages).last
+        let inReplyTo = last?.rfc822MessageId
+        let references: String? = {
+            let existing = last?.rfc822References?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let mid = inReplyTo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if existing.isEmpty { return mid.isEmpty ? nil : mid }
+            if mid.isEmpty || existing.localizedCaseInsensitiveContains(mid) { return existing }
+            return existing + " " + mid
+        }()
 
+        // Brouillon UI/local uniquement — pas de Draft Gmail distant pendant la rédaction.
         let confirmation = MailSendConfirmation(
             to: to,
             subject: subject,
             proposedBody: proposed,
             threadId: thread.threadId ?? thread.id,
-            draftId: draftId
+            draftId: nil,
+            inReplyTo: inReplyTo,
+            references: references
         )
         pendingConfirmation = confirmation
         return confirmation
@@ -262,18 +266,23 @@ final class LocalMailAssistant: ObservableObject {
         lastError = nil
         defer { isBusy = false }
 
-        if let draftId = pending.draftId, !draftId.isEmpty {
-            try await gmail.sendDraft(id: draftId)
-        } else {
-            guard !pending.to.isEmpty else {
-                throw DirectGmailError.invalidArgument("Destinataire manquant pour l’envoi.")
-            }
-            try await gmail.sendMessage(
-                to: pending.to,
-                subject: pending.subject,
-                body: MailThreadPromptBuilder.plainBodyForSend(pending.proposedBody),
-                threadId: pending.threadId
-            )
+        guard !pending.to.isEmpty else {
+            throw DirectGmailError.invalidArgument("Destinataire manquant pour l’envoi.")
+        }
+        let body = MailThreadPromptBuilder.plainBodyForSend(pending.proposedBody)
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DirectGmailError.emptyOutboundBody
+        }
+        try await gmail.sendMessage(
+            to: pending.to,
+            subject: pending.subject,
+            body: body,
+            threadId: pending.threadId,
+            inReplyTo: pending.inReplyTo,
+            references: pending.references
+        )
+        if let draftId = pending.draftId, GmailRemoteIds.isPersistedGmailDraftId(draftId) {
+            try? await gmail.deleteDraft(id: draftId)
         }
         pendingConfirmation = nil
     }

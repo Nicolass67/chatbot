@@ -425,6 +425,22 @@ final class GmailOAuthConfigTests: XCTestCase {
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.readonly") }))
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.send") }))
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.compose") }))
+        XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.modify") }))
+        XCTAssertFalse(GmailOAuthConfig.scopes.contains(where: { $0.contains("mail.google.com") }))
+    }
+
+    func testGrantedScopesDoNotAssumeRequestedWhenTokenOmitsScope() {
+        XCTAssertNil(GmailGrantedScopes.normalized(nil))
+        XCTAssertNil(GmailGrantedScopes.normalized("  "))
+        let readonlyOnly = GmailGrantedScopes.set(
+            from: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
+        )
+        XCTAssertFalse(GmailGrantedScopes.contains(readonlyOnly, required: GmailOAuthConfig.mutationScopes))
+        let withModify = GmailGrantedScopes.set(
+            from: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify"
+        )
+        XCTAssertTrue(GmailGrantedScopes.contains(withModify, required: GmailOAuthConfig.mutationScopes))
+        XCTAssertFalse(GmailGrantedScopes.contains([], required: GmailOAuthConfig.mutationScopes))
     }
 
     func testReversedClientIDDerivation() {
@@ -1678,5 +1694,106 @@ final class LocalAISettingsSheetItemTests: XCTestCase {
         XCTAssertNotEqual(LocalAISettingsSheetItem.modelDetails(qwen).id, LocalAISettingsSheetItem.inferenceTest.id)
         XCTAssertNotEqual(LocalAISettingsSheetItem.visionManage(qwen).id, LocalAISettingsSheetItem.inferenceTest.id)
         XCTAssertNotEqual(LocalAISettingsSheetItem.technicalError("x").id, LocalAISettingsSheetItem.inferenceTest.id)
+    }
+}
+
+final class GmailRfc822Tests: XCTestCase {
+    func testPlainBodyIsPresentInDecodedRaw() throws {
+        let raw = try GmailRfc822.encodeRaw(
+            to: "a@b.c",
+            subject: "Re:",
+            body: "Bonjour Nicolas, merci."
+        )
+        let decoded = try XCTUnwrap(GmailRfc822.decodeRaw(raw))
+        XCTAssertTrue(decoded.contains("Bonjour Nicolas, merci."))
+        XCTAssertTrue(decoded.contains("To: a@b.c"))
+        XCTAssertTrue(decoded.contains("Content-Type: text/plain"))
+        XCTAssertFalse(decoded.contains("In-Reply-To:"))
+    }
+
+    func testRejectsEmptyBody() {
+        XCTAssertThrowsError(try GmailRfc822.encodeRaw(to: "a@b.c", subject: "x", body: "  \n")) { error in
+            XCTAssertEqual(error as? GmailRfc822.EncodeError, .emptyBody)
+        }
+    }
+
+    func testReplyHeadersAndAttachmentStayInMime() throws {
+        let raw = try GmailRfc822.encodeRaw(
+            to: "a@b.c",
+            subject: "Re: Hi",
+            body: "Suite du fil",
+            inReplyTo: "abc@mail.gmail.com",
+            references: "<abc@mail.gmail.com>",
+            attachments: [
+                .init(filename: "note.txt", mimeType: "text/plain", data: Data("hi".utf8)),
+            ]
+        )
+        let decoded = try XCTUnwrap(GmailRfc822.decodeRaw(raw))
+        XCTAssertTrue(decoded.contains("In-Reply-To: <abc@mail.gmail.com>"))
+        XCTAssertTrue(decoded.contains("References: <abc@mail.gmail.com>"))
+        XCTAssertTrue(decoded.contains("multipart/mixed"))
+        XCTAssertTrue(decoded.contains("Content-Disposition: attachment; filename=\"note.txt\""))
+        XCTAssertTrue(decoded.contains("Suite du fil"))
+    }
+
+    func testCcBccAndRejectsMissingRecipient() throws {
+        XCTAssertThrowsError(try GmailRfc822.encodeRaw(to: "  ", subject: "x", body: "hello")) { error in
+            XCTAssertEqual(error as? GmailRfc822.EncodeError, .missingRecipient)
+        }
+        let raw = try GmailRfc822.encodeRaw(
+            to: "a@b.c",
+            cc: "cc@b.c",
+            bcc: "bcc@b.c",
+            subject: "Hello",
+            body: "Corps"
+        )
+        let decoded = try XCTUnwrap(GmailRfc822.decodeRaw(raw))
+        XCTAssertTrue(decoded.contains("Cc: cc@b.c"))
+        XCTAssertTrue(decoded.contains("Bcc: bcc@b.c"))
+        XCTAssertTrue(decoded.contains("Corps"))
+        XCTAssertFalse(decoded.contains("multipart/mixed"))
+    }
+}
+
+final class DirectGmailErrorTests: XCTestCase {
+    func testInsufficientScopesIsUserFacingNotHttpDump() {
+        let err = DirectGmailError.http(403, "Request had insufficient authentication scopes.")
+        XCTAssertTrue(err.isInsufficientScopes)
+        XCTAssertEqual(err.errorDescription, DirectGmailError.insufficientScopesMessage)
+        XCTAssertFalse(err.errorDescription?.contains("HTTP 403") == true)
+        XCTAssertEqual(DirectGmailError.insufficientScopes.errorDescription, DirectGmailError.insufficientScopesMessage)
+        XCTAssertTrue(DirectGmailError.isInsufficientScopes(DirectGmailError.insufficientScopes))
+    }
+}
+
+final class GmailSendLockTests: XCTestCase {
+    func testDoubleAcquireIsRejected() throws {
+        GmailSendLock.resetForTests()
+        let first = try GmailSendLock.acquire()
+        XCTAssertThrowsError(try GmailSendLock.acquire())
+        GmailSendLock.release(first)
+        XCTAssertNoThrow(try GmailSendLock.acquire())
+        GmailSendLock.resetForTests()
+    }
+}
+
+final class GmailRemoteIdsTests: XCTestCase {
+    func testServerUuidIsNotTreatedAsGmailDraft() {
+        XCTAssertFalse(GmailRemoteIds.isPersistedGmailDraftId("E621E1F8-C36C-495A-93FC-0C247A3E6E5F"))
+        XCTAssertFalse(GmailRemoteIds.isPersistedGmailDraftId("  "))
+        XCTAssertTrue(GmailRemoteIds.isPersistedGmailDraftId("r-1234567890123456789"))
+        XCTAssertTrue(GmailRemoteIds.isPersistedGmailDraftId("18c2f0ab4d3e1f90"))
+    }
+}
+
+final class MailDraftCardSnapshotTests: XCTestCase {
+    func testLegacySnapshotDecodesWithoutReplyHeaders() throws {
+        let json = """
+        {"draftId":null,"text":"Bonjour","to":"a@b.c","subject":"Re:","status":"Brouillon","sent":false,"inConversation":true,"collapsed":false}
+        """.data(using: .utf8)!
+        let snap = try JSONDecoder().decode(ConversationSessionStore.DraftCardSnapshot.self, from: json)
+        XCTAssertEqual(snap.text, "Bonjour")
+        XCTAssertNil(snap.inReplyTo)
+        XCTAssertNil(snap.references)
     }
 }

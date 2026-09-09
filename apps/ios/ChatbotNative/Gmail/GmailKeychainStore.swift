@@ -12,6 +12,7 @@ enum GmailKeychainStore {
     private static let expiresAtAccount = "gmail-expires-at"
     private static let emailAccount = "gmail-email"
     private static let displayNameAccount = "gmail-display-name"
+    private static let grantedScopesAccount = "gmail-granted-scopes"
 
     static func saveAccessToken(_ token: String) throws {
         try save(account: accessTokenAccount, value: token)
@@ -40,12 +41,19 @@ enum GmailKeychainStore {
 
     static func loadDisplayName() -> String? { load(account: displayNameAccount) }
 
+    static func saveGrantedScopes(_ scopes: String) throws {
+        try save(account: grantedScopesAccount, value: scopes)
+    }
+
+    static func loadGrantedScopes() -> String? { load(account: grantedScopesAccount) }
+
     static func clear() {
         delete(account: accessTokenAccount)
         delete(account: refreshTokenAccount)
         delete(account: expiresAtAccount)
         delete(account: emailAccount)
         delete(account: displayNameAccount)
+        delete(account: grantedScopesAccount)
     }
 
     // MARK: - Keychain primitives (miroir KeychainStore)

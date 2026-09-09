@@ -18,6 +18,11 @@ enum MailSortOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum PendingMailMutation: Equatable {
+    case markRead(MailMessageSummary)
+    case trash(MailMessageSummary)
+}
+
 struct MailInboxView: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -49,6 +54,8 @@ struct MailInboxView: View {
     @State private var pendingMailDeepLink: MailDeepLink?
     @State private var mailDeepLinkError: String?
     @State private var mutationError: String?
+    @State private var mutationNeedsReauth = false
+    @State private var pendingMutation: PendingMailMutation?
     @State private var locallyReadIds: Set<String> = []
     @State private var locallyDeletedIds: Set<String> = []
 
@@ -152,17 +159,28 @@ struct MailInboxView: View {
         return try await RemoteGmailProvider(client: client).getThread(id: id)
     }
 
-    private func gmailMarkRead(messageId: String, threadId: String?) async throws {
+    private func gmailMarkRead(
+        messageId: String,
+        threadId: String?,
+        recoverScopes: Bool = true
+    ) async throws {
         if useDirectGmail {
-            try await DirectGmailProvider().markRead(messageId: messageId, threadId: threadId)
+            try await DirectGmailProvider().markRead(
+                messageId: messageId,
+                threadId: threadId,
+                recoverScopes: recoverScopes
+            )
             return
         }
         try await RemoteGmailProvider(client: client).markRead(messageId: messageId, threadId: threadId)
     }
 
-    private func gmailTrashMessage(messageId: String) async throws {
+    private func gmailTrashMessage(messageId: String, recoverScopes: Bool = true) async throws {
         if useDirectGmail {
-            try await DirectGmailProvider().trashMessage(messageId: messageId)
+            try await DirectGmailProvider().trashMessage(
+                messageId: messageId,
+                recoverScopes: recoverScopes
+            )
             return
         }
         try await RemoteGmailProvider(client: client).trashMessage(messageId: messageId)
@@ -581,8 +599,17 @@ struct MailInboxView: View {
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.foreground)
                     Spacer(minLength: 0)
-                    Button("OK") { self.mutationError = nil }
+                    if mutationNeedsReauth {
+                        Button("Autoriser Gmail") {
+                            Task { await retryPendingMutationAfterAuth() }
+                        }
                         .font(CNFont.caption.weight(.semibold))
+                    }
+                    Button("OK") {
+                        self.mutationError = nil
+                        self.mutationNeedsReauth = false
+                    }
+                    .font(CNFont.caption.weight(.semibold))
                 }
                 .padding(AppTheme.space12)
                 .background(AppTheme.danger.opacity(0.12))
@@ -1186,31 +1213,38 @@ struct MailInboxView: View {
         return rel.localizedString(for: date, relativeTo: Date())
     }
 
-    private func trashMessage(_ msg: MailMessageSummary) async {
+    private func trashMessage(_ msg: MailMessageSummary, recoverScopes: Bool = true) async {
         mutationError = nil
+        mutationNeedsReauth = false
         locallyDeletedIds.insert(msg.id)
         let snapshot = msg
         let indices = removeMessageLocally(msg.id)
         do {
-            try await gmailTrashMessage(messageId: msg.id)
+            try await gmailTrashMessage(messageId: msg.id, recoverScopes: recoverScopes)
             if snapshot.isUnread == true { bumpWidgetUnread(by: -1) }
             AppHaptics.warning()
         } catch {
             locallyDeletedIds.remove(msg.id)
             restoreMessageLocally(snapshot, messageIndex: indices.messageIndex, windowIndex: indices.windowIndex)
-            mutationError = error.localizedDescription
+            presentMutationError(error, pending: .trash(msg))
             AppHaptics.warning()
         }
     }
 
-    private func markRead(_ msg: MailMessageSummary) async {
+    private func markRead(_ msg: MailMessageSummary, recoverScopes: Bool = true) async {
+        guard msg.isUnread == true else { return }
         mutationError = nil
+        mutationNeedsReauth = false
         locallyReadIds.insert(msg.id)
         if let threadId = msg.threadId {
             locallyReadIds.insert(threadId)
         }
         do {
-            try await gmailMarkRead(messageId: msg.id, threadId: msg.threadId)
+            try await gmailMarkRead(
+                messageId: msg.id,
+                threadId: msg.threadId,
+                recoverScopes: recoverScopes
+            )
             applyLocalRead(msg.id)
             AppHaptics.light()
         } catch {
@@ -1218,8 +1252,39 @@ struct MailInboxView: View {
             if let threadId = msg.threadId {
                 locallyReadIds.remove(threadId)
             }
-            mutationError = error.localizedDescription
+            presentMutationError(error, pending: .markRead(msg))
             AppHaptics.warning()
+        }
+    }
+
+    private func presentMutationError(_ error: Error, pending: PendingMailMutation) {
+        pendingMutation = pending
+        if DirectGmailError.isInsufficientScopes(error) {
+            mutationNeedsReauth = true
+            mutationError = DirectGmailError.insufficientScopesMessage
+        } else {
+            mutationNeedsReauth = false
+            mutationError = error.localizedDescription
+        }
+    }
+
+    private func retryPendingMutationAfterAuth() async {
+        mutationError = nil
+        mutationNeedsReauth = false
+        do {
+            try await GmailOAuthSession.shared.authorize(forceConsent: true)
+        } catch {
+            mutationNeedsReauth = true
+            mutationError = DirectGmailError.insufficientScopesMessage
+            return
+        }
+        guard let pending = pendingMutation else { return }
+        pendingMutation = nil
+        switch pending {
+        case .markRead(let msg):
+            await markRead(msg, recoverScopes: false)
+        case .trash(let msg):
+            await trashMessage(msg, recoverScopes: false)
         }
     }
 
@@ -1341,6 +1406,8 @@ struct MailThreadView: View {
     @State private var replyDraftId: String?
     @State private var replyDraftTo = ""
     @State private var replyDraftSubject = ""
+    @State private var replyInReplyTo: String?
+    @State private var replyReferences: String?
     @State private var replyAttachments: [EmailDraftAttachmentChip] = []
     @State private var replyRecipientSuggestions: [MailRecipientSuggestion] = []
     @State private var replyRecipientSuggestTask: Task<Void, Never>?
@@ -1353,6 +1420,8 @@ struct MailThreadView: View {
     @State private var assistantDetent: PresentationDetent = .large
     @State private var confirmSend = false
     @State private var sendStatus: String?
+    @State private var replySending = false
+    @State private var replySent = false
     @State private var aiTask: Task<Void, Never>?
     @State private var showReplyImporter = false
 
@@ -1438,13 +1507,14 @@ struct MailThreadView: View {
                 isPresented: $confirmSend
             ) {
                 Button("Annuler", role: .cancel) {}
-                Button("Confirmer") { Task { await sendDraft() } }
+                Button("Confirmer") {
+                    guard !replySending, !replySent else { return }
+                    Task { await sendDraft() }
+                }
             } message: {
                 Text("À \(summary.from?.email ?? "destinataire")")
             }
         .task {
-            // Liste parent mise à jour tout de suite (pas au retour + pas de reload inbox).
-            notifyReadLocallyIfNeeded()
             await load()
         }
         .onDisappear {
@@ -1486,10 +1556,12 @@ struct MailThreadView: View {
                         toText: $replyDraftTo,
                         subjectText: $replyDraftSubject,
                         draftId: replyDraftId,
-                        statusLabel: draftStreaming ? "Rédaction…" : "Brouillon",
+                        statusLabel: draftStreaming ? "Rédaction…" : (replySending ? "Envoi…" : (replySent ? "Envoyé" : "Brouillon")),
                         isEditing: editingDraft,
-                        busy: aiBusy,
+                        busy: aiBusy || replySending,
                         isStreaming: draftStreaming,
+                        isSent: replySent,
+                        isSending: replySending,
                         attachments: replyAttachments,
                         recipientSuggestions: replyRecipientSuggestions,
                         onSelectSuggestion: { _ in
@@ -1510,7 +1582,10 @@ struct MailThreadView: View {
                             aiTask?.cancel()
                             aiTask = Task { await runSuggest() }
                         },
-                        onSend: { confirmSend = true },
+                        onSend: {
+                            guard !replySending, !replySent else { return }
+                            confirmSend = true
+                        },
                         onAttach: {
                             showReplyImporter = true
                         },
@@ -1583,10 +1658,15 @@ struct MailThreadView: View {
                     MailRecipientDirectory.shared.ingest(threadMessages: msgs)
                 }
                 do {
-                    try await DirectGmailProvider().markRead(messageId: summary.id, threadId: threadId)
+                    try await DirectGmailProvider().markRead(
+                        messageId: summary.id,
+                        threadId: threadId,
+                        recoverScopes: false
+                    )
                     notifyReadLocallyIfNeeded()
                 } catch {
-                    // Fil ouvert ; pastille inbox conservée tant que Gmail n’a pas accepté.
+                    // Fil ouvert en lecture ; pastille inbox conservée tant que Gmail n’a pas accepté.
+                    // Pas de feuille OAuth ici : la réauth se fait sur l’action « Lu » / « Supprimer ».
                 }
                 return
             }
@@ -1618,7 +1698,6 @@ struct MailThreadView: View {
     private func notifyReadLocallyIfNeeded() {
         guard !didNotifyRead else { return }
         didNotifyRead = true
-        // Optimistic dès que le fil est chargé — la liste se met à jour sans reload.
         onMarkedRead?()
     }
 
@@ -1692,6 +1771,9 @@ struct MailThreadView: View {
                 )
                 replyDraft = confirmation.proposedBody
                 replyDraftId = confirmation.draftId
+                replyInReplyTo = confirmation.inReplyTo
+                replyReferences = confirmation.references
+                replySent = false
                 if replyDraftTo.isEmpty { replyDraftTo = confirmation.to }
                 if replyDraftSubject.isEmpty { replyDraftSubject = confirmation.subject }
                 AppHaptics.success()
@@ -1862,32 +1944,44 @@ struct MailThreadView: View {
     }
 
     private func sendDraft() async {
+        guard !replySending, !replySent else { return }
         guard var body = replyDraft else { return }
         body = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
+        replySending = true
         aiBusy = true
-        defer { aiBusy = false }
+        defer {
+            replySending = false
+            aiBusy = false
+        }
         do {
             if usesOnDeviceAI {
                 body = MailThreadPromptBuilder.plainBodyForSend(body)
+                guard !body.isEmpty else {
+                    throw DirectGmailError.emptyOutboundBody
+                }
                 let toJoined = replyDraftTo
                     .split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                     .joined(separator: ", ")
                 if GmailOAuthSession.shared.isConnected {
-                    let gmail = DirectGmailProvider()
+                    let gmail = DirectGmailClient()
                     let files = replyAttachmentPayloads()
-                    if let draftId = replyDraftId, !draftId.isEmpty, files.isEmpty {
-                        try await gmail.sendDraft(id: draftId)
-                    } else if !toJoined.isEmpty {
-                        try await DirectGmailClient().sendMessage(
+                    if !toJoined.isEmpty {
+                        try await gmail.sendMessage(
                             to: toJoined,
                             subject: replyDraftSubject,
                             body: body,
                             threadId: threadId,
+                            inReplyTo: replyInReplyTo,
+                            references: replyReferences,
                             attachments: files
                         )
+                        if let draftId = replyDraftId, GmailRemoteIds.isPersistedGmailDraftId(draftId) {
+                            try? await gmail.deleteDraft(id: draftId)
+                            replyDraftId = nil
+                        }
                     } else {
                         NativeMailShare.presentComposer(
                             to: replyDraftTo,
@@ -1907,6 +2001,8 @@ struct MailThreadView: View {
                     return
                 }
                 sendStatus = "Message envoyé."
+                replySent = true
+                replyDraft = nil
                 AppHaptics.success()
                 return
             }
@@ -1935,6 +2031,8 @@ struct MailThreadView: View {
                 conversationId: conv.id
             )
             sendStatus = "Message envoyé."
+            replySent = true
+            replyDraft = nil
             AppHaptics.success()
         } catch {
             self.error = error.localizedDescription
@@ -1943,6 +2041,7 @@ struct MailThreadView: View {
     }
 
     private func commitReplyDraftHeaders() async {
+        guard !usesOnDeviceAI else { return }
         guard let draftId = replyDraftId else { return }
         let to = replyDraftTo
             .split(separator: ",")
@@ -2014,11 +2113,15 @@ struct MailThreadView: View {
         trashing = true
         defer { trashing = false }
         do {
-            let proposal = try await client.proposeMailTrash(messageId: summary.id)
-            try await client.confirmMailTrash(
-                actionId: proposal.actionId,
-                confirmationToken: proposal.confirmationToken
-            )
+            if useDirectGmail {
+                try await DirectGmailProvider().trashMessage(messageId: summary.id)
+            } else {
+                let proposal = try await client.proposeMailTrash(messageId: summary.id)
+                try await client.confirmMailTrash(
+                    actionId: proposal.actionId,
+                    confirmationToken: proposal.confirmationToken
+                )
+            }
             AppHaptics.warning()
             dismiss()
         } catch {

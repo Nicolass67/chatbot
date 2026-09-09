@@ -29,6 +29,7 @@ struct MailDraftProposal: View {
     var busy: Bool
     var isStreaming: Bool = false
     var isSent: Bool = false
+    var isSending: Bool = false
     var attachments: [EmailDraftAttachmentChip] = []
     var recipientSuggestions: [MailRecipientSuggestion] = []
     /// @deprecated — ne plus afficher de liste « de base » hors frappe.
@@ -56,7 +57,7 @@ struct MailDraftProposal: View {
     @FocusState private var improveFocused: Bool
 
     private var sendDisabled: Bool {
-        isSent || busy || isStreaming
+        isSent || busy || isStreaming || isSending
             || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || confirmedRecipients.isEmpty
     }
@@ -507,7 +508,7 @@ struct MailDraftProposal: View {
             HStack(spacing: 8) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 15, weight: .semibold))
-                Text("Envoyer")
+                Text(isSending ? "Envoi…" : "Envoyer")
                     .font(CNFont.callout.weight(.semibold))
             }
             .foregroundStyle(sendDisabled ? AppTheme.muted : AppTheme.accentForeground)

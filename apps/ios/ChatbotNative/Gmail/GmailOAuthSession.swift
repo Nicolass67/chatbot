@@ -49,6 +49,7 @@ final class GmailOAuthSession: NSObject, ObservableObject {
     private var authSession: ASWebAuthenticationSession?
     private var pendingState: String?
     private var pendingCodeVerifier: String?
+    private var authContinuation: CheckedContinuation<Void, Error>?
 
     /// Marge avant expiration pour rafraîchir l’access token.
     private let refreshSkew: TimeInterval = 60
@@ -68,12 +69,45 @@ final class GmailOAuthSession: NSObject, ObservableObject {
 
     func connect() {
         lastError = nil
+        Task { @MainActor in
+            do {
+                try await authorize(forceConsent: true)
+            } catch {
+                lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Ouvre le consentement Google (PKCE). `forceConsent` pour obtenir de nouveaux scopes.
+    func authorize(forceConsent: Bool = false) async throws {
+        lastError = nil
         guard GmailOAuthConfig.isConfigured else {
-            lastError = GmailOAuthError.notConfigured.localizedDescription
-            return
+            throw GmailOAuthError.notConfigured
+        }
+        if authContinuation != nil {
+            throw GmailOAuthError.network("Une connexion Gmail est déjà en cours.")
         }
         isBusy = true
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                self.authContinuation = cont
+                self.beginWebAuth(forceConsent: forceConsent)
+            }
+        } catch {
+            isBusy = false
+            throw error
+        }
+    }
 
+    func hasGranted(_ required: [String]) -> Bool {
+        GmailGrantedScopes.contains(grantedScopeSet, required: required)
+    }
+
+    var grantedScopeSet: Set<String> {
+        GmailGrantedScopes.set(from: GmailKeychainStore.loadGrantedScopes())
+    }
+
+    private func beginWebAuth(forceConsent: Bool) {
         let verifier = Self.makeCodeVerifier()
         let challenge = Self.s256Challenge(verifier: verifier)
         let state = Self.makeState()
@@ -90,11 +124,13 @@ final class GmailOAuthSession: NSObject, ObservableObject {
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "access_type", value: "offline"),
-            URLQueryItem(name: "prompt", value: "consent"),
+            URLQueryItem(name: "include_granted_scopes", value: "true"),
+            URLQueryItem(name: "prompt", value: forceConsent ? "consent" : "select_account"),
         ]
         guard let startURL = components.url else {
-            lastError = "URL d’autorisation Gmail invalide."
-            isBusy = false
+            Task { @MainActor in
+                self.failAuthorization(GmailOAuthError.tokenExchangeFailed("URL d’autorisation Gmail invalide."))
+            }
             return
         }
 
@@ -104,33 +140,54 @@ final class GmailOAuthSession: NSObject, ObservableObject {
         ) { [weak self] callbackURL, error in
             Task { @MainActor in
                 guard let self else { return }
-                defer { self.isBusy = false }
                 if let error {
                     let ns = error as NSError
                     if ns.domain == ASWebAuthenticationSessionErrorDomain,
                        ns.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                        self.lastError = GmailOAuthError.cancelled.localizedDescription
+                        self.failAuthorization(GmailOAuthError.cancelled)
                     } else {
-                        self.lastError = error.localizedDescription
+                        self.failAuthorization(GmailOAuthError.network(error.localizedDescription))
                     }
                     return
                 }
                 guard let callbackURL else {
-                    self.lastError = GmailOAuthError.invalidCallback.localizedDescription
+                    self.failAuthorization(GmailOAuthError.invalidCallback)
                     return
                 }
                 do {
                     try await self.finishAuthorization(callbackURL: callbackURL)
+                    self.succeedAuthorization()
                 } catch {
-                    self.lastError = (error as? LocalizedError)?.errorDescription
-                        ?? error.localizedDescription
+                    self.failAuthorization(error)
                 }
             }
         }
         session.presentationContextProvider = self
         session.prefersEphemeralWebBrowserSession = false
         authSession = session
-        session.start()
+        if !session.start() {
+            Task { @MainActor in
+                self.failAuthorization(GmailOAuthError.network("Impossible d’ouvrir la connexion Gmail."))
+            }
+        }
+    }
+
+    private func succeedAuthorization() {
+        isBusy = false
+        lastError = nil
+        if let cont = authContinuation {
+            authContinuation = nil
+            cont.resume(returning: ())
+        }
+    }
+
+    private func failAuthorization(_ error: Error) {
+        isBusy = false
+        lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        if let cont = authContinuation {
+            authContinuation = nil
+            cont.resume(throwing: error)
+        }
     }
 
     /// Callback deep link hors `ASWebAuthenticationSession` (ex. `onOpenURL`).
@@ -145,14 +202,12 @@ final class GmailOAuthSession: NSObject, ObservableObject {
             || absolute.contains("error=")
         guard looksLikeOAuth else { return false }
         guard pendingCodeVerifier != nil else { return false }
-        isBusy = true
         Task { @MainActor in
-            defer { self.isBusy = false }
             do {
                 try await self.finishAuthorization(callbackURL: url)
+                self.succeedAuthorization()
             } catch {
-                self.lastError = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+                self.failAuthorization(error)
             }
         }
         return true
@@ -230,6 +285,7 @@ final class GmailOAuthSession: NSObject, ObservableObject {
             if let newRefresh = obj["refresh_token"] as? String, !newRefresh.isEmpty {
                 try GmailKeychainStore.saveRefreshToken(newRefresh)
             }
+            Self.persistGrantedScopes(from: obj)
         } catch {
             throw GmailOAuthError.keychain(error.localizedDescription)
         }
@@ -303,6 +359,7 @@ final class GmailOAuthSession: NSObject, ObservableObject {
                 let date = Date().addingTimeInterval(TimeInterval(expiresIn))
                 try GmailKeychainStore.saveExpiresAt(Self.iso8601.string(from: date))
             }
+            Self.persistGrantedScopes(from: obj)
         } catch {
             throw GmailOAuthError.keychain(error.localizedDescription)
         }
@@ -342,6 +399,11 @@ final class GmailOAuthSession: NSObject, ObservableObject {
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data(Self.formBody(["token": token]).utf8)
         _ = try? await URLSession.shared.data(for: req)
+    }
+
+    private static func persistGrantedScopes(from obj: [String: Any]) {
+        guard let value = GmailGrantedScopes.normalized(obj["scope"] as? String) else { return }
+        try? GmailKeychainStore.saveGrantedScopes(value)
     }
 
     private func isAccessTokenExpired() -> Bool {

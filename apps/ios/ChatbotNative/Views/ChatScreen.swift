@@ -130,6 +130,8 @@ struct ChatScreen: View {
     @State private var draftCardBusy = false
     @State private var draftCardStreaming = false
     @State private var draftCardSent = false
+    @State private var draftCardInReplyTo: String?
+    @State private var draftCardReferences: String?
     /// Croix : brouillon masqué du fil (pas annulé serveur) — récupérable.
     @State private var draftCardCollapsed = false
     @State private var confirmSendDraft = false
@@ -308,6 +310,7 @@ struct ChatScreen: View {
         ) {
             Button("Annuler", role: .cancel) {}
             Button("Confirmer") {
+                guard !draftCardBusy, !draftCardSent else { return }
                 Task { await sendDraftCard() }
             }
         } message: {
@@ -570,17 +573,18 @@ struct ChatScreen: View {
                             InStreamWorkingIndicator(label: thinkingKind.label)
                                 .id("working-indicator")
                         }
-                        if draftCardVisible || draftCardStreaming || draftCardSent {
+                        if showsDraftCard {
                             MailDraftProposal(
                                 draftText: $draftCardText,
                                 toText: $draftCardTo,
                                 subjectText: $draftCardSubject,
                                 draftId: draftCardId,
-                                statusLabel: draftCardStatus,
+                                statusLabel: draftCardSendingLabel,
                                 isEditing: draftCardEditing,
                                 busy: draftCardBusy,
                                 isStreaming: draftCardStreaming,
                                 isSent: draftCardSent,
+                                isSending: draftCardBusy && !draftCardSent,
                                 attachments: draftCardAttachments,
                                 recipientSuggestions: draftRecipientSuggestions,
                                 candidates: [],
@@ -611,6 +615,7 @@ struct ChatScreen: View {
                                     beginDraftImproveFromComposer()
                                 },
                                 onSend: {
+                                    guard !draftCardBusy, !draftCardSent else { return }
                                     confirmSendDraft = true
                                 },
                                 onAttach: {
@@ -1229,6 +1234,8 @@ struct ChatScreen: View {
                 draftCardText = body
                 draftCardTo = confirmation.to
                 draftCardSubject = confirmation.subject
+                draftCardInReplyTo = confirmation.inReplyTo
+                draftCardReferences = confirmation.references
                 draftCardSent = false
                 draftInConversation = true
                 persistDraftCardSnapshot()
@@ -1300,6 +1307,10 @@ struct ChatScreen: View {
     }
 
     private func commitDraftHeaders(preferTo: [String]? = nil) async {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            persistDraftCardSnapshot()
+            return
+        }
         guard let draftId = draftCardId, !draftCardSent else { return }
         let to = preferTo ?? parseDraftRecipients(draftCardTo)
         do {
@@ -1353,6 +1364,9 @@ struct ChatScreen: View {
     }
 
     private func refreshDraftCardAttachments(draftId: String? = nil) async {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            return
+        }
         let id = draftId ?? draftCardId
         guard let id, !id.isEmpty else { return }
         do {
@@ -1593,7 +1607,7 @@ struct ChatScreen: View {
     }
 
     private func sendDraftCard() async {
-        guard !draftCardSent else { return }
+        guard !draftCardSent, !draftCardBusy else { return }
         let body = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
         let to = parseDraftRecipients(draftCardTo)
         guard !body.isEmpty else {
@@ -1641,13 +1655,11 @@ struct ChatScreen: View {
             draftPreviewReceivedThisTurn = false
             persistDraftCardSnapshot()
             AppHaptics.success()
-        } catch {
-            self.error = error.localizedDescription
-            AppHaptics.warning()
-        }
-    }
-
-    private func sendDraftCardOnDevice(body: String, to: [String]) async throws {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                self.draftCardCollapsed = true
+                self.persistDraftCardSnapshot()
+            }
         guard GmailOAuthSession.shared.isConnected else {
             throw LocalMailAssistantError.gmailNotConnected
         }
@@ -1674,8 +1686,14 @@ struct ChatScreen: View {
             subject: draftCardSubject,
             body: MailThreadPromptBuilder.plainBodyForSend(body),
             threadId: forcedActiveContext?.mailThreadId,
+            inReplyTo: draftCardInReplyTo,
+            references: draftCardReferences,
             attachments: files
         )
+        if let leftover = draftCardId, GmailRemoteIds.isPersistedGmailDraftId(leftover) {
+            try? await gmail.deleteDraft(id: leftover)
+            draftCardId = nil
+        }
     }
 
     /// Croix : masque la carte du fil — brouillon conservé localement + serveur, récupérable.
@@ -1714,8 +1732,10 @@ struct ChatScreen: View {
                 status: draftCardStatus,
                 sent: draftCardSent,
                 inConversation: true,
-                collapsed: draftCardCollapsed && !draftCardSent,
-                attachments: draftCardAttachments
+                collapsed: draftCardCollapsed || draftCardSent,
+                attachments: draftCardAttachments,
+                inReplyTo: draftCardInReplyTo,
+                references: draftCardReferences
             )
         )
     }
@@ -1730,12 +1750,14 @@ struct ChatScreen: View {
         draftCardSubject = snap.subject
         draftCardStatus = snap.status
         draftCardSent = snap.sent
-        draftCardCollapsed = snap.collapsed && !snap.sent
+        draftCardCollapsed = snap.collapsed || snap.sent
         draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
         draftCardEditing = false
         if let atts = snap.attachments, !atts.isEmpty {
             draftCardAttachments = atts
         }
+        draftCardInReplyTo = snap.inReplyTo
+        draftCardReferences = snap.references
         if let id = snap.draftId, !id.isEmpty {
             Task { await refreshDraftCardAttachments(draftId: id) }
         }
@@ -1743,6 +1765,9 @@ struct ChatScreen: View {
 
     /// Réhydrate la carte depuis le serveur si absente en local (kill app / autre device).
     private func restoreDraftCardFromServerIfNeeded() async {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            return
+        }
         guard draftCardId == nil, !draftCardStreaming, !draftCardSent else {
             if let id = draftCardId, !id.isEmpty {
                 await refreshDraftCardAttachments(draftId: id)
@@ -1903,10 +1928,20 @@ Corps actuel:
     }
 
     /// Carte brouillon visible dans le fil (pas masquée, pas seulement envoyée).
+    private var draftCardSendingLabel: String {
+        if draftCardSent { return "Envoyé" }
+        if draftCardBusy && !draftCardStreaming { return "Envoi…" }
+        return draftCardStatus
+    }
+
     private var draftCardVisible: Bool {
         !draftCardCollapsed
             && !draftCardSent
             && (draftInConversation || draftCardId != nil || draftCardStreaming)
+    }
+
+    private var showsDraftCard: Bool {
+        draftCardVisible || draftCardStreaming || (draftCardSent && !draftCardCollapsed)
     }
 
     /// Conversation actuellement affichée, sans message ni génération.

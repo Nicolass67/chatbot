@@ -12,6 +12,8 @@ struct DirectMailMessage: Identifiable, Hashable, Sendable {
     let bodyPlain: String?
     let bodyHtml: String?
     let labelIds: [String]
+    var rfc822MessageId: String? = nil
+    var rfc822References: String? = nil
 }
 
 struct DirectMailThread: Identifiable, Hashable, Sendable {
@@ -46,6 +48,9 @@ enum DirectGmailError: Error, LocalizedError, Sendable {
     case invalidArgument(String)
     /// Envoi bloqué : doit passer par la confirmation UI (`MailSendConfirmation` / `confirmSend`).
     case sendRequiresConfirmation
+    case insufficientScopes
+    case sendInProgress
+    case emptyOutboundBody
 
     var errorDescription: String? {
         switch self {
@@ -60,6 +65,9 @@ enum DirectGmailError: Error, LocalizedError, Sendable {
             if code >= 500 {
                 return "Gmail est temporairement indisponible (\(code))."
             }
+            if Self.looksLikeInsufficientScopes(detail) {
+                return Self.insufficientScopesMessage
+            }
             let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty
                 ? "Erreur Gmail (HTTP \(code))."
@@ -70,7 +78,38 @@ enum DirectGmailError: Error, LocalizedError, Sendable {
             return detail
         case .sendRequiresConfirmation:
             return "L’envoi nécessite une confirmation explicite."
+        case .insufficientScopes:
+            return Self.insufficientScopesMessage
+        case .sendInProgress:
+            return "Envoi déjà en cours."
+        case .emptyOutboundBody:
+            return "Impossible d’envoyer un message vide."
         }
+    }
+
+    static let insufficientScopesMessage = "Autorisation Gmail requise pour cette action."
+
+    var isInsufficientScopes: Bool {
+        switch self {
+        case .insufficientScopes:
+            return true
+        case .http(let code, let detail):
+            return code == 403 && Self.looksLikeInsufficientScopes(detail)
+        default:
+            return false
+        }
+    }
+
+    static func looksLikeInsufficientScopes(_ detail: String) -> Bool {
+        let lower = detail.lowercased()
+        return lower.contains("insufficient authentication scopes")
+            || lower.contains("insufficientpermissions")
+            || lower.contains("access not configured")
+    }
+
+    static func isInsufficientScopes(_ error: Error) -> Bool {
+        if let gmail = error as? DirectGmailError { return gmail.isInsufficientScopes }
+        return looksLikeInsufficientScopes(error.localizedDescription)
     }
 }
 
@@ -167,6 +206,15 @@ final class DirectGmailClient {
     }
 
     // MARK: Draft / send
+    //
+    // Action            → endpoint                         → scope
+    // list/get          → messages.list / get, threads.get → gmail.readonly
+    // send              → users.messages.send              → gmail.send | compose | modify
+    // drafts (legacy)   → drafts.create / send / delete    → gmail.compose
+    // mark read         → messages.modify (-UNREAD)        → gmail.modify
+    // trash             → messages.trash                   → gmail.modify
+    //
+    // L’assistant n’utilise plus drafts.create à la rédaction.
 
     func createDraft(
         to: String,
@@ -174,112 +222,179 @@ final class DirectGmailClient {
         body: String,
         threadId: String? = nil
     ) async throws -> DirectMailDraft {
-        let trimmedTo = to.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTo.isEmpty else {
-            throw DirectGmailError.invalidArgument("Destinataire manquant.")
+        try await withScopeRecovery {
+            let trimmedTo = to.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedTo.isEmpty else {
+                throw DirectGmailError.invalidArgument("Destinataire manquant.")
+            }
+            let raw = try GmailRfc822.encodeRaw(to: trimmedTo, subject: subject, body: body)
+            var message: [String: Any] = ["raw": raw]
+            if let threadId, !threadId.isEmpty {
+                message["threadId"] = threadId
+            }
+            let payload: [String: Any] = ["message": message]
+            let obj = try await jsonObject(
+                url: baseURL.appendingPathComponent("drafts"),
+                method: "POST",
+                jsonBody: payload
+            )
+            let draftId = obj["id"] as? String ?? ""
+            let msg = obj["message"] as? [String: Any]
+            return DirectMailDraft(
+                id: draftId,
+                messageId: msg?["id"] as? String,
+                threadId: msg?["threadId"] as? String ?? threadId
+            )
         }
-        let raw = Self.buildRawRFC822(to: trimmedTo, subject: subject, body: body)
-        var message: [String: Any] = ["raw": raw]
-        if let threadId, !threadId.isEmpty {
-            message["threadId"] = threadId
-        }
-        let payload: [String: Any] = ["message": message]
-        let obj = try await jsonObject(
-            url: baseURL.appendingPathComponent("drafts"),
-            method: "POST",
-            jsonBody: payload
-        )
-        let draftId = obj["id"] as? String ?? ""
-        let msg = obj["message"] as? [String: Any]
-        return DirectMailDraft(
-            id: draftId,
-            messageId: msg?["id"] as? String,
-            threadId: msg?["threadId"] as? String ?? threadId
-        )
     }
 
-    /// Envoie un brouillon existant.
-    /// - Important : à n’appeler **qu’après** confirmation UI explicite.
+    /// Envoie un brouillon existant — évité pour l’assistant (préférer `sendMessage`).
     func sendDraft(id: String) async throws {
-        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw DirectGmailError.invalidArgument("Identifiant de brouillon manquant.")
+        let lock = try GmailSendLock.acquire()
+        defer { GmailSendLock.release(lock) }
+        try await withScopeRecovery {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw DirectGmailError.invalidArgument("Identifiant de brouillon manquant.")
+            }
+            _ = try await jsonObject(
+                url: baseURL.appendingPathComponent("drafts").appendingPathComponent("send"),
+                method: "POST",
+                jsonBody: ["id": trimmed]
+            )
         }
-        _ = try await jsonObject(
-            url: baseURL.appendingPathComponent("drafts").appendingPathComponent("send"),
-            method: "POST",
-            jsonBody: ["id": trimmed]
-        )
     }
 
-    /// Envoie un message immédiatement (raw).
-    /// - Important : à n’appeler **qu’après** confirmation UI explicite.
+    func deleteDraft(id: String) async throws {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try await withScopeRecovery {
+            _ = try await jsonObject(
+                url: baseURL.appendingPathComponent("drafts").appendingPathComponent(trimmed),
+                method: "DELETE"
+            )
+        }
+    }
+
+    /// Envoie un message immédiatement (raw). Un seul appel réseau d’envoi.
     func sendMessage(
         to: String,
         subject: String,
         body: String,
         threadId: String? = nil,
+        cc: String? = nil,
+        bcc: String? = nil,
+        inReplyTo: String? = nil,
+        references: String? = nil,
         attachments: [(filename: String, mimeType: String, data: Data)] = []
     ) async throws {
-        let trimmedTo = to.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTo.isEmpty else {
-            throw DirectGmailError.invalidArgument("Destinataire manquant.")
-        }
-        let raw = Self.buildRawRFC822(
-            to: trimmedTo,
-            subject: subject,
-            body: body,
-            attachments: attachments
-        )
-        var payload: [String: Any] = ["raw": raw]
-        if let threadId, !threadId.isEmpty {
-            payload["threadId"] = threadId
-        }
-        _ = try await jsonObject(
-            url: baseURL.appendingPathComponent("messages").appendingPathComponent("send"),
-            method: "POST",
-            jsonBody: payload
-        )
-    }
-
-    func markRead(messageId: String, threadId: String? = nil) async throws {
-        let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
-        }
-        _ = try await jsonObject(
-            url: baseURL
-                .appendingPathComponent("messages")
-                .appendingPathComponent(trimmed)
-                .appendingPathComponent("modify"),
-            method: "POST",
-            jsonBody: ["removeLabelIds": ["UNREAD"]]
-        )
-        let thread = (threadId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !thread.isEmpty {
-            _ = try? await jsonObject(
-                url: baseURL
-                    .appendingPathComponent("threads")
-                    .appendingPathComponent(thread)
-                    .appendingPathComponent("modify"),
+        let lock = try GmailSendLock.acquire()
+        defer { GmailSendLock.release(lock) }
+        try await withScopeRecovery {
+            let trimmedTo = to.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedTo.isEmpty else {
+                throw DirectGmailError.invalidArgument("Destinataire manquant.")
+            }
+            let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedBody.isEmpty else {
+                throw DirectGmailError.emptyOutboundBody
+            }
+            let raw = try GmailRfc822.encodeRaw(
+                to: trimmedTo,
+                cc: cc,
+                bcc: bcc,
+                subject: subject,
+                body: trimmedBody,
+                inReplyTo: inReplyTo,
+                references: references,
+                attachments: attachments.map {
+                    GmailRfc822.Attachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data)
+                }
+            )
+            var payload: [String: Any] = ["raw": raw]
+            if let threadId, !threadId.isEmpty {
+                payload["threadId"] = threadId
+            }
+            _ = try await jsonObject(
+                url: baseURL.appendingPathComponent("messages").appendingPathComponent("send"),
                 method: "POST",
-                jsonBody: ["removeLabelIds": ["UNREAD"]]
+                jsonBody: payload
             )
         }
     }
 
-    func trashMessage(messageId: String) async throws {
-        let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
+    func markRead(
+        messageId: String,
+        threadId: String? = nil,
+        recoverScopes: Bool = true
+    ) async throws {
+        func perform() async throws {
+            let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
+            }
+            _ = try await jsonObject(
+                url: baseURL
+                    .appendingPathComponent("messages")
+                    .appendingPathComponent(trimmed)
+                    .appendingPathComponent("modify"),
+                method: "POST",
+                jsonBody: ["removeLabelIds": ["UNREAD"]]
+            )
+            let thread = (threadId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !thread.isEmpty {
+                _ = try? await jsonObject(
+                    url: baseURL
+                        .appendingPathComponent("threads")
+                        .appendingPathComponent(thread)
+                        .appendingPathComponent("modify"),
+                    method: "POST",
+                    jsonBody: ["removeLabelIds": ["UNREAD"]]
+                )
+            }
         }
-        _ = try await jsonObject(
-            url: baseURL
-                .appendingPathComponent("messages")
-                .appendingPathComponent(trimmed)
-                .appendingPathComponent("trash"),
-            method: "POST"
-        )
+        if recoverScopes {
+            try await withScopeRecovery { try await perform() }
+        } else {
+            try await perform()
+        }
+    }
+
+    func trashMessage(messageId: String, recoverScopes: Bool = true) async throws {
+        func perform() async throws {
+            let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw DirectGmailError.invalidArgument("Identifiant de message manquant.")
+            }
+            _ = try await jsonObject(
+                url: baseURL
+                    .appendingPathComponent("messages")
+                    .appendingPathComponent(trimmed)
+                    .appendingPathComponent("trash"),
+                method: "POST"
+            )
+        }
+        if recoverScopes {
+            try await withScopeRecovery { try await perform() }
+        } else {
+            try await perform()
+        }
+    }
+
+    /// Un seul retry après réautorisation — jamais de boucle 403.
+    private func withScopeRecovery<T>(_ op: () async throws -> T) async throws -> T {
+        do {
+            return try await op()
+        } catch let error as DirectGmailError where error.isInsufficientScopes {
+            do {
+                try await oauth.authorize(forceConsent: true)
+            } catch {
+                throw DirectGmailError.insufficientScopes
+            }
+            return try await op()
+        } catch let error as GmailRfc822.EncodeError {
+            throw DirectGmailError.invalidArgument(error.localizedDescription)
+        }
     }
 
     // MARK: - HTTP (401 → refresh once)
@@ -330,6 +445,13 @@ final class DirectGmailClient {
         }
         if http.statusCode == 401 {
             throw DirectGmailError.unauthorized
+        }
+        if http.statusCode == 403 {
+            let message = Self.extractGoogleErrorMessage(data) ?? ""
+            if DirectGmailError.looksLikeInsufficientScopes(message) {
+                throw DirectGmailError.insufficientScopes
+            }
+            throw DirectGmailError.http(http.statusCode, message)
         }
         guard (200..<300).contains(http.statusCode) else {
             let message = Self.extractGoogleErrorMessage(data) ?? ""
@@ -388,7 +510,9 @@ final class DirectGmailClient {
             date: internalDate,
             bodyPlain: bodyPlain,
             bodyHtml: bodyHtml,
-            labelIds: labelIds
+            labelIds: labelIds,
+            rfc822MessageId: header("Message-ID") ?? header("Message-Id"),
+            rfc822References: header("References")
         )
     }
 
@@ -459,77 +583,10 @@ final class DirectGmailClient {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func buildRawRFC822(
-        to: String,
-        subject: String,
-        body: String,
-        attachments: [(filename: String, mimeType: String, data: Data)] = []
-    ) -> String {
-        let safeSubject = subject.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
-        if attachments.isEmpty {
-            let lines = [
-                "To: \(to)",
-                "Subject: \(safeSubject)",
-                "Content-Type: text/plain; charset=UTF-8",
-                "MIME-Version: 1.0",
-                "",
-                body,
-            ]
-            return Data(lines.joined(separator: "\r\n").utf8).base64URLEncodedString()
-        }
-        let boundary = "ChatbotBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-        var raw = """
-        To: \(to)\r
-        Subject: \(safeSubject)\r
-        MIME-Version: 1.0\r
-        Content-Type: multipart/mixed; boundary="\(boundary)"\r
-        \r
-        --\(boundary)\r
-        Content-Type: text/plain; charset=UTF-8\r
-        Content-Transfer-Encoding: 8bit\r
-        \r
-        \(body)\r
-        """
-        for att in attachments {
-            let filename = att.filename
-                .replacingOccurrences(of: "\"", with: "")
-                .replacingOccurrences(of: "\r", with: "")
-                .replacingOccurrences(of: "\n", with: "")
-            let mime = att.mimeType.isEmpty ? "application/octet-stream" : att.mimeType
-            let b64 = att.data.base64EncodedString()
-            var wrapped = ""
-            var i = b64.startIndex
-            while i < b64.endIndex {
-                let end = b64.index(i, offsetBy: 76, limitedBy: b64.endIndex) ?? b64.endIndex
-                wrapped += String(b64[i..<end]) + "\r\n"
-                i = end
-            }
-            raw += """
-            --\(boundary)\r
-            Content-Type: \(mime); name="\(filename)"\r
-            Content-Disposition: attachment; filename="\(filename)"\r
-            Content-Transfer-Encoding: base64\r
-            \r
-            \(wrapped)
-            """
-        }
-        raw += "--\(boundary)--\r\n"
-        return Data(raw.utf8).base64URLEncodedString()
-    }
-
     private static func extractGoogleErrorMessage(_ data: Data) -> String? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let error = obj["error"] as? [String: Any]
         else { return nil }
         return error["message"] as? String
-    }
-}
-
-private extension Data {
-    func base64URLEncodedString() -> String {
-        base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
     }
 }

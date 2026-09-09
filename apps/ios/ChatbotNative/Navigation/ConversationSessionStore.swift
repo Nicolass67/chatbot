@@ -401,9 +401,12 @@ enum ConversationSessionStore {
         /// Carte masquée (croix) — récupérable, pas annulée serveur.
         var collapsed: Bool
         var attachments: [EmailDraftAttachmentChip]?
+        var inReplyTo: String?
+        var references: String?
 
         enum CodingKeys: String, CodingKey {
             case draftId, text, to, subject, status, sent, inConversation, collapsed, attachments
+            case inReplyTo, references
         }
 
         init(
@@ -415,7 +418,9 @@ enum ConversationSessionStore {
             sent: Bool,
             inConversation: Bool,
             collapsed: Bool = false,
-            attachments: [EmailDraftAttachmentChip]? = nil
+            attachments: [EmailDraftAttachmentChip]? = nil,
+            inReplyTo: String? = nil,
+            references: String? = nil
         ) {
             self.draftId = draftId
             self.text = text
@@ -426,6 +431,8 @@ enum ConversationSessionStore {
             self.inConversation = inConversation
             self.collapsed = collapsed
             self.attachments = attachments
+            self.inReplyTo = inReplyTo
+            self.references = references
         }
 
         init(from decoder: Decoder) throws {
@@ -439,6 +446,8 @@ enum ConversationSessionStore {
             inConversation = try c.decode(Bool.self, forKey: .inConversation)
             collapsed = try c.decodeIfPresent(Bool.self, forKey: .collapsed) ?? false
             attachments = try c.decodeIfPresent([EmailDraftAttachmentChip].self, forKey: .attachments)
+            inReplyTo = try c.decodeIfPresent(String.self, forKey: .inReplyTo)
+            references = try c.decodeIfPresent(String.self, forKey: .references)
         }
     }
 

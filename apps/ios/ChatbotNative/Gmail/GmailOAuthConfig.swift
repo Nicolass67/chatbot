@@ -14,17 +14,23 @@ enum GmailOAuthConfig {
     static let revokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
     static let userInfoEndpoint = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
 
-    /// Scopes de départ (minimaux pour le mode mail local) :
-    /// - `gmail.readonly` — lister / lire messages et fils
-    /// - `gmail.compose` — créer des brouillons (sans envoyer)
-    /// - `gmail.send` — envoyer **uniquement** après confirmation UI explicite
-    /// - `userinfo.email` — afficher le compte connecté (pas de profil élargi)
+    static let readonlyScope = "https://www.googleapis.com/auth/gmail.readonly"
+    static let composeScope = "https://www.googleapis.com/auth/gmail.compose"
+    static let sendScope = "https://www.googleapis.com/auth/gmail.send"
+    /// Labels (UNREAD), trash — **pas** `mail.google.com` (suppression permanente).
+    static let modifyScope = "https://www.googleapis.com/auth/gmail.modify"
+    static let userInfoEmailScope = "https://www.googleapis.com/auth/userinfo.email"
+
+    /// List/get → readonly ; send → send/compose ; mark-read/trash → modify.
     static let scopes: [String] = [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/userinfo.email",
+        readonlyScope,
+        composeScope,
+        sendScope,
+        modifyScope,
+        userInfoEmailScope,
     ]
+
+    static let mutationScopes: [String] = [modifyScope]
 
     /// Client ID iOS (chaîne vide si non configuré).
     static var clientID: String {
@@ -66,5 +72,28 @@ enum GmailOAuthConfig {
         let prefix = String(id.dropLast(suffix.count))
         guard !prefix.isEmpty else { return "" }
         return "com.googleusercontent.apps.\(prefix)"
+    }
+}
+
+/// Scopes réellement renvoyés par Google — jamais les scopes *demandés* si la réponse est vide.
+enum GmailGrantedScopes {
+    static func normalized(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func set(from raw: String?) -> Set<String> {
+        guard let normalized = normalized(raw) else { return [] }
+        return Set(
+            normalized
+                .split(whereSeparator: { $0.isWhitespace })
+                .map(String.init)
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    static func contains(_ granted: Set<String>, required: [String]) -> Bool {
+        !granted.isEmpty && required.allSatisfy { granted.contains($0) }
     }
 }

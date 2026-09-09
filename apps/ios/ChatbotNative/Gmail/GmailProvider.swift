@@ -32,6 +32,8 @@ protocol GmailServing: AnyObject, Sendable {
         threadId: String?
     ) async throws
 
+    func deleteDraft(id: String) async throws
+
     func markRead(messageId: String, threadId: String?) async throws
     func trashMessage(messageId: String) async throws
 }
@@ -157,6 +159,13 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
     ) async throws {
         throw DirectGmailError.invalidArgument(
             "Envoi Gmail API direct indisponible en mode distant — utilise la confirmation d’envoi existante."
+        )
+    }
+
+    func deleteDraft(id: String) async throws {
+        _ = id
+        throw DirectGmailError.invalidArgument(
+            "Suppression de brouillon Gmail API indisponible en mode distant."
         )
     }
 
@@ -303,14 +312,31 @@ final class DirectGmailProvider: GmailServing, @unchecked Sendable {
         )
     }
 
-    func markRead(messageId: String, threadId: String?) async throws {
+    func deleteDraft(id: String) async throws {
         try await ensureConnected()
-        try await client.markRead(messageId: messageId, threadId: threadId)
+        try await client.deleteDraft(id: id)
+    }
+
+    func markRead(messageId: String, threadId: String?) async throws {
+        try await markRead(messageId: messageId, threadId: threadId, recoverScopes: true)
+    }
+
+    func markRead(messageId: String, threadId: String?, recoverScopes: Bool) async throws {
+        try await ensureConnected()
+        try await client.markRead(
+            messageId: messageId,
+            threadId: threadId,
+            recoverScopes: recoverScopes
+        )
     }
 
     func trashMessage(messageId: String) async throws {
+        try await trashMessage(messageId: messageId, recoverScopes: true)
+    }
+
+    func trashMessage(messageId: String, recoverScopes: Bool) async throws {
         try await ensureConnected()
-        try await client.trashMessage(messageId: messageId)
+        try await client.trashMessage(messageId: messageId, recoverScopes: recoverScopes)
     }
 
     private func ensureConnected() async throws {
