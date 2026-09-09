@@ -8,6 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var appearance: AppearanceStore
     @ObservedObject private var gmailOAuth = GmailOAuthSession.shared
+    @State private var localAISheet: LocalAISettingsSheetItem?
     @State private var webSearchEnabled = false
     @State private var statusNote: String?
     @State private var runtimeStatus: String = "…"
@@ -118,7 +119,7 @@ struct SettingsView: View {
 
                 ThemeColorSettingsSection()
 
-                LocalAISettingsView()
+                LocalAISettingsView(presentedSheet: $localAISheet)
 
                 Section {
                     if gmailDirectConnected {
@@ -335,6 +336,22 @@ struct SettingsView: View {
         .accessibilityIdentifier(A11yID.Settings.root)
         .navigationTitle("Réglages")
         .tabRootNavigationChrome()
+        .sheet(item: $localAISheet, onDismiss: {
+            LocalModelTestUILog.event("sheet onDismiss", extra: "host=SettingsView")
+        }) { item in
+            LocalAISettingsPresentedContent(item: item)
+        }
+        .onChange(of: localAISheet) { old, new in
+            if case .inferenceTest = old, new == nil {
+                LocalModelTestUILog.event(
+                    "sheet item cleared",
+                    extra: "host=SettingsView (Fermer, geste iOS, ou teardown SwiftUI)"
+                )
+            }
+            if case .inferenceTest = new {
+                LocalModelTestUILog.event("sheet item set", extra: "host=SettingsView item=inferenceTest")
+            }
+        }
         .task { await load() }
         .refreshable { await load() }
         .alert("Éteindre le PC ?", isPresented: $confirmShutdownPc) {

@@ -19,6 +19,28 @@ struct LlamaGdnProbeObservation: Equatable, Sendable, Codable {
         rawLines: []
     )
 
+    /// Libellé UI : uniquement ce que les logs ont réellement montré.
+    /// UNKNOWN / PARTIAL / NOT_OBSERVED → « Non observé », jamais « Activé ».
+    var userFacingFusedLabel: String {
+        switch probe {
+        case "ENABLED":
+            return "Activé"
+        case "DISABLED":
+            return "Désactivé"
+        default:
+            return "Non observé"
+        }
+    }
+
+    var userFacingFusedCaption: String {
+        switch probe {
+        case "ENABLED", "DISABLED":
+            return "Source : logs llama.cpp au chargement du modèle."
+        default:
+            return "Les logs du runtime ne permettent pas de confirmer cette information."
+        }
+    }
+
     /// Texte demandé pour syslog / rapport iPhone.
     var explicitReport: String {
         var lines = [

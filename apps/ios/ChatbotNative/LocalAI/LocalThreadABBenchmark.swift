@@ -62,6 +62,28 @@ struct LocalThreadABReport: Codable, Equatable, Sendable {
             "thermal=\(temperatureNote)",
         ].joined(separator: "\n")
     }
+
+    /// Résumé lisible pour la feuille Tester (sans dump syslog).
+    var userFacingSummary: String {
+        func med(_ threads: Int32, _ key: (LocalThreadABRun) -> Double?) -> String {
+            let vals = runs.filter { $0.threads == threads && !$0.warmup && $0.success }
+                .compactMap(key)
+            guard !vals.isEmpty else { return "—" }
+            let s = vals.sorted()
+            let m = s[s.count / 2]
+            return String(format: "%.1f", m)
+        }
+        let t2 = runs.filter { $0.threads == 2 && !$0.warmup && $0.success }
+        let t4 = runs.filter { $0.threads == 4 && !$0.warmup && $0.success }
+        if t2.isEmpty && t4.isEmpty {
+            return "Aucune mesure. Le modèle n’était pas chargé, ou la génération a échoué."
+        }
+        return [
+            "Threads 2 : \(med(2) { $0.tokensPerSecond }) tok/s · TTFT \(med(2) { $0.timeToFirstTokenMs }) ms · \(t2.count) mesure\(t2.count > 1 ? "s" : "")",
+            "Threads 4 : \(med(4) { $0.tokensPerSecond }) tok/s · TTFT \(med(4) { $0.timeToFirstTokenMs }) ms · \(t4.count) mesure\(t4.count > 1 ? "s" : "")",
+            "Le profil de production (\(productionThreads) threads) n’a pas été modifié.",
+        ].joined(separator: "\n")
+    }
 }
 
 enum LocalDeviceThermal {

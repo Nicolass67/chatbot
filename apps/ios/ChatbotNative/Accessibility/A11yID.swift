@@ -111,5 +111,8 @@ enum A11yID {
         static let systemStatus = "settings.systemStatus"
         static let localAICurrent = "settings.localAI.current"
         static let localAIInstalledToggle = "settings.localAI.installed.toggle"
+        static let localAITestSheet = "settings.localAI.test.sheet"
+        static let localAITestClose = "settings.localAI.test.close"
+        static let localAITestLaunch = "settings.localAI.test.launch"
     }
 }

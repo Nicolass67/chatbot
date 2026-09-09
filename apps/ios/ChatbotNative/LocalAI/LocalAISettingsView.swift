@@ -21,18 +21,15 @@ enum LocalAISettingsActionGate {
 
 /// Réglages « IA locale » — gestionnaire multi-modèles (sélection **explicite** uniquement).
 struct LocalAISettingsView: View {
+    @Binding var presentedSheet: LocalAISettingsSheetItem?
     @AppStorage("localAI.settings.installedModelsExpanded") private var installedModelsExpanded = false
     @ObservedObject private var models = LocalModelManager.shared
     @ObservedObject private var execution = ExecutionModeStore.shared
 
     @State private var busyAction = false
-    @State private var showTestSheet = false
-    @State private var showTechnicalError = false
     @State private var pendingLoadWarning: LocalModelDescriptor?
     @State private var confirmLoadExperimental = false
     @State private var pendingDelete: LocalModelDescriptor?
-    @State private var detailsModel: LocalModelDescriptor?
-    @State private var visionModel: LocalModelDescriptor?
 
     private var mutationsDisabled: Bool {
         !LocalAISettingsActionGate.allowsNewMutationTask(
@@ -51,24 +48,9 @@ struct LocalAISettingsView: View {
     }
 
     var body: some View {
+        // Les `.sheet` IA locale sont hissées sur `SettingsView` (une seule
+        // présentation). Les empiler ici sur le `Section` fermait Tester tout de suite.
         iaLocaleSection
-            .sheet(isPresented: $showTestSheet) {
-                LocalModelTestSheet()
-            }
-            .sheet(item: $detailsModel) { model in
-                LocalAIModelDetailsSheet(model: model)
-            }
-            .sheet(item: $visionModel) { model in
-                LocalAIVisionManageSheet(
-                    model: model,
-                    mutationsDisabled: mutationsDisabled,
-                    onInstall: { requestInstallVision(model) },
-                    onRemove: { requestRemoveVision(model) }
-                )
-            }
-            .sheet(isPresented: $showTechnicalError) {
-                LocalAITechnicalErrorSheet(message: models.lastError ?? "")
-            }
             .alert(
                 "Modèle exigeant",
                 isPresented: $confirmLoadExperimental
@@ -265,7 +247,10 @@ struct LocalAISettingsView: View {
             }
 
             if models.isReady {
-                Button("Tester") { showTestSheet = true }
+                Button("Tester") {
+                    LocalModelTestUILog.event("present requested", extra: "caller=currentModelTester")
+                    presentedSheet = .inferenceTest
+                }
                     .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.accent)
                     .frame(minHeight: AppTheme.touchMin, alignment: .leading)
@@ -416,15 +401,18 @@ struct LocalAISettingsView: View {
     private func modelActionsMenu(_ model: LocalModelDescriptor, isActive: Bool) -> some View {
         Menu {
             if isActive {
-                Button("Tester") { showTestSheet = true }
+                Button("Tester") {
+                    LocalModelTestUILog.event("present requested", extra: "caller=modelMenuTester")
+                    presentedSheet = .inferenceTest
+                }
             } else {
                 Button("Utiliser") { requestLoad(model) }
                     .disabled(mutationsDisabled || !LocalInferenceEngine.isLlamaRuntimeAvailable)
             }
             if model.mmproj != nil {
-                Button("Gérer la vision") { visionModel = model }
+                Button("Gérer la vision") { presentedSheet = .visionManage(model) }
             }
-            Button("Détails") { detailsModel = model }
+            Button("Détails") { presentedSheet = .modelDetails(model) }
             Divider()
             Button("Supprimer", role: .destructive) {
                 pendingDelete = model
@@ -561,7 +549,7 @@ struct LocalAISettingsView: View {
                     retry()
                 }
                 Button("Détails de l’erreur") {
-                    showTechnicalError = true
+                    presentedSheet = .technicalError(models.lastError ?? "")
                 }
                 .font(CNFont.caption.weight(.semibold))
                 .foregroundStyle(AppTheme.mutedForeground)
@@ -663,22 +651,6 @@ struct LocalAISettingsView: View {
         }
     }
 
-    private func requestInstallVision(_ model: LocalModelDescriptor) {
-        guard beginUIAction() else { return }
-        Task {
-            defer { busyAction = false }
-            await models.installVisionProjector(for: model)
-        }
-    }
-
-    private func requestRemoveVision(_ model: LocalModelDescriptor) {
-        guard beginUIAction() else { return }
-        Task {
-            defer { busyAction = false }
-            await models.deleteVisionProjector(for: model)
-        }
-    }
-
     @discardableResult
     private func beginUIAction() -> Bool {
         guard LocalAISettingsActionGate.allowsNewMutationTask(
@@ -688,143 +660,6 @@ struct LocalAISettingsView: View {
         ) else { return false }
         busyAction = true
         return true
-    }
-}
-
-// MARK: - Test sheet
-
-private struct LocalModelTestSheet: View {
-    @ObservedObject private var models = LocalModelManager.shared
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var output = ""
-    @State private var running = false
-    @State private var errorText: String?
-    @State private var gdnText = ""
-    @State private var abRunning = false
-
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: AppTheme.space16) {
-                Text("Génère une courte réponse pour vérifier \(models.activeDescriptor.displayName).")
-                    .font(CNFont.callout)
-                    .foregroundStyle(AppTheme.mutedForeground)
-
-                if running {
-                    ProgressView("Génération…")
-                }
-                if abRunning {
-                    ProgressView("A/B threads 2 vs 4… (plusieurs minutes)")
-                }
-                if !gdnText.isEmpty {
-                    Text(gdnText)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-                if let errorText {
-                    Text(errorText).foregroundStyle(AppTheme.danger).font(CNFont.caption)
-                }
-                ScrollView {
-                    Text(output.isEmpty ? "—" : output)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .font(CNFont.body)
-                }
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Test local")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Fermer") {
-                        Task { await LocalInferenceEngine.shared.cancel() }
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Lancer") {
-                        Task { await runTest() }
-                    }
-                    .disabled(!models.isReady || running || abRunning)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("A/B 2/4") {
-                        Task { await runThreadAB() }
-                    }
-                    .disabled(!models.isReady || running || abRunning)
-                }
-                if models.isVisionProjectorInstalled {
-                    ToolbarItem(placement: .automatic) {
-                        Button("Vision") {
-                            Task { await runVisionTest() }
-                        }
-                        .disabled(!models.isReady || running || abRunning)
-                    }
-                }
-            }
-            .task { await refreshGdn() }
-        }
-    }
-
-    private func refreshGdn() async {
-        if let gdn = await LocalInferenceEngine.shared.lastLoadDiagnostics?.gdn {
-            gdnText = gdn.explicitReport
-        }
-    }
-
-    private func runThreadAB() async {
-        abRunning = true
-        errorText = nil
-        defer { abRunning = false }
-        let report = await LocalThreadABBenchmark.runIsolated(source: "settings-tester")
-        gdnText = report.gdn.explicitReport + "\n\n" + report.explicitSummary
-        output = report.explicitSummary
-        if report.runs.filter({ !$0.warmup }).isEmpty {
-            errorText = "Aucune mesure — modèle chargé ?"
-        }
-    }
-
-    private func runTest() async {
-        running = true
-        errorText = nil
-        output = ""
-        defer { running = false }
-        let result = await LocalModelBenchmarkRunner.runPrompt(
-            label: "smoke",
-            prompt: "Dis bonjour en une courte phrase.",
-            maxTokens: 64
-        )
-        output = ChatMLPromptBuilder.stripControlTokens(result.outputPreview)
-        if !result.success {
-            errorText = result.errorMessage
-        }
-    }
-
-    private func runVisionTest() async {
-        running = true
-        errorText = nil
-        output = ""
-        defer { running = false }
-        guard let jpeg = LocalVision.solidColorJPEG(red: 0.86, green: 0.12, blue: 0.12) else {
-            errorText = "Impossible de créer l’image de test."
-            return
-        }
-        do {
-            let text = try await LocalAIRuntime.shared.generateStream(
-                system: "Tu es un assistant visuel. Réponds en une phrase.",
-                messages: [
-                    LLMChatMessage(role: .user, content: "Quelle couleur domine cette image ?"),
-                ],
-                maxTokens: 64,
-                images: [jpeg],
-                onToken: { token in
-                    output += token
-                }
-            )
-            output = LocalChatTemplate.stripControlTokens(text, profile: models.activeRuntimeProfile)
-        } catch {
-            errorText = error.localizedDescription
-        }
     }
 }
 

@@ -1618,6 +1618,7 @@ final class LlamaGdnProbeObservationTests: XCTestCase {
         XCTAssertEqual(obs.fusedCH, "ENABLED")
         XCTAssertEqual(obs.autoFgdn, "PROBED")
         XCTAssertEqual(obs.probe, "ENABLED")
+        XCTAssertEqual(obs.userFacingFusedLabel, "Activé")
         XCTAssertTrue(obs.explicitReport.contains("fused_ar = ENABLED"))
         XCTAssertTrue(obs.explicitReport.contains("probe = ENABLED"))
     }
@@ -1631,6 +1632,7 @@ final class LlamaGdnProbeObservationTests: XCTestCase {
         XCTAssertEqual(obs.fusedAR, "DISABLED")
         XCTAssertEqual(obs.fusedCH, "DISABLED")
         XCTAssertEqual(obs.probe, "DISABLED")
+        XCTAssertEqual(obs.userFacingFusedLabel, "Désactivé")
         XCTAssertTrue(obs.reason.contains("désactivé") || obs.reason.contains("not supported"))
     }
 
@@ -1640,5 +1642,41 @@ final class LlamaGdnProbeObservationTests: XCTestCase {
         ])
         XCTAssertEqual(obs.probe, "UNKNOWN")
         XCTAssertEqual(obs.autoFgdn, "NOT_OBSERVED")
+        XCTAssertEqual(obs.userFacingFusedLabel, "Non observé")
+        XCTAssertNotEqual(obs.userFacingFusedLabel, "Activé")
+        XCTAssertTrue(obs.userFacingFusedCaption.contains("ne permettent pas de confirmer"))
+    }
+}
+
+@MainActor
+final class LocalModelTestSessionTests: XCTestCase {
+    func testStaleTextResultDoesNotOverwriteNewerRun() {
+        let session = LocalModelTestSession()
+        let first = session.startText()
+        let second = session.startText()
+        session.failText(run: first, message: "stale")
+        XCTAssertEqual(session.textPhase, .running)
+        XCTAssertNil(session.textError)
+        session.failText(run: second, message: "current")
+        XCTAssertEqual(session.textPhase, .error)
+        XCTAssertEqual(session.textError, "current")
+    }
+
+    func testUnknownGdnIsNotATextFailure() {
+        XCTAssertEqual(LocalModelTestSheet.textProbePrompt, "Réponds uniquement par : Test OK.")
+        let session = LocalModelTestSession()
+        XCTAssertEqual(session.textPhase, .idle)
+        XCTAssertEqual(session.gdn.userFacingFusedLabel, "Non observé")
+        XCTAssertEqual(session.textPhase, .idle)
+    }
+}
+
+final class LocalAISettingsSheetItemTests: XCTestCase {
+    func testInferenceTestIdentityIsStableAndDistinct() {
+        XCTAssertEqual(LocalAISettingsSheetItem.inferenceTest.id, "local-ai.inference-test")
+        let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!
+        XCTAssertNotEqual(LocalAISettingsSheetItem.modelDetails(qwen).id, LocalAISettingsSheetItem.inferenceTest.id)
+        XCTAssertNotEqual(LocalAISettingsSheetItem.visionManage(qwen).id, LocalAISettingsSheetItem.inferenceTest.id)
+        XCTAssertNotEqual(LocalAISettingsSheetItem.technicalError("x").id, LocalAISettingsSheetItem.inferenceTest.id)
     }
 }
