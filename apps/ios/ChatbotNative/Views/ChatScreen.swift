@@ -2740,21 +2740,6 @@ private var sendBlockedHint: String {
                 ImagePipeline.compressForUpload(picked.data)
             }.value
             let filename = "photo-\(UUID().uuidString.prefix(8)).jpg"
-            if usesOnDeviceAI {
-                if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
-                    pendingAttachments[idx] = UploadedAttachment(
-                        id: tempId,
-                        filename: filename,
-                        mimeType: mime,
-                        sizeBytes: compressed.count,
-                        previewData: thumbData ?? compressed,
-                        fileData: compressed,
-                        isUploading: false,
-                        localData: compressed
-                    )
-                }
-                return
-            }
             let uploaded = try await client.uploadAttachment(
                 conversationId: conversation.id,
                 filename: filename,
@@ -2827,6 +2812,7 @@ private var sendBlockedHint: String {
                             mimeType: outMime,
                             sizeBytes: payload.count,
                             previewData: preview,
+                            fileData: isImage ? payload : nil,
                             isUploading: false,
                             localFileURL: dest,
                             localData: isImage ? nil : payload

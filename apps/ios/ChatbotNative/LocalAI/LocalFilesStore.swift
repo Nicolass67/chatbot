@@ -246,6 +246,41 @@ enum LocalFilesStore {
         }
     }
 
+    static func fileURL(forFileId id: String) throws -> URL {
+        guard let parsed = parseFileId(id) else {
+            throw AIRuntimeError.toolFailed("Identifiant fichier local invalide.")
+        }
+        return try resolve(relativePath: parsed.relative, rootId: parsed.rootId)
+    }
+
+    /// Copie sandbox → tmp pour Mail / share (security-scoped).
+    static func exportableURL(fileId: String) throws -> URL {
+        try withResolvedURL(fileId: fileId) { src in
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent("mail-\(UUID().uuidString)-\(src.lastPathComponent)")
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: src, to: dest)
+            return dest
+        }
+    }
+
+    static func withResolvedURL<T>(fileId: String, _ body: (URL) throws -> T) throws -> T {
+        let url = try fileURL(forFileId: fileId)
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        return try body(url)
+    }
+
+    static func peekHeader(fileId: String, count: Int = 16) -> Data? {
+        try? withResolvedURL(fileId: fileId) { url in
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            return try handle.read(upToCount: count) ?? Data()
+        }
+    }
+
     static func resolve(relativePath: String, rootId: String) throws -> URL {
         let base = try baseURL(for: rootId)
         let trimmed = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))

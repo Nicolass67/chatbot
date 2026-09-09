@@ -781,6 +781,9 @@ final class LlamaContext: @unchecked Sendable {
                 "mmproj absent — le GGUF texte Qwen3.5 2B n’embarque pas le projecteur vision."
             )
         }
+        // Libère le projecteur après le tour : sur 6 Go, garder CLIP + GGUF texte
+        // en parallèle entre deux messages augmente le risque jetsam.
+        defer { unloadVision() }
         try await generateWithVision(
             prompt: prompt,
             images: images,
@@ -869,6 +872,8 @@ final class LlamaContext: @unchecked Sendable {
         }
         defer { mtmd_input_chunks_free(chunks) }
 
+        // `const mtmd_bitmap * const *` s’importe en `UnsafePointer<OpaquePointer?>`.
+        var bitmapRefs: [OpaquePointer?] = bitmaps.map { Optional($0) }
         let tokenRc: Int32 = prompt.withCString { cPrompt in
             var textIn = mtmd_input_text(
                 text: cPrompt,
@@ -876,8 +881,7 @@ final class LlamaContext: @unchecked Sendable {
                 add_special: addBos,
                 parse_special: true
             )
-            var ptrs = bitmaps
-            return ptrs.withUnsafeBufferPointer { buf in
+            return bitmapRefs.withUnsafeBufferPointer { buf in
                 mtmd_tokenize(
                     mctx,
                     chunks,
