@@ -137,8 +137,34 @@ struct MailInboxView: View {
         Task { await openMailReference(link) }
     }
 
-    private func mailServing() -> GmailServing {
-        useDirectGmail ? DirectGmailProvider() : RemoteGmailProvider(client: client)
+    private func gmailGetMessage(id: String) async throws -> DirectMailMessage {
+        if useDirectGmail {
+            return try await DirectGmailProvider().getMessage(id: id)
+        }
+        return try await RemoteGmailProvider(client: client).getMessage(id: id)
+    }
+
+    private func gmailGetThread(id: String) async throws -> DirectMailThread {
+        if useDirectGmail {
+            return try await DirectGmailProvider().getThread(id: id)
+        }
+        return try await RemoteGmailProvider(client: client).getThread(id: id)
+    }
+
+    private func gmailMarkRead(messageId: String, threadId: String?) async throws {
+        if useDirectGmail {
+            try await DirectGmailProvider().markRead(messageId: messageId, threadId: threadId)
+            return
+        }
+        try await RemoteGmailProvider(client: client).markRead(messageId: messageId, threadId: threadId)
+    }
+
+    private func gmailTrashMessage(messageId: String) async throws {
+        if useDirectGmail {
+            try await DirectGmailProvider().trashMessage(messageId: messageId)
+            return
+        }
+        try await RemoteGmailProvider(client: client).trashMessage(messageId: messageId)
     }
 
     private func openMailReference(_ link: MailDeepLink) async {
@@ -152,7 +178,7 @@ struct MailInboxView: View {
                 return
             }
             do {
-                let msg = try await mailServing().getMessage(id: messageId)
+                let msg = try await gmailGetMessage(id: messageId)
                 path.append(Self.mapDirectMessage(msg))
                 return
             } catch {
@@ -187,7 +213,7 @@ struct MailInboxView: View {
 
     private func openThreadReference(_ threadId: String, fallbackError: Error?) async {
         do {
-            let thread = try await mailServing().getThread(id: threadId)
+            let thread = try await gmailGetThread(id: threadId)
             let last = thread.messages.last ?? DirectMailMessage(
                 id: thread.id,
                 threadId: thread.threadId ?? thread.id,
@@ -1163,7 +1189,7 @@ struct MailInboxView: View {
         let snapshot = msg
         let indices = removeMessageLocally(msg.id)
         do {
-            try await mailServing().trashMessage(messageId: msg.id)
+            try await gmailTrashMessage(messageId: msg.id)
             if snapshot.isUnread == true { bumpWidgetUnread(by: -1) }
             AppHaptics.warning()
         } catch {
@@ -1181,7 +1207,7 @@ struct MailInboxView: View {
             locallyReadIds.insert(threadId)
         }
         do {
-            try await mailServing().markRead(messageId: msg.id, threadId: msg.threadId)
+            try await gmailMarkRead(messageId: msg.id, threadId: msg.threadId)
             applyLocalRead(msg.id)
             AppHaptics.light()
         } catch {
