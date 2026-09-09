@@ -1,0 +1,137 @@
+name: SideStore IPA Flash (iOS 27 lockdown fallback)
+
+# Unsigned SideStore IPA with minimuxer lockdown transport fallback.
+# Does not build ChatbotNative. No Simulator / tests / screenshots.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: sidestore-ipa-flash-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  SIDESTORE_REF: "610f3b16"
+  MINIMUXER_PIN: "2e72b199801de268e2169d24ccc90357cf9ab692"
+
+jobs:
+  flash-sidestore:
+    name: Flash SideStore IPA
+    runs-on: macos-26
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout overlay (chatbot-public)
+        uses: actions/checkout@v4
+        with:
+          path: overlay-src
+          sparse-checkout: vendor/sidestore-ios27-lockdown-fallback
+          sparse-checkout-cone-mode: true
+
+      - name: Checkout SideStore ${{ env.SIDESTORE_REF }}
+        uses: actions/checkout@v4
+        with:
+          repository: SideStore/SideStore
+          ref: ${{ env.SIDESTORE_REF }}
+          submodules: recursive
+          path: sidestore-build
+          fetch-depth: 1
+
+      - name: Overlay transport fallback
+        run: |
+          set -euo pipefail
+          OVERLAY="overlay-src/vendor/sidestore-ios27-lockdown-fallback/overlay"
+          test -d "$OVERLAY"
+          test -f "$OVERLAY/Dependencies/minimuxer/Common/DeviceTransport.swift"
+          rsync -a "$OVERLAY/" sidestore-build/
+          grep -q "DeviceTransportSelector" sidestore-build/Dependencies/minimuxer/Common/DeviceTransport.swift
+          grep -q "requiresRemotePairing" sidestore-build/Dependencies/minimuxer/Sources/MinimuxerError.swift
+          grep -q "requiresRemotePairing" sidestore-build/SideStore/Core/Operations/Errors/OperationError.swift
+          MM_SHA=$(git -C sidestore-build/Dependencies/minimuxer rev-parse HEAD)
+          echo "minimuxer HEAD=$MM_SHA (pin ${MINIMUXER_PIN})"
+          echo "SIDESTORE_MM_SHA=$MM_SHA" >> "$GITHUB_ENV"
+          echo "Overlay applied on SideStore ${SIDESTORE_REF}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select Xcode 26.6 (pinned)
+        run: |
+          set -euo pipefail
+          PIN="/Applications/Xcode_26.6.app"
+          if [ ! -d "$PIN" ]; then
+            echo "::error::Pinned Xcode 26.6 not found at $PIN"
+            ls /Applications | grep -i Xcode || true
+            exit 1
+          fi
+          sudo xcode-select -s "$PIN/Contents/Developer"
+          xcodebuild -version | tee /tmp/xcode-version.txt
+          grep -E 'Xcode 26\.6' /tmp/xcode-version.txt >/dev/null
+
+      - name: Install ldid
+        run: |
+          set -euo pipefail
+          if ! command -v ldid >/dev/null 2>&1; then
+            brew install ldid
+          fi
+          ldid 2>&1 | head -1 || true
+
+      - name: Build archive + fakesign IPA
+        working-directory: sidestore-build
+        env:
+          NSUnbufferedIO: YES
+          BUILD_CONFIG: Release
+          MARKETING_VERSION: 0.7.0-lockdownfb
+        run: |
+          set -euo pipefail
+          echo "Building SideStore ${SIDESTORE_REF} MARKETING_VERSION=${MARKETING_VERSION}"
+          make -B build
+          make fakesign
+          make ipa
+          test -f SideStore.ipa
+          ls -lh SideStore.ipa
+          unzip -l SideStore.ipa | head -20
+
+      - name: Package meta
+        run: |
+          set -euo pipefail
+          IPA="sidestore-build/SideStore.ipa"
+          test -f "$IPA"
+          rm -rf /tmp/ss-payload
+          mkdir -p /tmp/ss-payload
+          unzip -q -o "$IPA" -d /tmp/ss-payload
+          PLIST="/tmp/ss-payload/Payload/SideStore.app/Info.plist"
+          test -f "$PLIST"
+          MARKETING=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+          cat > sidestore-build/sidestore-flash-meta.json <<EOF
+          {
+            "git_sha": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "sidestore_ref": "${SIDESTORE_REF}",
+            "minimuxer_pin": "${MINIMUXER_PIN}",
+            "minimuxer_head": "${SIDESTORE_MM_SHA}",
+            "marketing": "${MARKETING}",
+            "build": "${BUILD}",
+            "bundle_id": "${BUNDLE_ID}",
+            "workflow": "sidestore-ipa-flash",
+            "patch": "ios27-lockdown-transport-fallback"
+          }
+          EOF
+          cat sidestore-build/sidestore-flash-meta.json
+          cat sidestore-build/sidestore-flash-meta.json >> "$GITHUB_STEP_SUMMARY"
+          echo "FLASH_MARKETING=$MARKETING" >> "$GITHUB_ENV"
+          echo "FLASH_BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "FLASH_BUNDLE=$BUNDLE_ID" >> "$GITHUB_ENV"
+
+      - name: Upload SideStore IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidestore-ios27-lockdown-unsigned
+          path: |
+            sidestore-build/SideStore.ipa
+            sidestore-build/sidestore-flash-meta.json
+          if-no-files-found: error
+          retention-days: 5
