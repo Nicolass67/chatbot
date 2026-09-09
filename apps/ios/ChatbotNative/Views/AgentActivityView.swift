@@ -224,7 +224,7 @@ struct AgentActivityView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppTheme.surfaceElevated.opacity(0.88))
+                .fill(AppTheme.surfaceElevated)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)

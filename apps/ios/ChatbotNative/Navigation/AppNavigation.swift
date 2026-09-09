@@ -100,6 +100,8 @@ final class AppNavigation {
     var openConversationId: String?
     /// Prefill composer après handoff Files/Mail → Chat général seulement.
     var chatComposerPrefill: String?
+    /// Incrémenté pour focaliser le composer (Nouveau chat). Survit au remount de ChatScreen.
+    var composerFocusGeneration: UInt64 = 0
     /// Legacy soft-context (évité pour Mail/Files Assistant — préférer sheets in-place).
     var chatContextRequest: ChatContextRequest?
     var showSettings = false
@@ -234,21 +236,7 @@ final class AppNavigation {
         prefill: String? = nil
     ) {
         guard !files.isEmpty else { return }
-        let local = files.filter { $0.fileId.hasPrefix("local:") }
-        let remote = files.filter { !$0.fileId.hasPrefix("local:") }
-        if !local.isEmpty {
-            let urls: [URL] = local.compactMap { item in
-                try? LocalFilesStore.exportableURL(fileId: item.fileId)
-            }
-            if !urls.isEmpty {
-                NativeMailShare.present(
-                    fileURLs: urls,
-                    subject: local.count == 1 ? local[0].filename : "Fichiers"
-                )
-            }
-        }
-        guard !remote.isEmpty else { return }
-        let handoffs = remote.map {
+        let handoffs = files.map {
             MailAttachHandoff(fileId: $0.fileId, filename: $0.filename)
         }
         for handoff in handoffs {
@@ -258,8 +246,6 @@ final class AppNavigation {
         }
         mailAttachHandoffs = handoffs
         mailComposerPrefill = prefill
-        // Armer Mail AVANT le dismiss Files : sinon `assistantDismissToken`
-        // ferme aussi la sheet Mail qu’on vient d’ouvrir (course SwiftUI).
         mailAssistantContext = .global
         presentMailAssistant = true
         presentFilesAssistant = false

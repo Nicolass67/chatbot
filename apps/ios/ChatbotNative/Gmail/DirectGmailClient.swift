@@ -218,13 +218,19 @@ final class DirectGmailClient {
         to: String,
         subject: String,
         body: String,
-        threadId: String? = nil
+        threadId: String? = nil,
+        attachments: [(filename: String, mimeType: String, data: Data)] = []
     ) async throws {
         let trimmedTo = to.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTo.isEmpty else {
             throw DirectGmailError.invalidArgument("Destinataire manquant.")
         }
-        let raw = Self.buildRawRFC822(to: trimmedTo, subject: subject, body: body)
+        let raw = Self.buildRawRFC822(
+            to: trimmedTo,
+            subject: subject,
+            body: body,
+            attachments: attachments
+        )
         var payload: [String: Any] = ["raw": raw]
         if let threadId, !threadId.isEmpty {
             payload["threadId"] = threadId
@@ -453,17 +459,61 @@ final class DirectGmailClient {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func buildRawRFC822(to: String, subject: String, body: String) -> String {
+    private static func buildRawRFC822(
+        to: String,
+        subject: String,
+        body: String,
+        attachments: [(filename: String, mimeType: String, data: Data)] = []
+    ) -> String {
         let safeSubject = subject.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
-        let lines = [
-            "To: \(to)",
-            "Subject: \(safeSubject)",
-            "Content-Type: text/plain; charset=UTF-8",
-            "MIME-Version: 1.0",
-            "",
-            body,
-        ]
-        let raw = lines.joined(separator: "\r\n")
+        if attachments.isEmpty {
+            let lines = [
+                "To: \(to)",
+                "Subject: \(safeSubject)",
+                "Content-Type: text/plain; charset=UTF-8",
+                "MIME-Version: 1.0",
+                "",
+                body,
+            ]
+            return Data(lines.joined(separator: "\r\n").utf8).base64URLEncodedString()
+        }
+        let boundary = "ChatbotBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        var raw = """
+        To: \(to)\r
+        Subject: \(safeSubject)\r
+        MIME-Version: 1.0\r
+        Content-Type: multipart/mixed; boundary="\(boundary)"\r
+        \r
+        --\(boundary)\r
+        Content-Type: text/plain; charset=UTF-8\r
+        Content-Transfer-Encoding: 8bit\r
+        \r
+        \(body)\r
+        """
+        for att in attachments {
+            let filename = att.filename
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "\r", with: "")
+                .replacingOccurrences(of: "\n", with: "")
+            let mime = att.mimeType.isEmpty ? "application/octet-stream" : att.mimeType
+            let b64 = att.data.base64EncodedString()
+            var wrapped = ""
+            var i = b64.startIndex
+            while i < b64.endIndex {
+                let end = b64.index(i, offsetBy: 76, limitedBy: b64.endIndex) ?? b64.endIndex
+                wrapped += String(b64[i..<end]) + "\r\n"
+                i = end
+            }
+            raw += """
+            --\(boundary)\r
+            Content-Type: \(mime); name="\(filename)"\r
+            Content-Disposition: attachment; filename="\(filename)"\r
+            Content-Transfer-Encoding: base64\r
+            \r
+            \(wrapped)
+            """
+        }
+        raw += "--\(boundary)--\r\n"
         return Data(raw.utf8).base64URLEncodedString()
     }
 

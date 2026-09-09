@@ -73,6 +73,25 @@ enum FilesDestination: Hashable, Codable {
     case file(fileId: String, title: String, rootId: String, folderPath: String)
 }
 
+/// Session d’import unique au NavigationStack (évite un picker coincé après pop).
+private struct FilesImportSession: Identifiable, Equatable {
+    let id: UUID
+    let root: FileRootDTO
+    let folderPath: String
+
+    init(root: FileRootDTO, folderPath: String) {
+        self.id = UUID()
+        self.root = root
+        self.folderPath = folderPath
+    }
+}
+
+private enum FilesRootPickerMode: Equatable {
+    case none
+    case localFolder
+    case importFiles
+}
+
 enum FilesIndexStatus: Equatable {
     case idle
     case indexing(rootLabel: String)
@@ -111,8 +130,11 @@ struct FilesBrowserView: View {
     @State private var mutatingSelection = false
     @State private var selectionError: String?
     @State private var organizerScope: OrganizationScope?
-    @State private var showLocalFolderImporter = false
     @State private var lastFilesNavAt: Date = .distantPast
+    @State private var fileImportSession: FilesImportSession?
+    @State private var rootPickerMode: FilesRootPickerMode = .none
+    @State private var importingFiles = false
+    @State private var importRefreshToken = 0
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -209,7 +231,7 @@ struct FilesBrowserView: View {
                             }
                             if usesOnDeviceFiles {
                                 Button {
-                                    showLocalFolderImporter = true
+                                    requestLocalFolderImport()
                                 } label: {
                                     Label("Ajouter un dossier", systemImage: "folder.badge.plus")
                                 }
@@ -299,18 +321,25 @@ struct FilesBrowserView: View {
             }
             .refreshable { await loadRoots() }
             .fileImporter(
-                isPresented: $showLocalFolderImporter,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: false
+                isPresented: Binding(
+                    get: { rootPickerMode != .none },
+                    set: { presented in
+                        if !presented { rootPickerMode = .none }
+                    }
+                ),
+                allowedContentTypes: rootPickerMode == .localFolder
+                    ? [.folder]
+                    : [.item, .image, .pdf, .plainText, .data],
+                allowsMultipleSelection: rootPickerMode != .localFolder
             ) { result in
+                let mode = rootPickerMode
+                let session = fileImportSession
+                rootPickerMode = .none
                 Task {
-                    do {
-                        guard let url = try result.get().first else { return }
-                        try LocalFileBookmarkStore.shared.addFolder(url: url)
-                        await loadRoots()
-                        AppHaptics.success()
-                    } catch {
-                        self.error = error.localizedDescription
+                    if mode == .localFolder {
+                        await handleLocalFolderImport(result)
+                    } else {
+                        await handleHoistedFileImport(result, session: session)
                     }
                 }
             }
@@ -443,12 +472,12 @@ struct FilesBrowserView: View {
             Text(selectionError ?? "")
         }
         .overlay {
-            if mutatingSelection {
+            if mutatingSelection || importingFiles {
                 FilesBlockingBusyOverlay()
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.18), value: mutatingSelection)
+        .animation(.easeOut(duration: 0.18), value: mutatingSelection || importingFiles)
         .environment(selection)
     }
 
@@ -659,6 +688,103 @@ struct FilesBrowserView: View {
         WorkflowTrace.log("files:breadcrumb", ["path": FilesPathOps.breadcrumb(path)])
     }
 
+    /// Présente le picker depuis la racine du stack (pas depuis une vue dossier qui peut être pop).
+    private func requestFileImport(root: FileRootDTO, folderPath: String) {
+        let session = FilesImportSession(root: root, folderPath: folderPath)
+        fileImportSession = session
+        rootPickerMode = .none
+        // Le Menu doit se fermer avant le picker — sinon `isPresented` reste coincé.
+        DispatchQueue.main.async {
+            self.rootPickerMode = .importFiles
+        }
+    }
+
+    private func requestLocalFolderImport() {
+        rootPickerMode = .none
+        DispatchQueue.main.async {
+            self.rootPickerMode = .localFolder
+        }
+    }
+
+    private func handleLocalFolderImport(_ result: Result<[URL], Error>) async {
+        switch result {
+        case .failure(let error):
+            if Self.isDocumentPickerCancellation(error) { return }
+            self.error = error.localizedDescription
+        case .success(let urls):
+            do {
+                guard let url = urls.first else { return }
+                try LocalFileBookmarkStore.shared.addFolder(url: url)
+                await loadRoots()
+                AppHaptics.success()
+            } catch {
+                if Self.isDocumentPickerCancellation(error) { return }
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleHoistedFileImport(
+        _ result: Result<[URL], Error>,
+        session: FilesImportSession?
+    ) async {
+        defer {
+            fileImportSession = nil
+            if rootPickerMode == .importFiles { rootPickerMode = .none }
+        }
+        switch result {
+        case .failure(let error):
+            if Self.isDocumentPickerCancellation(error) { return }
+            self.error = error.localizedDescription
+        case .success(let urls):
+            guard let session, !urls.isEmpty else { return }
+            importingFiles = true
+            defer { importingFiles = false }
+            do {
+                for url in urls {
+                    try await importOneFile(url, into: session)
+                }
+                importRefreshToken &+= 1
+                AppHaptics.success()
+            } catch {
+                if Self.isDocumentPickerCancellation(error) { return }
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func importOneFile(_ url: URL, into session: FilesImportSession) async throws {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        if LocalFilesStore.isLocalRoot(session.root.id) {
+            _ = try LocalFilesStore.importFile(
+                from: url,
+                relativeFolder: session.folderPath,
+                rootId: session.root.id
+            )
+            return
+        }
+        let data = try Data(contentsOf: url)
+        let name = url.lastPathComponent
+        let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        try await client.uploadFiles(
+            rootId: session.root.id,
+            destRelativePath: session.folderPath,
+            filename: name,
+            data: data,
+            mimeType: mime
+        )
+    }
+
+    private static func isDocumentPickerCancellation(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain && ns.code == NSUserCancelledError { return true }
+        if ns.domain == "com.apple.UIKit.documentPicker" { return true }
+        let msg = ns.localizedDescription.lowercased()
+        if msg.contains("cancel") || msg.contains("annul") { return true }
+        return false
+    }
+
     @ViewBuilder
     private func destinationView(_ dest: FilesDestination) -> some View {
         switch dest {
@@ -696,7 +822,11 @@ struct FilesBrowserView: View {
                     onReindex: LocalFilesStore.isLocalRoot(root.id) ? nil : {
                         Task { await reindexRoot(root) }
                     },
-                    isReindexing: indexStatus.isIndexing
+                    isReindexing: indexStatus.isIndexing,
+                    onRequestImport: {
+                        requestFileImport(root: root, folderPath: folderPath)
+                    },
+                    importRefreshToken: importRefreshToken
                 )
             } else {
                 SoftEmptyState(
@@ -759,7 +889,7 @@ struct FilesBrowserView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 Button("Ajouter un dossier") {
-                                    showLocalFolderImporter = true
+                                    requestLocalFolderImport()
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .tint(AppTheme.accent)
@@ -1014,6 +1144,8 @@ struct FileFolderView: View {
     var onRevealDestination: (FileEntryDTO) -> Void = { _ in }
     var onReindex: (() -> Void)? = nil
     var isReindexing: Bool = false
+    var onRequestImport: (() -> Void)? = nil
+    var importRefreshToken: Int = 0
 
     @State private var entries: [FileEntryDTO] = []
     @State private var loading = true
@@ -1063,10 +1195,8 @@ struct FileFolderView: View {
     @State private var renameText = ""
     @State private var deleteTarget: FileEntryDTO?
     @State private var deletingSingle = false
-    @State private var showImporter = false
     @State private var pendingPropose: FilesProposeResult?
     @State private var confirming = false
-    @State private var uploading = false
     @State private var showAssistant = false
     @State private var assistantDetent: PresentationDetent = .large
     @State private var showOrganizer = false
@@ -1134,7 +1264,7 @@ struct FileFolderView: View {
                             : "Nouveau dossier"
                     ) {
                         if LocalFilesStore.isLocalRoot(root.id) && typeFilter == .all {
-                            showImporter = true
+                            onRequestImport?()
                         } else {
                             showMkdir = true
                         }
@@ -1159,12 +1289,12 @@ struct FileFolderView: View {
             }
         }
         .overlay {
-            if deletingSingle || uploading || confirming {
+            if deletingSingle || confirming {
                 FilesBlockingBusyOverlay()
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.18), value: deletingSingle || uploading || confirming)
+        .animation(.easeOut(duration: 0.18), value: deletingSingle || confirming)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -1228,8 +1358,8 @@ struct FileFolderView: View {
                             Divider()
                         }
                         Button { showMkdir = true } label: { Label("Nouveau dossier", systemImage: "folder.badge.plus") }
-                        Button { showImporter = true } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
-                            .disabled(uploading)
+                        Button { onRequestImport?() } label: { Label("Importer un fichier", systemImage: "square.and.arrow.down") }
+                            .disabled(onRequestImport == nil)
                         Button {
                             showOrganizer = true
                             AppHaptics.light()
@@ -1349,18 +1479,14 @@ struct FileFolderView: View {
         } message: {
             Text(openError ?? "")
         }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: [.item, .image, .pdf, .plainText, .data],
-            allowsMultipleSelection: false
-        ) { result in
-            Task { await handleImport(result) }
-        }
         .onChange(of: nav.assistantDismissToken) { _, _ in
             showAssistant = false
         }
         .onChange(of: selection.contentEpoch) { _, _ in
             applyRemovedFileIds(selection.lastRemovedFileIds)
+        }
+        .onChange(of: importRefreshToken) { _, _ in
+            Task { await load(reset: true) }
         }
         .task {
             // Même logique que les roots : restaurer le cache process avant tout réseau
@@ -2070,40 +2196,6 @@ struct FileFolderView: View {
                 AppHaptics.success()
                 await load(reset: true)
             }
-        } catch {
-            openError = error.localizedDescription
-        }
-    }
-
-    private func handleImport(_ result: Result<[URL], Error>) async {
-        do {
-            guard let url = try result.get().first else { return }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let data = try Data(contentsOf: url)
-            let name = url.lastPathComponent
-            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            uploading = true
-            defer { uploading = false }
-            if LocalFilesStore.isLocalRoot(root.id) {
-                _ = try LocalFilesStore.importFile(
-                    from: url,
-                    relativeFolder: path,
-                    rootId: root.id
-                )
-                AppHaptics.success()
-                await load(reset: true)
-                return
-            }
-            try await client.uploadFiles(
-                rootId: root.id,
-                destRelativePath: path,
-                filename: name,
-                data: data,
-                mimeType: mime
-            )
-            AppHaptics.success()
-            await load(reset: true)
         } catch {
             openError = error.localizedDescription
         }

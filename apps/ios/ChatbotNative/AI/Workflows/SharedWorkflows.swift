@@ -674,6 +674,74 @@ enum FilesWorkflow {
     }
 }
 
+enum MailDraftRewriteWorkflow {
+    struct Request: Sendable {
+        var instruction: String
+        var body: String
+        var to: String
+        var subject: String
+    }
+
+    @MainActor
+    static func run(
+        _ request: Request,
+        runtime: any AIRuntime,
+        onToken: (@MainActor (String) -> Void)? = nil
+    ) async throws -> String {
+        let profile = runtime.executionProfile
+        let instruction = request.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = String(request.body.prefix(8_000))
+        let user = """
+        Consigne: \(instruction.isEmpty ? "Plus clair et naturel." : instruction)
+        Destinataire (ne pas modifier): \(request.to.isEmpty ? "(inchangé)" : request.to)
+        Objet (ne pas modifier): \(request.subject.isEmpty ? "(inchangé)" : request.subject)
+
+        Corps actuel:
+        \(body)
+        """
+        let raw: String
+        if let onToken {
+            raw = try await runtime.generateStream(
+                system: LocalPrompts.mailDraftRewrite,
+                messages: [LLMChatMessage(role: .user, content: user)],
+                maxTokens: profile.outputTokens(for: .mailReply),
+                onToken: onToken
+            )
+        } else {
+            raw = try await runtime.generate(
+                system: LocalPrompts.mailDraftRewrite,
+                messages: [LLMChatMessage(role: .user, content: user)],
+                maxTokens: profile.outputTokens(for: .mailReply)
+            )
+        }
+        return Self.stripMeta(raw)
+    }
+
+    static func stripMeta(_ raw: String) -> String {
+        var t = LocalChatTemplate.truncateAssistantOutput(raw).text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasPrefix("```") {
+            t = t.replacingOccurrences(of: #"^```[a-zA-Z]*\n?"#, with: "", options: .regularExpression)
+            if let end = t.range(of: "```", options: .backwards) {
+                t = String(t[..<end.lowerBound])
+            }
+        }
+        let prefixes = [
+            "voici une version", "voici le mail", "voici le nouveau",
+            "version moins formelle", "version plus formelle",
+            "j’ai réécrit", "j'ai réécrit", "rewritten email:",
+        ]
+        let lower = t.lowercased()
+        for p in prefixes where lower.hasPrefix(p) {
+            if let nl = t.firstIndex(of: "\n") {
+                t = String(t[t.index(after: nl)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            break
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 enum MemoryWorkflow {
     struct Request: Sendable {
         var query: String

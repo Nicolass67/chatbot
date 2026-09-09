@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 enum MailSortOption: String, CaseIterable, Identifiable {
     case newest
@@ -883,6 +884,7 @@ struct MailInboxView: View {
                 sortedWindow = []
                 error = nil
                 publishMailUnreadFromInbox(estimate: resultSizeEstimate, page: filtered)
+                MailRecipientDirectory.shared.ingest(summaries: filtered)
             } else {
                 var collected: [MailMessageSummary] = []
                 var token: String? = nil
@@ -917,6 +919,7 @@ struct MailInboxView: View {
                 localPageIndex = 0
                 applyLocalPage()
                 error = nil
+                MailRecipientDirectory.shared.ingest(summaries: sortedWindow)
                 publishMailUnreadFromInbox(estimate: estimate, page: unique)
             }
             if let pending = pendingMailDeepLink ?? nav.mailDeepLink {
@@ -1351,6 +1354,7 @@ struct MailThreadView: View {
     @State private var confirmSend = false
     @State private var sendStatus: String?
     @State private var aiTask: Task<Void, Never>?
+    @State private var showReplyImporter = false
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -1450,6 +1454,14 @@ struct MailThreadView: View {
                 Task { await LocalAIRuntime.shared.cancel() }
             }
         }
+        .fileImporter(
+            isPresented: $showReplyImporter,
+            allowedContentTypes: [.pdf, .plainText, .utf8PlainText, .data, .image, .item],
+            allowsMultipleSelection: true
+        ) { result in
+            showReplyImporter = false
+            Task { await handleReplyImportedDocs(result) }
+        }
     }
 
     @ViewBuilder
@@ -1490,11 +1502,21 @@ struct MailThreadView: View {
                             editingDraft.toggle()
                             replyRecipientSuggestions = []
                         },
+                        onImprove: { instruction in
+                            aiTask?.cancel()
+                            aiTask = Task { await rewriteReplyDraft(instruction: instruction) }
+                        },
                         onRetry: {
                             aiTask?.cancel()
                             aiTask = Task { await runSuggest() }
                         },
                         onSend: { confirmSend = true },
+                        onAttach: {
+                            showReplyImporter = true
+                        },
+                        onRemoveAttachment: { chip in
+                            removeReplyAttachment(chip)
+                        },
                         onCommitHeaders: {
                             Task { await commitReplyDraftHeaders() }
                         }
@@ -1557,6 +1579,9 @@ struct MailThreadView: View {
                     }
                 )
                 error = nil
+                if let msgs = thread?.messages {
+                    MailRecipientDirectory.shared.ingest(threadMessages: msgs)
+                }
                 do {
                     try await DirectGmailProvider().markRead(messageId: summary.id, threadId: threadId)
                     notifyReadLocallyIfNeeded()
@@ -1567,6 +1592,9 @@ struct MailThreadView: View {
             }
             thread = try await client.fetchMailThread(id: threadId)
             error = nil
+            if let msgs = thread?.messages {
+                MailRecipientDirectory.shared.ingest(threadMessages: msgs)
+            }
             do {
                 try await client.markMailRead(id: summary.id)
                 notifyReadLocallyIfNeeded()
@@ -1696,6 +1724,143 @@ struct MailThreadView: View {
         }
     }
 
+    private func rewriteReplyDraft(instruction: String) async {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let previous = (replyDraft ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if previous.isEmpty {
+            await runSuggest()
+            return
+        }
+        aiBusy = true
+        aiStatus = "Amélioration du brouillon…"
+        draftStreaming = true
+        editingDraft = false
+        replyDraft = ""
+        defer {
+            aiBusy = false
+            aiStatus = nil
+            draftStreaming = false
+        }
+        do {
+            if usesOnDeviceAI {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                guard LocalModelManager.shared.isReady else {
+                    throw LocalMailAssistantError.modelNotReady
+                }
+                let body = try await MailDraftRewriteWorkflow.run(
+                    .init(
+                        instruction: trimmed,
+                        body: previous,
+                        to: replyDraftTo,
+                        subject: replyDraftSubject
+                    ),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        self.aiStatus = nil
+                        self.replyDraft = (self.replyDraft ?? "") + token
+                    }
+                )
+                let cleaned = MailDraftRewriteWorkflow.stripMeta(body)
+                guard cleaned.count >= 8 else {
+                    throw LocalMailAssistantError.inference("Réécriture vide.")
+                }
+                replyDraft = cleaned
+            } else {
+                let instruction = """
+                Réécris UNIQUEMENT le corps de CE brouillon selon la consigne « \(trimmed) ».
+                Remplace le texte par la nouvelle version, sans explication.
+                Brouillon actuel:
+                \(previous)
+                """
+                let result = try await client.streamSuggestMailReply(
+                    threadId: threadId,
+                    instruction: instruction
+                ) { token in
+                    Task { @MainActor in
+                        self.aiStatus = nil
+                        self.replyDraft = (self.replyDraft ?? "") + token
+                    }
+                }
+                let cleaned = MailDraftRewriteWorkflow.stripMeta(result.bodyText)
+                replyDraft = cleaned.count >= 8 ? cleaned : result.bodyText
+                if let id = result.draftId, !id.isEmpty {
+                    replyDraftId = id
+                    await refreshReplyDraftAttachments(id: id)
+                }
+            }
+            AppHaptics.success()
+        } catch is CancellationError {
+            replyDraft = previous
+        } catch {
+            replyDraft = previous
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
+    }
+
+    private func handleReplyImportedDocs(_ result: Result<[URL], Error>) async {
+        switch result {
+        case .failure(let err):
+            let ns = err as NSError
+            if ns.domain == NSCocoaErrorDomain && ns.code == NSUserCancelledError { return }
+            if ns.domain == "com.apple.UIKit.documentPicker" { return }
+            self.error = err.localizedDescription
+        case .success(let urls):
+            for url in urls {
+                await importReplyAttachment(url)
+            }
+        }
+    }
+
+    private func importReplyAttachment(_ url: URL) async {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let name = url.lastPathComponent
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            let dir = LocalFilesStore.documentsDirectory.appendingPathComponent("LocalAttachments", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent("\(UUID().uuidString)-\(name)")
+            try data.write(to: dest, options: .atomic)
+            let chip = EmailDraftAttachmentChip(
+                id: "local-\(UUID().uuidString)",
+                filename: name,
+                mimeType: mime,
+                sizeBytes: data.count,
+                localFilePath: dest.path
+            )
+            if !replyAttachments.contains(where: { $0.id == chip.id }) {
+                replyAttachments.append(chip)
+            }
+            AppHaptics.success()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func removeReplyAttachment(_ chip: EmailDraftAttachmentChip) {
+        replyAttachments.removeAll { $0.id == chip.id }
+        if let path = chip.localFilePath, chip.id.hasPrefix("local-") {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        AppHaptics.light()
+    }
+
+    private func replyAttachmentPayloads() -> [(filename: String, mimeType: String, data: Data)] {
+        var files: [(filename: String, mimeType: String, data: Data)] = []
+        for chip in replyAttachments {
+            if let path = chip.localFilePath, let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                files.append((chip.filename, chip.mimeType, data))
+            }
+        }
+        return files
+    }
+
     private func sendDraft() async {
         guard var body = replyDraft else { return }
         body = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1712,14 +1877,16 @@ struct MailThreadView: View {
                     .joined(separator: ", ")
                 if GmailOAuthSession.shared.isConnected {
                     let gmail = DirectGmailProvider()
-                    if let draftId = replyDraftId, !draftId.isEmpty {
+                    let files = replyAttachmentPayloads()
+                    if let draftId = replyDraftId, !draftId.isEmpty, files.isEmpty {
                         try await gmail.sendDraft(id: draftId)
                     } else if !toJoined.isEmpty {
-                        try await gmail.sendMessage(
+                        try await DirectGmailClient().sendMessage(
                             to: toJoined,
                             subject: replyDraftSubject,
                             body: body,
-                            threadId: threadId
+                            threadId: threadId,
+                            attachments: files
                         )
                     } else {
                         NativeMailShare.presentComposer(
@@ -1803,16 +1970,27 @@ struct MailThreadView: View {
             replyRecipientSuggestions = []
             return
         }
+        let confirmed = replyDraftTo
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let local = MailRecipientDirectory.shared.suggest(query: q, excluding: confirmed)
+        replyRecipientSuggestions = local
         replyRecipientSuggestTask = Task {
-            try? await Task.sleep(nanoseconds: 280_000_000)
+            try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
+            if usesOnDeviceAI { return }
             do {
                 let rows = try await client.suggestMailRecipients(query: q)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { replyRecipientSuggestions = rows }
+                await MainActor.run {
+                    var merged = local
+                    for row in rows where !merged.contains(where: { $0.email.caseInsensitiveCompare(row.email) == .orderedSame }) {
+                        merged.append(row)
+                    }
+                    replyRecipientSuggestions = Array(merged.prefix(6))
+                }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run { replyRecipientSuggestions = [] }
             }
         }
     }

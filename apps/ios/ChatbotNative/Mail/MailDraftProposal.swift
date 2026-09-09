@@ -1,10 +1,12 @@
 import SwiftUI
 
-struct EmailDraftAttachmentChip: Identifiable, Hashable {
+struct EmailDraftAttachmentChip: Identifiable, Hashable, Codable {
     let id: String
     let filename: String
     let mimeType: String
     let sizeBytes: Int
+    /// Chemin sandbox (PJ locale, pas d’upload PC).
+    var localFilePath: String? = nil
 }
 
 struct MailRecipientSuggestion: Identifiable, Hashable {
@@ -36,10 +38,12 @@ struct MailDraftProposal: View {
     var onSelectSuggestion: ((MailRecipientSuggestion) -> Void)? = nil
     var onRecipientQueryChanged: ((String) -> Void)? = nil
     var onEditToggle: () -> Void
-    /// Améliorer : le parent active le composer pour un conseil (pas une réécriture auto).
+    /// Consigne « Améliorer » (ex. moins formel) → le parent réécrit CE brouillon.
+    var onImprove: ((String) -> Void)? = nil
     var onRetry: () -> Void
     var onSend: () -> Void
     var onAttach: (() -> Void)? = nil
+    var onRemoveAttachment: ((EmailDraftAttachmentChip) -> Void)? = nil
     /// Croix : masque la carte (brouillon conservé, récupérable via un bouton ailleurs).
     var onDismiss: (() -> Void)? = nil
     var onCommitHeaders: (() -> Void)? = nil
@@ -47,6 +51,9 @@ struct MailDraftProposal: View {
     /// Fragment en cours de saisie (pas encore confirmé en puce).
     @State private var typingQuery = ""
     @FocusState private var toFieldFocused: Bool
+    @State private var improveExpanded = false
+    @State private var improveText = ""
+    @FocusState private var improveFocused: Bool
 
     private var sendDisabled: Bool {
         isSent || busy || isStreaming
@@ -93,6 +100,10 @@ struct MailDraftProposal: View {
             }
 
             bodySection
+
+            if improveExpanded, !isSent {
+                improvePanel
+            }
 
             if isSent {
                 HStack(spacing: 8) {
@@ -309,36 +320,113 @@ struct MailDraftProposal: View {
     }
 
     private var attachmentsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Label("Pièces jointes (\(attachments.count))", systemImage: "paperclip")
                 .font(CNFont.caption2.weight(.semibold))
                 .foregroundStyle(AppTheme.mutedForeground)
-            ForEach(attachments) { att in
-                HStack(spacing: 10) {
-                    Image(systemName: attachmentIcon(att))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(AppTheme.mailAccent)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            AppTheme.mailAccent.opacity(0.14),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        )
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(att.filename)
-                            .font(CNFont.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.foreground)
-                            .lineLimit(1)
-                        Text(ByteCountFormatter.string(fromByteCount: Int64(att.sizeBytes), countStyle: .file))
-                            .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.mutedForeground)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { att in
+                        attachmentChip(att)
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(8)
-                .background(AppTheme.surface.opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.vertical, 2)
             }
         }
+    }
+
+    private func attachmentChip(_ att: EmailDraftAttachmentChip) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: attachmentIcon(att))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(AppTheme.mailAccent)
+                .frame(width: 28, height: 28)
+                .background(
+                    AppTheme.mailAccent.opacity(0.14),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(att.filename)
+                    .font(CNFont.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 148, alignment: .leading)
+                if att.sizeBytes > 0 {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(att.sizeBytes), countStyle: .file))
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                }
+            }
+            if let onRemoveAttachment, !isSent, !isStreaming {
+                Button {
+                    AppHaptics.light()
+                    onRemoveAttachment(att)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Retirer \(att.filename)")
+            }
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, onRemoveAttachment == nil ? 10 : 0)
+        .padding(.vertical, 6)
+        .background(AppTheme.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(AppTheme.chipStroke, lineWidth: 1)
+        )
+    }
+
+    private var improvePanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Comment améliorer ce brouillon ?")
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+            HStack(spacing: 8) {
+                TextField("Ex. moins formel", text: $improveText, axis: .vertical)
+                    .font(CNFont.callout)
+                    .lineLimit(1...3)
+                    .focused($improveFocused)
+                    .padding(10)
+                    .background(AppTheme.surface.opacity(0.55))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+                    .accessibilityLabel("Consigne d’amélioration")
+                Button {
+                    submitImprove()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(AppTheme.accentForeground)
+                        .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
+                        .background(AppTheme.mailAccent, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(improveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy || isStreaming)
+                .accessibilityLabel("Lancer l’amélioration")
+            }
+        }
+        .padding(10)
+        .background(AppTheme.mailAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func submitImprove() {
+        let q = improveText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        AppHaptics.light()
+        if let onImprove {
+            onImprove(q)
+        } else {
+            onRetry()
+        }
+        improveText = ""
+        improveExpanded = false
+        Keyboard.dismiss()
     }
 
     @ViewBuilder
@@ -400,9 +488,13 @@ struct MailDraftProposal: View {
             draftGlassChip(
                 title: "Améliorer",
                 systemImage: "sparkles",
-                disabled: busy || isStreaming,
-                action: onRetry
-            )
+                disabled: busy || isStreaming
+            ) {
+                improveExpanded.toggle()
+                if improveExpanded {
+                    improveFocused = true
+                }
+            }
             .accessibilityIdentifier(A11yID.Mail.draftRetry)
         }
     }

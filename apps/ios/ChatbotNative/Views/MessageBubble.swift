@@ -26,6 +26,10 @@ struct MessageBubble: View {
     var onSendFoundFileByMail: ((FilesFoundFileDTO) -> Void)? = nil
     /// True pendant le stream serveur (id stable) — évite le reparse Markdown à chaque token.
     var isLiveStreaming: Bool = false
+    /// Panel agent live : overlay au-dessus du texte streamé, sous le label Assistant.
+    var liveAgentOverlay: AgentActivityState? = nil
+    /// Snapshot agent terminé : dans le flux, sous le label, sans recouvrir la réponse.
+    var completedAgentRun: AgentActivityState? = nil
 
     private var isUser: Bool { message.role == "user" }
     private var isStreaming: Bool {
@@ -160,7 +164,7 @@ struct MessageBubble: View {
 
     /// Canvas lecture assistant — pas de bulle web, actions uniquement via context menu.
     private var assistantCanvas: some View {
-        VStack(alignment: .leading, spacing: AppTheme.space8) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text(isStreaming ? "Assistant…" : "Assistant")
                     .font(.system(size: 12, weight: .medium))
@@ -176,21 +180,28 @@ struct MessageBubble: View {
                 }
             }
 
-            let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
-                    // Markdown live pendant le stream (parse incrémental + cache inline).
-                    MarkdownMessageView(
-                        markdown: message.content,
-                        isStreaming: isStreaming,
-                        sources: sources
-                    )
+            // Label au-dessus ; le stream garde sa place ; le panneau Agent se superpose.
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: AppTheme.space8) {
+                    if let completed = completedAgentRun, liveAgentOverlay == nil {
+                        AgentActivityView(state: completed)
+                    }
+                    assistantBodyMarkdown
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .zIndex(0)
+
+                if let live = liveAgentOverlay {
+                    AgentActivityView(state: live)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .compositingGroup()
+                        .zIndex(10)
+                        .allowsHitTesting(true)
                 }
             }
         }
         .padding(.leading, AppTheme.space12)
-        .overlay(alignment: .leading) {
+        .background(alignment: .leading) {
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(
                     LinearGradient(
@@ -212,6 +223,21 @@ struct MessageBubble: View {
             }
         }
         .accessibilityHint("Appui long pour copier, régénérer ou partager")
+    }
+
+    @ViewBuilder
+    private var assistantBodyMarkdown: some View {
+        let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            if filesFound.isEmpty || !Self.looksLikeFileNarration(trimmed) {
+                MarkdownMessageView(
+                    markdown: message.content,
+                    isStreaming: isStreaming,
+                    sources: sources
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 
     private static func looksLikeFileNarration(_ text: String) -> Bool {

@@ -15,6 +15,48 @@ private struct ChatScrollMetrics: Equatable {
     var viewportHeight: CGFloat
 }
 
+/// Bouton compact « Nouveau chat » — capsule du thème, zone tactile 44 pt.
+private struct NewChatHeaderButton: View {
+    let action: () -> Void
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.secondary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            reduceTransparency
+                                ? AppTheme.surfaceActive
+                                : AppTheme.surfaceActive.opacity(0.82)
+                        )
+                )
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(AppTheme.chipStroke, lineWidth: 1)
+                }
+        }
+        .buttonStyle(NewChatHeaderPressStyle())
+        .frame(minWidth: AppTheme.touchMin, minHeight: AppTheme.touchMin)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Nouveau chat")
+        .accessibilityHint("Démarre une nouvelle conversation")
+        .accessibilityIdentifier(A11yID.Chat.newConversation)
+        .help("Nouveau chat")
+    }
+}
+
+private struct NewChatHeaderPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+
 struct ChatScreen: View {
     @Environment(\.themeRevision) private var themeRevision
     @EnvironmentObject private var session: AppSessionStore
@@ -26,6 +68,8 @@ struct ChatScreen: View {
     let conversation: ConversationDTO
     var onOpenHistory: (() -> Void)? = nil
     var onOpenSettings: (() -> Void)? = nil
+    /// Création d’une conversation générale via le mécanisme de `ChatRootView`.
+    var onNewChat: (() -> Void)? = nil
     /// Scope forcé (Assistant Mail/Files). Nil = Chat général.
     var forcedScope: ConversationScope? = nil
 
@@ -116,6 +160,11 @@ struct ChatScreen: View {
     /// Redescente : re-pin + masquer le bouton (hystérésis).
     private let scrollHideButtonThreshold: CGFloat = 160
     @State private var scrollToken = 0
+    /// Demande de focus composer (bouton Nouveau chat / génération nav).
+    @State private var composerFocusRequest = 0
+    @State private var lastConsumedComposerFocusGeneration: UInt64 = 0
+    /// Premier `loadMessages` terminé — évite un no-op « vide » pendant le chargement.
+    @State private var didFinishInitialLoad = false
     /// Hauteur visible du ScrollView — spacer pour ancrer le message user en haut.
     @State private var scrollViewportHeight: CGFloat = 0
     /// Après envoi : ancre ce message user en haut du viewport (style ChatGPT).
@@ -187,12 +236,6 @@ struct ChatScreen: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                if executionMode.showsLocalBanner {
-                    ExecutionModeBanner(label: executionMode.statusLabel)
-                        .padding(.horizontal, AppTheme.space12)
-                        .padding(.top, AppTheme.space8)
-                        .padding(.bottom, AppTheme.space4)
-                }
                 if let scope = forcedScope, scope == .mail {
                     PersistentProductActionsBar(
                         scope: scope,
@@ -245,7 +288,10 @@ struct ChatScreen: View {
                         .accessibilityIdentifier(A11yID.Chat.history)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if onNewChat != nil {
+                        NewChatHeaderButton(action: requestNewChat)
+                    }
                     if let onOpenSettings {
                         Button(action: onOpenSettings) {
                             Image(systemName: "person.crop.circle")
@@ -277,6 +323,7 @@ struct ChatScreen: View {
             chromeById = ConversationSessionStore.chrome(for: conversation.id)
             restoreDraftCardSnapshot()
             persistActiveConversation()
+            consumePendingComposerFocus()
             if messages.isEmpty, let cached = TabMemoryCache.chat(conversationId: conversation.id), !cached.isEmpty {
                 // Fenêtre récente seulement — pas tout le cache (RAM).
                 if cached.count > historyInitialPageSize {
@@ -329,6 +376,9 @@ struct ChatScreen: View {
             nav.chatComposerPrefill = nil
             AppHaptics.light()
         }
+        .onChange(of: nav.composerFocusGeneration) { _, _ in
+            consumePendingComposerFocus()
+        }
         .onChange(of: nav.mailAttachHandoffs) { _, items in
             guard forcedScope == .mail, !items.isEmpty else { return }
             Task { await ensureMailPendingAttachments() }
@@ -357,6 +407,7 @@ struct ChatScreen: View {
             hasMoreOlderMessages = false
             isLoadingOlderMessages = false
             scrollAnchorAfterPrepend = nil
+            didFinishInitialLoad = false
             Task { await streamingService.cancel() }
             if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
                 Task { await LocalInferenceEngine.shared.cancel() }
@@ -411,9 +462,10 @@ struct ChatScreen: View {
         }
         .fileImporter(
             isPresented: $showDocImporter,
-            allowedContentTypes: [.pdf, .plainText, .utf8PlainText, .data, .image],
-            allowsMultipleSelection: false
+            allowedContentTypes: [.pdf, .plainText, .utf8PlainText, .data, .image, .item],
+            allowsMultipleSelection: true
         ) { result in
+            showDocImporter = false
             Task { await handleImportedDoc(result) }
         }
     }
@@ -453,19 +505,17 @@ struct ChatScreen: View {
                                 messageRow(msg)
                             }
                             .id(msg.id)
+                            .zIndex(
+                                streamingAssistantId == msg.id && shouldShowLiveAgentStrip ? 8 : 0
+                            )
                         }
-                        // Live agent — dans le fil, au-dessus de la réponse (pas du composer).
-                        if shouldShowLiveAgentStrip {
-                            AgentActivityView(state: agentActivity)
-                                .id("agent-live")
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        }
-                        if !streamingText.isEmpty && streamingAssistantId == nil && !awaitingDraftRewrite {
+                        // Live agent + stream : même bulle (label Assistant au-dessus, panel en overlay).
+                        if shouldShowStandaloneStreamingBubble {
                             MessageBubble(
                                 message: MessageDTO(
                                     id: "streaming",
                                     role: "assistant",
-                                    content: streamingText,
+                                    content: awaitingDraftRewrite ? "" : streamingText,
                                     createdAt: nil
                                 ),
                                 token: session.token,
@@ -504,12 +554,12 @@ struct ChatScreen: View {
                                 },
                                 onSendFoundFileByMail: { file in
                                     sendFoundFileByMail(file)
-                                }
+                                },
+                                liveAgentOverlay: shouldShowLiveAgentStrip ? agentActivity : nil
                             )
-                            .id("streaming")
+                            .id(shouldShowLiveAgentStrip ? "agent-live" : "streaming")
+                            .zIndex(shouldShowLiveAgentStrip ? 8 : 0)
                         } else if streamingText.isEmpty && !streamFilesFound.isEmpty && streamingAssistantId == nil {
-                            // Plus de bulle « streaming-files » séparée : on matérialise
-                            // immédiatement un message assistant pour éviter flash/double carte.
                             Color.clear.frame(height: 0).id("streaming-files-placeholder")
                         } else if isSending,
                                   streamingText.isEmpty,
@@ -517,7 +567,6 @@ struct ChatScreen: View {
                                   streamingAssistantId == nil,
                                   !shouldShowLiveAgentStrip,
                                   let thinkingKind {
-                            // Indicateur ChatGPT-like dans le fil, à l’emplacement de la réponse.
                             InStreamWorkingIndicator(label: thinkingKind.label)
                                 .id("working-indicator")
                         }
@@ -550,11 +599,13 @@ struct ChatScreen: View {
                                 onEditToggle: {
                                     draftCardEditing.toggle()
                                     if draftCardEditing {
-                                        // Ne pas requêter avec la liste complète — attendre la frappe.
                                         draftRecipientSuggestions = []
                                     } else {
                                         draftRecipientSuggestions = []
                                     }
+                                },
+                                onImprove: { instruction in
+                                    Task { await rewriteOpenDraft(instruction: instruction) }
                                 },
                                 onRetry: {
                                     beginDraftImproveFromComposer()
@@ -564,6 +615,9 @@ struct ChatScreen: View {
                                 },
                                 onAttach: {
                                     showDocImporter = true
+                                },
+                                onRemoveAttachment: { chip in
+                                    removeDraftCardAttachment(chip)
                                 },
                                 onDismiss: {
                                     dismissDraftCard()
@@ -781,14 +835,12 @@ struct ChatScreen: View {
     private func messageRow(_ msg: MessageDTO) -> some View {
         let chrome = chromeById[msg.id] ?? MessageChromeMeta()
         let liveStreaming = streamingAssistantId == msg.id && isSending
-        if let run = chrome.agentRun {
-            // Pendant le run : le strip live (timer qui tick) a priorité sur le snapshot chrome figé.
-            let hideFrozenChrome = liveStreaming && shouldShowLiveAgentStrip
-            if !hideFrozenChrome {
-                AgentActivityView(state: run.asActivityState)
-                    .id("agent-\(msg.id)")
-            }
-        }
+        let liveOverlay: AgentActivityState? =
+            (liveStreaming && shouldShowLiveAgentStrip) ? agentActivity : nil
+        let completedRun: AgentActivityState? = {
+            if liveOverlay != nil { return nil }
+            return chrome.agentRun?.asActivityState
+        }()
         MessageBubble(
             message: msg,
             token: session.token,
@@ -838,7 +890,9 @@ struct ChatScreen: View {
             onSendFoundFileByMail: { file in
                 sendFoundFileByMail(file)
             },
-            isLiveStreaming: liveStreaming
+            isLiveStreaming: liveStreaming,
+            liveAgentOverlay: liveOverlay,
+            completedAgentRun: completedRun
         )
     }
 
@@ -927,14 +981,76 @@ struct ChatScreen: View {
 
     /// Réécrit le brouillon ouvert avec une consigne (cachée) → met à jour la carte.
     private func rewriteOpenDraft(instruction: String? = nil) async {
-        guard draftCardId != nil, !isSending else { return }
+        guard !isSending else { return }
         let text = (instruction?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
             ?? "Réécris ce brouillon de façon plus claire et naturelle."
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
+            await rewriteOpenDraftOnDevice(instruction: text)
+            return
+        }
         await send(
             forcedText: text,
             hideUserMessage: true,
             rewriteDraftCard: true
         )
+    }
+
+    /// Réécriture on-device : stream dans la carte brouillon, pas dans le fil.
+    private func rewriteOpenDraftOnDevice(instruction: String) async {
+        awaitingDraftRewrite = true
+        suppressAssistantNarration = true
+        draftCardCollapsed = false
+        draftInConversation = true
+        draftCardStreaming = true
+        draftCardStatus = "Amélioration…"
+        draftCardEditing = false
+        thinkingKind = .custom("Amélioration du brouillon…")
+        let previous = draftCardText
+        draftCardText = ""
+        defer {
+            isSending = false
+            sendTask = nil
+            awaitingDraftRewrite = false
+            draftCardStreaming = false
+            draftCardStatus = "Brouillon"
+            suppressAssistantNarration = false
+            thinkingKind = nil
+        }
+        do {
+            if !LocalModelManager.shared.isReady {
+                await LocalModelManager.shared.loadIntoEngine()
+            }
+            guard LocalModelManager.shared.isReady else {
+                throw LocalMailAssistantError.modelNotReady
+            }
+            let body = try await MailDraftRewriteWorkflow.run(
+                .init(
+                    instruction: instruction,
+                    body: previous,
+                    to: draftCardTo,
+                    subject: draftCardSubject
+                ),
+                runtime: LocalAIRuntime.shared,
+                onToken: { token in
+                    if self.thinkingKind != nil { self.thinkingKind = nil }
+                    self.draftCardText += token
+                }
+            )
+            let cleaned = MailDraftRewriteWorkflow.stripMeta(body)
+            guard cleaned.count >= 8 else {
+                throw LocalMailAssistantError.inference("Réécriture vide.")
+            }
+            draftCardText = cleaned
+            persistDraftCardSnapshot()
+            AppHaptics.success()
+        } catch is CancellationError {
+            draftCardText = previous
+        } catch {
+            draftCardText = previous
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
     }
     private func runMailSummarizeProduct(threadId: String) async {
         guard !isSending else { return }
@@ -1209,20 +1325,29 @@ struct ChatScreen: View {
             draftRecipientSuggestions = []
             return
         }
+        let confirmed = draftCardTo
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let local = MailRecipientDirectory.shared.suggest(query: q, excluding: confirmed)
+        draftRecipientSuggestions = local
         draftRecipientSuggestTask = Task {
-            try? await Task.sleep(nanoseconds: 280_000_000)
+            try? await Task.sleep(nanoseconds: 220_000_000)
             guard !Task.isCancelled else { return }
+            if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+                return
+            }
             do {
                 let rows = try await client.suggestMailRecipients(query: q)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    draftRecipientSuggestions = rows
+                    var merged = local
+                    for row in rows where !merged.contains(where: { $0.email.caseInsensitiveCompare(row.email) == .orderedSame }) {
+                        merged.append(row)
+                    }
+                    draftRecipientSuggestions = Array(merged.prefix(6))
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    draftRecipientSuggestions = []
-                }
             }
         }
     }
@@ -1372,6 +1497,7 @@ struct ChatScreen: View {
             }
             await attachFilesEntryToComposer(fileId: item.fileId, filename: item.filename)
         }
+        promotePendingAttachmentsToDraftCard()
         AppHaptics.success()
     }
 
@@ -1416,6 +1542,9 @@ struct ChatScreen: View {
                         sourceFileId: fileId,
                         localFileURL: url
                     )
+                }
+                if let att = pendingAttachments.first(where: { $0.id == tempId }) {
+                    attachPendingToOpenDraftCard(att)
                 }
                 return
             }
@@ -1464,26 +1593,37 @@ struct ChatScreen: View {
     }
 
     private func sendDraftCard() async {
-        guard let draftId = draftCardId, !draftCardSent else { return }
+        guard !draftCardSent else { return }
+        let body = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let to = parseDraftRecipients(draftCardTo)
+        guard !body.isEmpty else {
+            error = "Le brouillon est vide."
+            return
+        }
         draftCardBusy = true
         defer { draftCardBusy = false }
         do {
-            let body = draftCardText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let to = parseDraftRecipients(draftCardTo)
-            try await client.updateEmailDraft(
-                id: draftId,
-                bodyText: body,
-                to: to.isEmpty ? nil : to,
-                subject: draftCardSubject
-            )
-            try await client.validateEmailDraft(id: draftId)
-            let proposal = try await client.proposeEmailSend(draftId: draftId)
-            try await client.confirmEmailSend(
-                actionId: proposal.actionId,
-                confirmationToken: proposal.confirmationToken,
-                conversationId: conversation.id
-            )
-            // Carte → reçu vert ; PJ composer retirées.
+            if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+                try await sendDraftCardOnDevice(body: body, to: to)
+            } else {
+                guard let draftId = draftCardId else {
+                    error = "Brouillon incomplet — réessaie."
+                    return
+                }
+                try await client.updateEmailDraft(
+                    id: draftId,
+                    bodyText: body,
+                    to: to.isEmpty ? nil : to,
+                    subject: draftCardSubject
+                )
+                try await client.validateEmailDraft(id: draftId)
+                let proposal = try await client.proposeEmailSend(draftId: draftId)
+                try await client.confirmEmailSend(
+                    actionId: proposal.actionId,
+                    confirmationToken: proposal.confirmationToken,
+                    conversationId: conversation.id
+                )
+            }
             pendingAttachments = []
             if forcedScope == .mail {
                 nav.clearMailStickyAttachments()
@@ -1505,6 +1645,37 @@ struct ChatScreen: View {
             self.error = error.localizedDescription
             AppHaptics.warning()
         }
+    }
+
+    private func sendDraftCardOnDevice(body: String, to: [String]) async throws {
+        guard GmailOAuthSession.shared.isConnected else {
+            throw LocalMailAssistantError.gmailNotConnected
+        }
+        guard !to.isEmpty else {
+            throw DirectGmailError.invalidArgument("Ajoute au moins un destinataire.")
+        }
+        var files: [(filename: String, mimeType: String, data: Data)] = []
+        for chip in draftCardAttachments {
+            if let path = chip.localFilePath, let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                files.append((chip.filename, chip.mimeType, data))
+                continue
+            }
+            if let att = pendingAttachments.first(where: { $0.id == chip.id }) {
+                if let data = att.fileData ?? att.localData {
+                    files.append((chip.filename, chip.mimeType, data))
+                } else if let url = att.localFileURL, let data = try? Data(contentsOf: url) {
+                    files.append((chip.filename, chip.mimeType, data))
+                }
+            }
+        }
+        let gmail = DirectGmailClient()
+        try await gmail.sendMessage(
+            to: to.joined(separator: ", "),
+            subject: draftCardSubject,
+            body: MailThreadPromptBuilder.plainBodyForSend(body),
+            threadId: forcedActiveContext?.mailThreadId,
+            attachments: files
+        )
     }
 
     /// Croix : masque la carte du fil — brouillon conservé localement + serveur, récupérable.
@@ -1543,7 +1714,8 @@ struct ChatScreen: View {
                 status: draftCardStatus,
                 sent: draftCardSent,
                 inConversation: true,
-                collapsed: draftCardCollapsed && !draftCardSent
+                collapsed: draftCardCollapsed && !draftCardSent,
+                attachments: draftCardAttachments
             )
         )
     }
@@ -1561,6 +1733,9 @@ struct ChatScreen: View {
         draftCardCollapsed = snap.collapsed && !snap.sent
         draftInConversation = snap.inConversation || snap.sent || snap.draftId != nil
         draftCardEditing = false
+        if let atts = snap.attachments, !atts.isEmpty {
+            draftCardAttachments = atts
+        }
         if let id = snap.draftId, !id.isEmpty {
             Task { await refreshDraftCardAttachments(draftId: id) }
         }
@@ -1643,9 +1818,7 @@ struct ChatScreen: View {
         }
     }
 
-    /// Après « Améliorer » : seule une vraie carte `draft_preview` (outil) met à jour le brouillon.
-    /// Ne JAMAIS PATCH-er avec le texte streamé — c’était la cause des corps absurdes
-    /// (échecs d’outils, listes de mails, etc. collés dans le brouillon).
+    /// Après « Améliorer » : `draft_preview` gagne ; sinon on applique le texte réécrit.
     private func finishDraftRewriteIfNeeded(appliedViaPreview: Bool, fallbackText: String) async {
         guard awaitingDraftRewrite else { return }
         defer {
@@ -1656,10 +1829,18 @@ struct ChatScreen: View {
         }
         if appliedViaPreview {
             AppHaptics.success()
+            persistDraftCardSnapshot()
             return
         }
-        _ = fallbackText
-        // Corps inchangé ; prévenir l’utilisateur plutôt que d’écraser avec de la narration.
+        let cleaned = MailDraftRewriteWorkflow.stripMeta(fallbackText)
+        if cleaned.count >= 8 {
+            draftCardText = cleaned
+            draftCardCollapsed = false
+            draftInConversation = true
+            persistDraftCardSnapshot()
+            AppHaptics.success()
+            return
+        }
         error = "L’amélioration n’a pas pu mettre à jour le brouillon. Réessaie avec une consigne plus précise."
         AppHaptics.warning()
     }
@@ -1726,6 +1907,46 @@ Corps actuel:
         !draftCardCollapsed
             && !draftCardSent
             && (draftInConversation || draftCardId != nil || draftCardStreaming)
+    }
+
+    /// Conversation actuellement affichée, sans message ni génération.
+    private var isBlankConversationDisplayed: Bool {
+        didFinishInitialLoad
+            && messages.isEmpty
+            && streamingText.isEmpty
+            && !isSending
+            && pendingAttachments.isEmpty
+            && !draftCardVisible
+    }
+
+    private func consumePendingComposerFocus() {
+        let generation = nav.composerFocusGeneration
+        guard generation > 0, generation != lastConsumedComposerFocusGeneration else { return }
+        lastConsumedComposerFocusGeneration = generation
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            composerFocusRequest += 1
+        }
+    }
+
+    private func requestNewChat() {
+        guard onNewChat != nil else { return }
+        if isBlankConversationDisplayed {
+            AppHaptics.light()
+            composerFocusRequest += 1
+            return
+        }
+        AppHaptics.light()
+        sendTask?.cancel()
+        sendTask = nil
+        sendGeneration &+= 1
+        isSending = false
+        thinkingKind = nil
+        Task { await streamingService.cancel() }
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            Task { await LocalInferenceEngine.shared.cancel() }
+        }
+        onNewChat?()
     }
 
     /// Brouillon masqué par la croix — récupérable sans être affiché dans le fil.
@@ -1823,7 +2044,9 @@ Corps actuel:
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    RuntimeStatusPill(status: displayRuntimeStatus)
+                    if !usesOnDeviceAI {
+                        RuntimeStatusPill(status: displayRuntimeStatus)
+                    }
                     if !assistantReadyForSend {
                         Text(sendBlockedHint)
                             .font(CNFont.caption2)
@@ -1940,6 +2163,7 @@ Corps actuel:
                 thinkingAvailable: thinkingToggleAvailable,
                 toolChannel: toolChannel,
                 showsToolChannelPicker: showsToolChannelPicker,
+                focusRequest: composerFocusRequest,
                 onModeChange: { mode in applyMode(mode) },
                 onWebChange: { enabled in applyWeb(enabled) },
                 onModelChange: { modelId in Task { await applyModel(modelId) } },
@@ -2113,6 +2337,7 @@ private var sendBlockedHint: String {
     }
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
+        defer { didFinishInitialLoad = true }
         if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             let local = LocalChatStore.shared.messages(for: conversation.id)
             messages = local.map { $0.asMessageDTO() }
@@ -2736,6 +2961,9 @@ private var sendBlockedHint: String {
                         isUploading: false
                     )
                 )
+                if let att = pendingAttachments.first(where: { $0.id == tempId }) {
+                    attachPendingToOpenDraftCard(att)
+                }
                 return
             }
             pendingAttachments.append(
@@ -2779,82 +3007,140 @@ private var sendBlockedHint: String {
     private func handleImportedDoc(_ result: Result<[URL], Error>) async {
         switch result {
         case .failure(let err):
+            if Self.isDocumentPickerCancellation(err) { return }
             self.error = err.localizedDescription
         case .success(let urls):
-            guard let url = urls.first else { return }
-            let tempId = "local-\(UUID().uuidString)"
+            guard !urls.isEmpty else { return }
             uploading = true
             defer { uploading = false }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let data = try Data(contentsOf: url)
-                let name = url.lastPathComponent
-                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
-                    ?? "application/octet-stream"
-                let isImage = mime.hasPrefix("image/")
-                var payload = data
-                var outMime = mime
-                var preview: Data?
-                if isImage {
-                    let thumb = ImagePipeline.thumbnail(data: data, maxPixelSize: 280)
-                    preview = thumb?.jpegData(compressionQuality: 0.78)
-                    let compressed = ImagePipeline.compressForUpload(data)
-                    payload = compressed.0
-                    outMime = compressed.1
-                }
-                pendingAttachments.append(
-                    UploadedAttachment(
-                        id: tempId,
-                        filename: name,
-                        mimeType: outMime,
-                        sizeBytes: payload.count,
-                        previewData: preview,
-                        isUploading: true
-                    )
-                )
-                if usesOnDeviceAI {
-                    let dir = LocalFilesStore.documentsDirectory.appendingPathComponent("LocalAttachments", isDirectory: true)
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    let dest = dir.appendingPathComponent("\(UUID().uuidString)-\(name)")
-                    try payload.write(to: dest, options: .atomic)
-                    if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
-                        pendingAttachments[idx] = UploadedAttachment(
-                            id: tempId,
-                            filename: name,
-                            mimeType: outMime,
-                            sizeBytes: payload.count,
-                            previewData: preview,
-                            fileData: isImage ? payload : nil,
-                            isUploading: false,
-                            localFileURL: dest,
-                            localData: isImage ? nil : payload
-                        )
-                    }
-                    return
-                }
-                let uploaded = try await client.uploadAttachment(
-                    conversationId: conversation.id,
+            for url in urls {
+                await importOneDocument(url)
+            }
+        }
+    }
+
+    private func importOneDocument(_ url: URL) async {
+        let tempId = "local-\(UUID().uuidString)"
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let name = url.lastPathComponent
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            let isImage = mime.hasPrefix("image/")
+            var payload = data
+            var outMime = mime
+            var preview: Data?
+            if isImage {
+                let thumb = ImagePipeline.thumbnail(data: data, maxPixelSize: 280)
+                preview = thumb?.jpegData(compressionQuality: 0.78)
+                let compressed = ImagePipeline.compressForUpload(data)
+                payload = compressed.0
+                outMime = compressed.1
+            }
+            pendingAttachments.append(
+                UploadedAttachment(
+                    id: tempId,
                     filename: name,
                     mimeType: outMime,
-                    fileData: payload
+                    sizeBytes: payload.count,
+                    previewData: preview,
+                    isUploading: true
+                )
+            )
+            if usesOnDeviceAI {
+                let dir = LocalFilesStore.documentsDirectory.appendingPathComponent("LocalAttachments", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let dest = dir.appendingPathComponent("\(UUID().uuidString)-\(name)")
+                try payload.write(to: dest, options: .atomic)
+                let local = UploadedAttachment(
+                    id: tempId,
+                    filename: name,
+                    mimeType: outMime,
+                    sizeBytes: payload.count,
+                    previewData: preview,
+                    fileData: isImage ? payload : nil,
+                    isUploading: false,
+                    localFileURL: dest,
+                    localData: isImage ? nil : payload
                 )
                 if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
-                    pendingAttachments[idx] = UploadedAttachment(
-                        id: uploaded.id,
-                        filename: uploaded.filename,
-                        mimeType: uploaded.mimeType,
-                        sizeBytes: uploaded.sizeBytes,
-                        previewData: preview,
-                        isUploading: false
-                    )
+                    pendingAttachments[idx] = local
                 }
-                // Brouillon mail ouvert : rattacher la PJ au brouillon (pas seulement au chat).
-                await syncAttachmentsToOpenDraft([uploaded.id])
-            } catch {
-                pendingAttachments.removeAll { $0.id == tempId }
-                self.error = error.localizedDescription
+                attachPendingToOpenDraftCard(local)
+                return
             }
+            let uploaded = try await client.uploadAttachment(
+                conversationId: conversation.id,
+                filename: name,
+                mimeType: outMime,
+                fileData: payload
+            )
+            let stored = UploadedAttachment(
+                id: uploaded.id,
+                filename: uploaded.filename,
+                mimeType: uploaded.mimeType,
+                sizeBytes: uploaded.sizeBytes,
+                previewData: preview,
+                isUploading: false
+            )
+            if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
+                pendingAttachments[idx] = stored
+            }
+            attachPendingToOpenDraftCard(stored)
+            await syncAttachmentsToOpenDraft([uploaded.id])
+        } catch {
+            pendingAttachments.removeAll { $0.id == tempId }
+            self.error = error.localizedDescription
+        }
+    }
+
+    private static func isDocumentPickerCancellation(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain && ns.code == NSUserCancelledError { return true }
+        if ns.domain == "com.apple.UIKit.documentPicker" { return true }
+        return false
+    }
+
+    private func attachPendingToOpenDraftCard(_ att: UploadedAttachment) {
+        guard !draftCardSent, !att.isUploading else { return }
+        let openDraft = draftCardVisible || draftInConversation || draftCardId != nil
+            || forcedScope == .mail
+        guard openDraft else { return }
+        let chip = EmailDraftAttachmentChip(
+            id: att.id,
+            filename: att.filename,
+            mimeType: att.mimeType,
+            sizeBytes: att.sizeBytes,
+            localFilePath: att.localFileURL?.path
+        )
+        if !draftCardAttachments.contains(where: { $0.id == chip.id }) {
+            draftCardAttachments.append(chip)
+        }
+        draftCardCollapsed = false
+        draftInConversation = true
+        persistDraftCardSnapshot()
+        AppHaptics.success()
+    }
+
+    private func removeDraftCardAttachment(_ chip: EmailDraftAttachmentChip) {
+        draftCardAttachments.removeAll { $0.id == chip.id }
+        pendingAttachments.removeAll { $0.id == chip.id }
+        if let path = chip.localFilePath, chip.id.hasPrefix("local-") {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        persistDraftCardSnapshot()
+        AppHaptics.light()
+        if let draftId = draftCardId, !draftId.isEmpty, !chip.id.hasPrefix("local-"),
+           !(session.localOnlyMode || executionMode.routesLocalCapableOnDevice) {
+            Task { await syncAttachmentsToOpenDraft(draftCardAttachments.map(\.id)) }
+        }
+    }
+
+    private func promotePendingAttachmentsToDraftCard() {
+        for att in pendingAttachments where !att.isUploading {
+            attachPendingToOpenDraftCard(att)
         }
     }
 
@@ -3513,6 +3799,15 @@ private var sendBlockedHint: String {
         // IA locale (avant mail reply produit / SSE distant).
         // Lock synchrone immédiat — un 2ᵉ tap est refusé avant tout `await`.
         if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
+            let wantsRewrite = rewriteDraftCard
+                || (draftImprovePending && (draftCardId != nil || !draftCardText.isEmpty)
+                    && forcedText == nil && options?.regenerate != true)
+            if wantsRewrite, !draftCardText.isEmpty || draftCardId != nil {
+                guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
+                draftImprovePending = false
+                await rewriteOpenDraftOnDevice(instruction: rawText)
+                return
+            }
             guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
             await sendViaLocalLLM(
                 rawText: rawText,
@@ -4081,6 +4376,14 @@ private var sendBlockedHint: String {
         shouldShowLiveAgentStrip
     }
 
+    /// Bulle live hors `ForEach` : panel agent et/ou tokens avant ancre message.
+    private var shouldShowStandaloneStreamingBubble: Bool {
+        if streamingAssistantId != nil { return false }
+        if awaitingDraftRewrite { return false }
+        if shouldShowLiveAgentStrip { return true }
+        return !streamingText.isEmpty
+    }
+
     /// Panel agent live : uniquement si l’utilisateur a choisi Agent.
     /// Chat + web search seul → ThinkingStatusView (pas « Préparation du plan… »).
     private var shouldShowLiveAgentStrip: Bool {
@@ -4606,9 +4909,11 @@ private var sendBlockedHint: String {
                     agentActivity.phase = "synthesis"
                     activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
                 }
-                // Réécriture brouillon : accumuler pour fallback, ne pas afficher dans le fil.
+                // Réécriture brouillon : accumuler pour la carte, pas le fil.
                 if awaitingDraftRewrite || suppressAssistantNarration {
                     streamingText = streamAccum.text
+                    draftCardText = streamAccum.text
+                    draftCardStreaming = true
                     thinkingKind = nil
                     break
                 }

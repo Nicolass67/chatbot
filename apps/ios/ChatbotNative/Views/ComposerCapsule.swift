@@ -24,6 +24,8 @@ struct ComposerCapsule: View {
     var toolChannel: ComposerToolChannel = .web
     /// `false` dans les assistants Mail / Files (canal imposé).
     var showsToolChannelPicker: Bool = true
+    /// Incrémenté pour placer le focus clavier sur le champ (Nouveau chat).
+    var focusRequest: Int = 0
 
     var onModeChange: ((String) -> Void)?
     var onWebChange: ((Bool) -> Void)?
@@ -122,6 +124,15 @@ struct ComposerCapsule: View {
         }
         .accessibilityIdentifier(A11yID.Chat.composer)
         .animation(.spring(response: AppTheme.motionQuick, dampingFraction: 0.82), value: isSending)
+        .onChange(of: focusRequest) { _, newValue in
+            guard newValue > 0 else { return }
+            fieldFocused = true
+        }
+        .onAppear {
+            if focusRequest > 0 {
+                fieldFocused = true
+            }
+        }
         .sheet(isPresented: $showTools) {
             ChatToolsSheet(
                 chatMode: chatMode,
@@ -329,37 +340,39 @@ struct ChatToolsSheet: View {
                     }
                 }
 
-                Section {
-                    if modelSwitching {
-                        HStack(spacing: AppTheme.space8) {
-                            ProgressView().controlSize(.small)
-                            Text("Changement de modèle…")
-                                .foregroundStyle(AppTheme.muted)
+                if !models.isEmpty {
+                    Section {
+                        if modelSwitching {
+                            HStack(spacing: AppTheme.space8) {
+                                ProgressView().controlSize(.small)
+                                Text("Changement de modèle…")
+                                    .foregroundStyle(AppTheme.muted)
+                            }
+                            .listRowBackground(AppTheme.surface)
                         }
-                        .listRowBackground(AppTheme.surface)
-                    }
-                    ForEach(models) { model in
-                        Button {
-                            localModel = model.id
-                            AppHaptics.selection()
-                            onModelChange(model.id)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                    .foregroundStyle(AppTheme.foreground)
-                                    .multilineTextAlignment(.leading)
-                                Spacer()
-                                if localModel == model.id {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(AppTheme.accent)
+                        ForEach(models) { model in
+                            Button {
+                                localModel = model.id
+                                AppHaptics.selection()
+                                onModelChange(model.id)
+                            } label: {
+                                HStack {
+                                    Text(model.name)
+                                        .foregroundStyle(AppTheme.foreground)
+                                        .multilineTextAlignment(.leading)
+                                    Spacer()
+                                    if localModel == model.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(AppTheme.accent)
+                                    }
                                 }
                             }
+                            .disabled(modelSwitching && localModel != model.id)
+                            .listRowBackground(AppTheme.surface)
                         }
-                        .disabled(modelSwitching && localModel != model.id)
-                        .listRowBackground(AppTheme.surface)
+                    } header: {
+                        Text("Modèle")
                     }
-                } header: {
-                    Text("Modèle")
                 }
 
                 if !reasoningModes.isEmpty {

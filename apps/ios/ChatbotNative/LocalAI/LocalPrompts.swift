@@ -36,6 +36,17 @@ enum LocalPrompts {
     - Markdown autorisé pour l’affichage. Pas de commentaire méta.
     """
 
+    static let mailDraftRewrite = """
+    Tu réécris UNIQUEMENT le corps d’un e-mail existant selon la consigne.
+    Règles :
+    - Sortie = le nouveau corps du mail, rien d’autre.
+    - Pas d’explication, pas de titre, pas de « voici une version », pas de markdown fence.
+    - Conserve le sens et les faits ; applique le ton / style demandé.
+    - Ne change pas destinataires ni objet (ils sont gérés ailleurs).
+    - N’invente pas de pièces jointes, d’accords ou de dates.
+    - N’ajoute PAS de signature.
+    """
+
     static let mailMailbox = """
     MAIL CONTEXT AVAILABLE : l’application a récupéré les mails Gmail ci-dessous.
     Tu DOIS t’en servir. N’écris JAMAIS que tu n’as pas accès aux mails, à Gmail ou à l’historique.
@@ -51,6 +62,7 @@ enum LocalPrompts {
         case .conversation: return conversation
         case .mailSummary: return mailSummary
         case .mailReplyDraft: return mailReplyDraft
+        case .mailDraftRewrite: return mailDraftRewrite
         case .mailExtract: return mailMailbox
         }
     }
@@ -80,5 +92,6 @@ enum LocalPromptKind: String, Sendable, CaseIterable {
     case conversation
     case mailSummary
     case mailReplyDraft
+    case mailDraftRewrite
     case mailExtract
 }

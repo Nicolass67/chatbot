@@ -9,6 +9,7 @@ struct ChatRootView: View {
     @State private var booting = true
     @State private var bootError: String?
     @State private var showSwitcher = false
+    @State private var newChatInFlight = false
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -25,7 +26,8 @@ struct ChatRootView: View {
                     ChatScreen(
                         conversation: conversation,
                         onOpenHistory: { showSwitcher = true },
-                        onOpenSettings: { nav.openSettings() }
+                        onOpenSettings: { nav.openSettings() },
+                        onNewChat: { Task { await startNewChatFromHeader() } }
                     )
                     .id(conversation.id)
                 } else if booting {
@@ -46,7 +48,7 @@ struct ChatRootView: View {
         .task {
             if UserDefaults.standard.bool(forKey: "intent.requestNewChat") {
                 UserDefaults.standard.set(false, forKey: "intent.requestNewChat")
-                await bootOrRestoreGeneral(forceNew: true)
+                await startNewChatFromHeader()
             } else if let req = nav.chatContextRequest {
                 await openContextChat(req)
             } else if conversation == nil {
@@ -81,7 +83,7 @@ struct ChatRootView: View {
             guard let id else { return }
             if id == "__new__" {
                 nav.openConversationId = nil
-                Task { await bootOrRestoreGeneral(forceNew: true) }
+                Task { await startNewChatFromHeader() }
                 return
             }
             Task { await openExisting(id: id) }
@@ -99,6 +101,44 @@ struct ChatRootView: View {
                     conversationId: conversation.id,
                     scope: .general
                 )
+            }
+        }
+    }
+
+    /// « Nouveau chat » header / intent / `__new__` — même création que le switcher.
+    private func startNewChatFromHeader() async {
+        if newChatInFlight { return }
+        newChatInFlight = true
+        defer { newChatInFlight = false }
+        nav.composerFocusGeneration &+= 1
+        if isCurrentConversationBlank() { return }
+        await createGeneralConversation()
+    }
+
+    /// Conversation affichée sans aucun message (local). Le PC est géré par ChatScreen.
+    private func isCurrentConversationBlank() -> Bool {
+        guard let conversation else { return false }
+        guard useLocalChat else { return false }
+        LocalChatStore.shared.reloadConversations()
+        return LocalChatStore.shared.messages(for: conversation.id).isEmpty
+    }
+
+    /// Crée une conversation générale et l’active — ne supprime pas l’ancienne.
+    private func createGeneralConversation() async {
+        if useLocalChat {
+            let created = LocalChatStore.shared.createConversation(scope: .general)
+            let dto = created.asConversationDTO()
+            ConversationSessionStore.save(conversationId: dto.id, scope: .general)
+            conversation = dto
+            return
+        }
+        do {
+            let created = try await client.createConversation(scope: .general)
+            ConversationSessionStore.save(conversationId: created.id, scope: .general)
+            conversation = created
+        } catch {
+            if case APIClientError.unauthorized = error {
+                await session.logout()
             }
         }
     }
