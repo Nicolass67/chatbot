@@ -1,5 +1,15 @@
 import Foundation
 
+/// Opération exclusive sur le GGUF / moteur — une seule à la fois (`LocalModelManager`).
+/// Reste tenue pendant les `await` (contrairement au `busyAction` UI).
+enum ModelExclusiveOperation: String, Equatable, Sendable {
+    case install
+    case delete
+    case load
+    case unload
+    case generate
+}
+
 /// Cycle de vie d’un modèle local (téléchargement → chargement → génération).
 enum LocalModelInstallState: Equatable, Sendable {
     case notInstalled

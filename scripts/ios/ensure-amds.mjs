@@ -40,13 +40,15 @@ function tcpOpen(host, port, timeoutMs = 400) {
 
 function launchStoreItunes() {
   if (process.platform !== "win32") return false;
-  const ps = `
-$ErrorActionPreference = 'Stop'
-$app = Get-StartApps | Where-Object { $_.Name -match 'iTunes' } | Select-Object -First 1
-if (-not $app) { Write-Output 'NO_ITUNES'; exit 2 }
-Start-Process ("shell:AppsFolder\\' + $app.AppID)
-Write-Output ('LAUNCHED:' + $app.AppID)
-`;
+  // Avoid nested quotes in -Command (PowerShell "terminator missing" on Win FR).
+  const ps = [
+    "$ErrorActionPreference = 'Stop'",
+    "$app = Get-StartApps | Where-Object { $_.Name -match 'iTunes' } | Select-Object -First 1",
+    "if (-not $app) { Write-Output 'NO_ITUNES'; exit 2 }",
+    "$target = 'shell:AppsFolder\\' + $app.AppID",
+    "Start-Process $target",
+    "Write-Output ('LAUNCHED:' + $app.AppID)",
+  ].join("; ");
   const r = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],

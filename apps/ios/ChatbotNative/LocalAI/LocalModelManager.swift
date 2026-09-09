@@ -19,6 +19,10 @@ final class LocalModelManager: ObservableObject {
     @Published private(set) var activeModelId: String = LocalModelDescriptor.primary.id
     @Published private(set) var installedBytes: Int64 = 0
 
+    /// Verrou exclusif tenu pour toute la durée d’une mutation (y compris pendant `await`).
+    /// `busyAction` UI n’est **pas** une protection suffisante.
+    private(set) var exclusiveOperation: ModelExclusiveOperation?
+
     private var downloadTask: URLSessionDownloadTask?
     private var downloadDelegate: DownloadDelegate?
     private var session: URLSession?
@@ -146,6 +150,9 @@ final class LocalModelManager: ObservableObject {
             ])
             return
         }
+        guard beginExclusive(.install) else { return }
+        defer { endExclusive(.install) }
+
         if case .downloading = state {
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
@@ -306,8 +313,10 @@ final class LocalModelManager: ObservableObject {
     }
 
     func deleteModel() async {
+        guard beginExclusive(.delete) else { return }
+        defer { endExclusive(.delete) }
         cancelDownload()
-        await unload()
+        await performUnload()
         try? fileManager.removeItem(at: modelFileURL)
         try? fileManager.removeItem(at: partialDownloadURL)
         installedBytes = 0
@@ -324,6 +333,9 @@ final class LocalModelManager: ObservableObject {
     // MARK: - Engine
 
     func loadIntoEngine() async {
+        guard beginExclusive(.load) else { return }
+        defer { endExclusive(.load) }
+
         // E — tout début de load / Charger (manager)
         LocalModelFileAudit.snapshotFS(point: "E-loadIntoEngine-start", finalPath: modelFilePath)
         LocalModelFileAudit.logFSOp(
@@ -385,18 +397,54 @@ final class LocalModelManager: ObservableObject {
     }
 
     func unload() async {
-        state = .unloading
-        await engine.cancel()
-        await engine.unload()
-        applyPresenceToState(presence, clearTransientErrors: false)
+        guard beginExclusive(.unload) else { return }
+        defer { endExclusive(.unload) }
+        await performUnload()
     }
 
     func markGenerating(_ active: Bool) {
         if active {
-            if state == .ready { state = .generating }
+            if state == .ready {
+                guard beginExclusive(.generate) else { return }
+                state = .generating
+            }
         } else if state == .generating {
             state = isInstalled ? .ready : .notInstalled
+            endExclusive(.generate)
         }
+    }
+
+    // MARK: - Exclusive gate
+
+    /// Verrou tenu pendant toute l’opération (y compris `await`). Refus explicite si occupé.
+    @discardableResult
+    func beginExclusive(_ op: ModelExclusiveOperation) -> Bool {
+        if let current = exclusiveOperation {
+            let message =
+                "Opération « \(current.rawValue) » en cours — « \(op.rawValue) » refusé."
+            lastError = message
+            LocalModelFileAudit.log("local-ai:lifecycle", [
+                "event": "exclusive-rejected",
+                "requested": op.rawValue,
+                "active": current.rawValue,
+            ])
+            return false
+        }
+        exclusiveOperation = op
+        return true
+    }
+
+    func endExclusive(_ op: ModelExclusiveOperation) {
+        if exclusiveOperation == op {
+            exclusiveOperation = nil
+        }
+    }
+
+    private func performUnload() async {
+        state = .unloading
+        await engine.cancel()
+        await engine.unload()
+        applyPresenceToState(presence, clearTransientErrors: false)
     }
 
     // MARK: - Private download

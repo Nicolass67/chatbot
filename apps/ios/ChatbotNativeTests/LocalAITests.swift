@@ -198,3 +198,115 @@ final class LocalModelManagerPresenceTests: XCTestCase {
         }
     }
 }
+
+@MainActor
+final class LocalModelManagerConcurrencyTests: XCTestCase {
+    private var mgr: LocalModelManager { LocalModelManager.shared }
+
+    override func tearDown() async throws {
+        // Libère tout verrou de test pour ne pas polluer les autres suites.
+        if let op = mgr.exclusiveOperation {
+            mgr.endExclusive(op)
+        }
+        try await super.tearDown()
+    }
+
+    /// load tenu → delete refusé ; fichier inchangé (pas de suppression silencieuse).
+    func testDeleteRefusedWhileLoadExclusive() async {
+        let existed = mgr.actualFileExists
+        let sizeBefore = mgr.actualFileSize
+        let stateBefore = mgr.state
+        XCTAssertTrue(mgr.beginExclusive(.load))
+        XCTAssertEqual(mgr.exclusiveOperation, .load)
+
+        await mgr.deleteModel()
+
+        XCTAssertEqual(mgr.exclusiveOperation, .load)
+        XCTAssertEqual(mgr.actualFileExists, existed)
+        XCTAssertEqual(mgr.actualFileSize, sizeBefore)
+        XCTAssertEqual(mgr.state, stateBefore)
+        guard let err = mgr.lastError else {
+            return XCTFail("expected lastError on refused delete")
+        }
+        XCTAssertTrue(err.contains("load"), err)
+        XCTAssertTrue(err.contains("delete"), err)
+        mgr.endExclusive(.load)
+    }
+
+    /// delete tenu → load refusé (déterministe).
+    func testLoadRefusedWhileDeleteExclusive() async {
+        XCTAssertTrue(mgr.beginExclusive(.delete))
+        await mgr.loadIntoEngine()
+        XCTAssertEqual(mgr.exclusiveOperation, .delete)
+        guard let err = mgr.lastError else {
+            return XCTFail("expected lastError on refused load")
+        }
+        XCTAssertTrue(err.contains("delete"), err)
+        XCTAssertTrue(err.contains("load"), err)
+        mgr.endExclusive(.delete)
+    }
+
+    /// load tenu → install refusé (pas de replace/remove pendant load).
+    func testInstallRefusedWhileLoadExclusive() async {
+        let existed = mgr.actualFileExists
+        let sizeBefore = mgr.actualFileSize
+        XCTAssertTrue(mgr.beginExclusive(.load))
+        await mgr.install()
+        XCTAssertEqual(mgr.exclusiveOperation, .load)
+        XCTAssertEqual(mgr.actualFileExists, existed)
+        XCTAssertEqual(mgr.actualFileSize, sizeBefore)
+        guard let err = mgr.lastError else {
+            return XCTFail("expected lastError on refused install")
+        }
+        XCTAssertTrue(err.contains("load"), err)
+        XCTAssertTrue(err.contains("install"), err)
+        mgr.endExclusive(.load)
+    }
+
+    /// Deux delete : un seul peut tenir le verrou et supprimer.
+    func testSecondDeleteRefusedWhileFirstHoldsExclusive() async {
+        XCTAssertTrue(mgr.beginExclusive(.delete))
+        await mgr.deleteModel()
+        XCTAssertEqual(mgr.exclusiveOperation, .delete)
+        guard let err = mgr.lastError else {
+            return XCTFail("expected lastError on second delete")
+        }
+        XCTAssertTrue(err.contains("delete"), err)
+        mgr.endExclusive(.delete)
+    }
+
+    /// Deux load : le second est refusé tant que le premier tient le verrou.
+    func testSecondLoadRefusedWhileFirstHoldsExclusive() async {
+        XCTAssertTrue(mgr.beginExclusive(.load))
+        await mgr.loadIntoEngine()
+        XCTAssertEqual(mgr.exclusiveOperation, .load)
+        guard let err = mgr.lastError else {
+            return XCTFail("expected lastError on second load")
+        }
+        XCTAssertTrue(err.contains("load"), err)
+        mgr.endExclusive(.load)
+    }
+
+    /// busyAction UI n’existe pas sur le manager — la protection est `exclusiveOperation`.
+    func testExclusiveGateIsManagerOwnedNotBusyAction() {
+        XCTAssertNil(mgr.exclusiveOperation)
+        XCTAssertTrue(mgr.beginExclusive(.unload))
+        XCTAssertEqual(mgr.exclusiveOperation, .unload)
+        XCTAssertFalse(mgr.beginExclusive(.delete))
+        mgr.endExclusive(.unload)
+        XCTAssertNil(mgr.exclusiveOperation)
+    }
+
+    /// Task UI concurrente : même sans busyAction, le 2ᵉ entrée manager est refusée.
+    func testConcurrentTasksCannotBypassExclusiveGate() async {
+        XCTAssertTrue(mgr.beginExclusive(.load))
+        async let deniedDelete: Void = mgr.deleteModel()
+        async let deniedInstall: Void = mgr.install()
+        _ = await (deniedDelete, deniedInstall)
+        XCTAssertEqual(mgr.exclusiveOperation, .load)
+        XCTAssertNotNil(mgr.lastError)
+        mgr.endExclusive(.load)
+    }
+}
+
+
