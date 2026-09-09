@@ -309,6 +309,7 @@ final class LocalModelManagerConcurrencyTests: XCTestCase {
     }
 }
 
+/// Concurrence UI / exclusive — inchangé par le fix hit-test `.borderless` (List row).
 final class LocalAISettingsActionGateTests: XCTestCase {
     func testBusyActionBlocksBeforeTaskWouldStart() {
         XCTAssertFalse(
@@ -375,6 +376,38 @@ final class LocalAISettingsActionGateTests: XCTestCase {
         XCTAssertTrue(beginUIAction())
         XCTAssertTrue(busy)
         XCTAssertFalse(beginUIAction())
+    }
+
+    /// Supprimer puis Charger : busy posé → 2ᵉ action refusée (même contrat que beginUIAction).
+    func testDeleteThenChargeBlockedByBusy() {
+        var busy = false
+        func begin() -> Bool {
+            guard LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: busy,
+                exclusiveOperation: nil,
+                state: .installed
+            ) else { return false }
+            busy = true
+            return true
+        }
+        XCTAssertTrue(begin()) // Supprimer
+        XCTAssertFalse(begin()) // Charger immédiat
+    }
+
+    /// Charger puis Supprimer bloqué idem.
+    func testChargeThenDeleteBlockedByBusy() {
+        var busy = false
+        func begin() -> Bool {
+            guard LocalAISettingsActionGate.allowsNewMutationTask(
+                busyAction: busy,
+                exclusiveOperation: nil,
+                state: .installed
+            ) else { return false }
+            busy = true
+            return true
+        }
+        XCTAssertTrue(begin()) // Charger
+        XCTAssertFalse(begin()) // Supprimer immédiat
     }
 }
 

@@ -135,28 +135,37 @@ struct LocalAISettingsView: View {
     private var actionButtons: some View {
         HStack(spacing: AppTheme.space8) {
             if case .downloading = models.state {
-                Button("Annuler") {
+                Button {
                     models.cancelDownload()
+                } label: {
+                    localAIActionLabel("Annuler")
                 }
+                .buttonStyle(.borderless)
                 .foregroundStyle(AppTheme.danger)
             } else if !models.isInstalled {
-                Button("Installer") {
+                Button {
                     guard beginUIAction() else { return }
                     Task {
                         defer { busyAction = false }
                         await models.install()
                     }
+                } label: {
+                    localAIActionLabel("Installer")
                 }
+                .buttonStyle(.borderless)
                 .disabled(!models.activeDescriptor.isDownloadable || mutationsDisabled)
                 .tint(AppTheme.accent)
             } else {
-                Button("Supprimer") {
+                Button {
                     guard beginUIAction() else { return }
                     Task {
                         defer { busyAction = false }
                         await models.deleteModel()
                     }
+                } label: {
+                    localAIActionLabel("Supprimer")
                 }
+                .buttonStyle(.borderless)
                 .foregroundStyle(AppTheme.danger)
                 .disabled(mutationsDisabled)
             }
@@ -165,17 +174,20 @@ struct LocalAISettingsView: View {
 
             if models.isInstalled {
                 if models.isReady {
-                    Button("Décharger") {
+                    Button {
                         guard beginUIAction() else { return }
                         Task {
                             defer { busyAction = false }
                             await models.unload()
                             execution.refreshDerived()
                         }
+                    } label: {
+                        localAIActionLabel("Décharger")
                     }
+                    .buttonStyle(.borderless)
                     .disabled(mutationsDisabled)
                 } else {
-                    Button("Charger") {
+                    Button {
                         guard beginUIAction() else { return }
                         Task {
                             defer { busyAction = false }
@@ -186,7 +198,10 @@ struct LocalAISettingsView: View {
                             await models.loadIntoEngine()
                             execution.refreshDerived()
                         }
+                    } label: {
+                        localAIActionLabel("Charger")
                     }
+                    .buttonStyle(.borderless)
                     .disabled(
                         mutationsDisabled
                             || !LocalInferenceEngine.isLlamaRuntimeAvailable
@@ -194,14 +209,25 @@ struct LocalAISettingsView: View {
                     .tint(AppTheme.accent)
                 }
 
-                Button("Tester") {
+                Button {
                     showTestSheet = true
+                } label: {
+                    localAIActionLabel("Tester")
                 }
+                .buttonStyle(.borderless)
                 .disabled(!models.isReady || mutationsDisabled)
                 .tint(AppTheme.accent)
             }
         }
         .font(CNFont.callout.weight(.semibold))
+    }
+
+    /// Label borné : hit-test = label + padding vertical (≥44pt), sans élargir horizontalement dans la row List.
+    private func localAIActionLabel(_ title: String) -> some View {
+        Text(title)
+            .padding(.horizontal, AppTheme.space8)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
     }
 }
 
