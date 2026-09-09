@@ -272,137 +272,147 @@ struct MailInboxView: View {
     var body: some View {
         let _ = themeRevision
         NavigationStack(path: $path) {
-            ZStack {
-                AmbientBackground()
-                mailStack
-            }
-            .overlay(alignment: .bottomTrailing) {
-                // Overlay intrinsèque — jamais un sibling plein écran.
-                ContextualAssistantButton {
-                    openMailAssistant(.global)
+            mailPrimaryChrome
+                .onSubmit(of: .search) { scheduleLoad() }
+                .onChange(of: search) { _, q in
+                    if q.isEmpty { scheduleLoad() }
                 }
-            }
-            .navigationTitle("Mail")
-            .tabRootNavigationChrome()
-            .accessibilityIdentifier(A11yID.Mail.root)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        nav.openSettings()
-                    } label: {
-                        Image(systemName: "person.crop.circle")
-                    }
-                    .accessibilityLabel("Réglages")
-                    .accessibilityIdentifier(A11yID.Mail.settings)
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    KeyboardDismissButton()
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Rechercher dans Gmail…")
-            .onSubmit(of: .search) { scheduleLoad() }
-            .onChange(of: search) { _, q in
-                if q.isEmpty { scheduleLoad() }
-            }
-            .onChange(of: unreadOnly) { _, _ in
-                AppHaptics.selection()
-                scheduleLoad()
-            }
-            .onChange(of: category) { _, _ in
-                AppHaptics.selection()
-                scheduleLoad()
-            }
-            .onChange(of: sort) { _, _ in
-                AppHaptics.selection()
-                scheduleLoad()
-            }
-            .refreshable { scheduleLoad() }
-            .task {
-                restoreMailCacheIfNeeded()
-                await loadOAuth()
-                // Ne pas recharger la boîte si le cache / l’état a déjà des mails.
-                if messages.isEmpty {
+                .onChange(of: unreadOnly) { _, _ in
+                    AppHaptics.selection()
                     scheduleLoad()
                 }
-                await refreshWidgetUnreadEstimate()
-            }
-            .onChange(of: messages) { _, _ in
-                persistMailCache()
-            }
-            .onChange(of: nav.mailDeepLink) { _, link in
-                handleMailDeepLink(link)
-            }
-            .onChange(of: nav.presentMailAssistant) { _, present in
-                if present {
-                    openMailAssistant(nav.mailAssistantContext)
-                    nav.presentMailAssistant = false
+                .onChange(of: category) { _, _ in
+                    AppHaptics.selection()
+                    scheduleLoad()
                 }
-            }
-            .onAppear {
-                // Deep-link posé avant l’apparition de l’onglet (ex. Files → Mail).
-                if nav.presentMailAssistant {
-                    openMailAssistant(nav.mailAssistantContext)
-                    nav.presentMailAssistant = false
+                .onChange(of: sort) { _, _ in
+                    AppHaptics.selection()
+                    scheduleLoad()
                 }
-            }
-            .onChange(of: gmailOAuth.isConnected) { _, connected in
-                Task {
-                    await loadOAuth()
-                    if connected, useDirectGmail, messages.isEmpty {
-                        scheduleLoad(resetPagination: true)
+                .refreshable { scheduleLoad() }
+                .task { await bootMailInbox() }
+                .onChange(of: messages) { _, _ in
+                    persistMailCache()
+                }
+                .onChange(of: nav.mailDeepLink) { _, link in
+                    handleMailDeepLink(link)
+                }
+                .onChange(of: nav.presentMailAssistant) { _, present in
+                    if present {
+                        openMailAssistant(nav.mailAssistantContext)
+                        nav.presentMailAssistant = false
                     }
                 }
-            }
-            .onChange(of: nav.qaIntent) { _, intent in
-                handleQaIntent(intent)
-            }
-            .navigationDestination(for: MailMessageSummary.self) { msg in
-                MailThreadView(summary: msg) {
-                    // Mise à jour locale immédiate — pas de reload liste au retour.
-                    applyLocalRead(msg.id)
+                .onAppear {
+                    if nav.presentMailAssistant {
+                        openMailAssistant(nav.mailAssistantContext)
+                        nav.presentMailAssistant = false
+                    }
                 }
+                .onChange(of: gmailOAuth.isConnected) { _, connected in
+                    handleDirectGmailConnectionChange(connected)
+                }
+                .onChange(of: nav.qaIntent) { _, intent in
+                    handleQaIntent(intent)
+                }
+                .navigationDestination(for: MailMessageSummary.self) { msg in
+                    MailThreadView(summary: msg) {
+                        applyLocalRead(msg.id)
+                    }
                     .accessibilityIdentifier(A11yID.Mail.detail)
-            }
-            .sheet(isPresented: $showAssistant) {
-                ContextualAssistantSheet(
-                    scope: .mail,
-                    title: sheetContext.sheetTitle,
-                    contextLabel: sheetContext.label,
-                    contextRef: sheetContext.ref,
-                    persistenceKey: sheetContext.persistenceKey
-                )
-                .environmentObject(session)
-                .environment(nav)
-                .presentationDetents([.medium, .large], selection: $assistantDetent)
-                .presentationDragIndicator(.visible)
-                .onAppear { assistantDetent = .large }
-            }
-            .onChange(of: showAssistant) { _, presented in
-                if presented { assistantDetent = .large }
-            }
-            .onChange(of: nav.assistantDismissToken) { _, _ in
-                // Ne pas fermer si une ouverture Mail vient d’être armée (Files → mail).
-                guard !nav.presentMailAssistant else { return }
-                showAssistant = false
-            }
-            .alert(
-                "Supprimer ce mail ?",
-                isPresented: Binding(
-                    get: { trashTarget != nil },
-                    set: { if !$0 { trashTarget = nil } }
-                )
-            ) {
-                Button("Annuler", role: .cancel) { trashTarget = nil }
-                Button("Supprimer", role: .destructive) {
-                    if let target = trashTarget {
-                        Task { await trashMessage(target) }
-                    }
-                    trashTarget = nil
                 }
-            } message: {
-                Text(trashTarget?.subject ?? "Le message sera mis à la corbeille.")
+                .sheet(isPresented: $showAssistant) {
+                    ContextualAssistantSheet(
+                        scope: .mail,
+                        title: sheetContext.sheetTitle,
+                        contextLabel: sheetContext.label,
+                        contextRef: sheetContext.ref,
+                        persistenceKey: sheetContext.persistenceKey
+                    )
+                    .environmentObject(session)
+                    .environment(nav)
+                    .presentationDetents([.medium, .large], selection: $assistantDetent)
+                    .presentationDragIndicator(.visible)
+                    .onAppear { assistantDetent = .large }
+                }
+                .onChange(of: showAssistant) { _, presented in
+                    if presented { assistantDetent = .large }
+                }
+                .onChange(of: nav.assistantDismissToken) { _, _ in
+                    guard !nav.presentMailAssistant else { return }
+                    showAssistant = false
+                }
+                .alert(
+                    "Supprimer ce mail ?",
+                    isPresented: Binding(
+                        get: { trashTarget != nil },
+                        set: { if !$0 { trashTarget = nil } }
+                    )
+                ) {
+                    Button("Annuler", role: .cancel) { trashTarget = nil }
+                    Button("Supprimer", role: .destructive) {
+                        if let target = trashTarget {
+                            Task { await trashMessage(target) }
+                        }
+                        trashTarget = nil
+                    }
+                } message: {
+                    Text(trashTarget?.subject ?? "Le message sera mis à la corbeille.")
+                }
+        }
+    }
+
+    /// Chrome de base — séparé pour alléger le type-check SwiftUI.
+    private var mailPrimaryChrome: some View {
+        ZStack {
+            AmbientBackground()
+            mailStack
+        }
+        .overlay(alignment: .bottomTrailing) {
+            ContextualAssistantButton {
+                openMailAssistant(.global)
+            }
+        }
+        .navigationTitle("Mail")
+        .tabRootNavigationChrome()
+        .accessibilityIdentifier(A11yID.Mail.root)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    nav.openSettings()
+                } label: {
+                    Image(systemName: "person.crop.circle")
+                }
+                .accessibilityLabel("Réglages")
+                .accessibilityIdentifier(A11yID.Mail.settings)
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                KeyboardDismissButton()
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .searchable(
+            text: $search,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Rechercher dans Gmail…"
+        )
+    }
+
+    private func bootMailInbox() async {
+        restoreMailCacheIfNeeded()
+        await loadOAuth()
+        if messages.isEmpty {
+            scheduleLoad()
+        }
+        await refreshWidgetUnreadEstimate()
+    }
+
+    private func handleDirectGmailConnectionChange(_ connected: Bool) {
+        Task {
+            await loadOAuth()
+            if connected, useDirectGmail, messages.isEmpty {
+                scheduleLoad(resetPagination: true)
             }
         }
     }

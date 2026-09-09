@@ -275,10 +275,10 @@ final class LocalMailAssistant: ObservableObject {
     }
 
     private func generateText(prompt: String, maxTokens: Int) async throws -> String {
-        var buffer = ""
+        let accumulator = StringAccumulator()
         do {
             try await inference.generate(prompt: prompt, maxTokens: maxTokens) { piece in
-                buffer += piece
+                accumulator.append(piece)
             }
         } catch let error as LocalInferenceError {
             let message = error.localizedDescription
@@ -289,7 +289,7 @@ final class LocalMailAssistant: ObservableObject {
             lastError = message
             throw LocalMailAssistantError.inference(message)
         }
-        let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = accumulator.value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw LocalMailAssistantError.inference("Réponse vide du modèle local.")
         }
@@ -327,4 +327,22 @@ final class LocalMailAssistant: ObservableObject {
         """
     }
 
+}
+
+/// Accumulateur thread-safe pour callbacks `@Sendable` de génération.
+private final class StringAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
+    }
+
+    func append(_ piece: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer += piece
+    }
 }
