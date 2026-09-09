@@ -223,13 +223,14 @@ enum LocalZipXML {
         defer { inflateEnd(&stream) }
         var output = Data()
         var buffer = [Bytef](repeating: 0, count: 16_384)
+        let cap = buffer.count
         repeat {
             status = buffer.withUnsafeMutableBytes { dest -> Int32 in
                 stream.next_out = dest.bindMemory(to: Bytef.self).baseAddress
-                stream.avail_out = uInt(buffer.count)
+                stream.avail_out = uInt(cap)
                 return inflate(&stream, Z_NO_FLUSH)
             }
-            let produced = buffer.count - Int(stream.avail_out)
+            let produced = cap - Int(stream.avail_out)
             if produced > 0 {
                 output.append(buffer, count: produced)
             }
