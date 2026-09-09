@@ -67,6 +67,11 @@ struct ChatbotNativeApp: App {
 
     /// Deep links QA / product. Never bypass auth — intents are applied only after login.
     private func handleDeepLink(_ url: URL) {
+        // Gmail direct PKCE (scheme Google reversed client ID).
+        if GmailOAuthSession.shared.handleCallbackURL(url) {
+            return
+        }
+
         guard url.scheme == "chatbot-native" else { return }
         let host = (url.host ?? "").lowercased()
         let parts = url.path.split(separator: "/").map { $0.lowercased() }
@@ -74,10 +79,6 @@ struct ChatbotNativeApp: App {
         // Product shortcuts (non-qa)
         switch host {
         case "oauth":
-            // Gmail direct PKCE : chatbot-native://oauth/gmail?...
-            if GmailOAuthSession.shared.handleCallbackURL(url) {
-                return
-            }
             nav.openSettings()
             return
         case "chat":

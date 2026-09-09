@@ -34,8 +34,8 @@ Login : bouton **Continuer en mode local** si le modèle est installé (sans ses
 
 ## Gmail direct
 
-- Client ID iOS public dans `GOOGLE_OAUTH_IOS_CLIENT_ID` (Local.xcconfig / Flash vars) — **pas de secret**
-- Redirect : `chatbot-native://oauth/gmail`
+- Client ID iOS public via `GOOGLE_OAUTH_IOS_CLIENT_ID` (`Local.xcconfig` gitignored / variable Flash) — **pas de secret**
+- Redirect : `com.googleusercontent.apps.<id>:/oauthredirect` (scheme Google iOS)
 - PKCE + Keychain (`gmail-*`)
 - Envoi mail : confirmation UI obligatoire (`confirmSend`)
 

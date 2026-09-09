@@ -54,11 +54,21 @@ final class ExecutionModePreferenceTests: XCTestCase {
 
 final class GmailOAuthConfigTests: XCTestCase {
     func testRedirectAndScopes() {
-        XCTAssertEqual(GmailOAuthConfig.redirectURI, "chatbot-native://oauth/gmail")
-        XCTAssertEqual(GmailOAuthConfig.callbackURLScheme, "chatbot-native")
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.readonly") }))
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.send") }))
         XCTAssertTrue(GmailOAuthConfig.scopes.contains(where: { $0.contains("gmail.compose") }))
+    }
+
+    func testReversedClientIDDerivation() {
+        let client = "123-abc.apps.googleusercontent.com"
+        XCTAssertEqual(
+            GmailOAuthConfig.reversedClientID(from: client),
+            "com.googleusercontent.apps.123-abc"
+        )
+        XCTAssertEqual(
+            GmailOAuthConfig.reversedClientID(from: ""),
+            ""
+        )
     }
 }
 

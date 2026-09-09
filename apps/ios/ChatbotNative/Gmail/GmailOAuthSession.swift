@@ -137,10 +137,13 @@ final class GmailOAuthSession: NSObject, ObservableObject {
     /// Retourne `true` si l’URL a été consommée.
     @discardableResult
     func handleCallbackURL(_ url: URL) -> Bool {
+        guard GmailOAuthConfig.isConfigured else { return false }
         guard url.scheme == GmailOAuthConfig.callbackURLScheme else { return false }
-        // chatbot-native://oauth/gmail?...
         let absolute = url.absoluteString.lowercased()
-        guard absolute.contains("oauth/gmail") else { return false }
+        let looksLikeOAuth = absolute.contains("oauthredirect")
+            || absolute.contains("code=")
+            || absolute.contains("error=")
+        guard looksLikeOAuth else { return false }
         guard pendingCodeVerifier != nil else { return false }
         isBusy = true
         Task { @MainActor in
