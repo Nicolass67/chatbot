@@ -83,9 +83,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             return .compact
         case "qwen35-2b-q4_k_m", "granite4-micro-q4_k_m":
             return .balanced
-        case "gemma4-e2b-it-q4_k_m", "qwen3-4b-q4_k_m":
+        case "qwen3-4b-q4_k_m":
             return .ample
-        case "gemma4-e4b-it", "phi4-mini-3.8b":
+        case "phi4-mini-3.8b":
             // Modèles plus lourds : même workflows, contexte moteur un peu plus bas + GPU layers plafonnés à tester.
             var p = LocalModelExecutionProfile.ample
             p.contextCharBudget = 10_000

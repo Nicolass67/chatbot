@@ -10,6 +10,7 @@ struct DirectMailMessage: Identifiable, Hashable, Sendable {
     let snippet: String?
     let date: String?
     let bodyPlain: String?
+    let bodyHtml: String?
     let labelIds: [String]
 }
 
@@ -317,6 +318,12 @@ final class DirectGmailClient {
             }
             return nil
         }()
+        let bodyHtml: String? = {
+            if let payload {
+                return extractHTML(from: payload)
+            }
+            return nil
+        }()
         let internalDate: String? = {
             if let ms = obj["internalDate"] as? String, let v = Double(ms) {
                 return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: v / 1000))
@@ -334,6 +341,7 @@ final class DirectGmailClient {
             snippet: snippet,
             date: internalDate,
             bodyPlain: bodyPlain,
+            bodyHtml: bodyHtml,
             labelIds: labelIds
         )
     }
@@ -348,12 +356,40 @@ final class DirectGmailClient {
             for part in parts {
                 if let text = extractPlainText(from: part) { return text }
             }
+            // multipart/alternative : chercher récursivement dans nested parts
+            for part in parts {
+                if let nested = part["parts"] as? [[String: Any]] {
+                    for child in nested {
+                        if let text = extractPlainText(from: child) { return text }
+                    }
+                }
+            }
         }
         // Fallback : text/html strip grossier
-        if mime == "text/html", let data = payload["body"] as? [String: Any],
-           let raw = data["data"] as? String,
-           let html = decodeBase64URL(raw) {
+        if mime == "text/html", let html = extractHTML(from: payload) {
             return stripHTML(html)
+        }
+        return nil
+    }
+
+    /// Extrait le corps HTML brut (pour `MailBodyReader`), sans le stripper.
+    private static func extractHTML(from payload: [String: Any]) -> String? {
+        let mime = (payload["mimeType"] as? String)?.lowercased() ?? ""
+        if mime == "text/html", let data = payload["body"] as? [String: Any],
+           let raw = data["data"] as? String {
+            return decodeBase64URL(raw)
+        }
+        if let parts = payload["parts"] as? [[String: Any]] {
+            for part in parts {
+                if let html = extractHTML(from: part) { return html }
+            }
+            for part in parts {
+                if let nested = part["parts"] as? [[String: Any]] {
+                    for child in nested {
+                        if let html = extractHTML(from: child) { return html }
+                    }
+                }
+            }
         }
         return nil
     }
@@ -364,8 +400,10 @@ final class DirectGmailClient {
             .replacingOccurrences(of: "_", with: "/")
         let pad = 4 - s.count % 4
         if pad < 4 { s += String(repeating: "=", count: pad) }
-        guard let data = Data(base64Encoded: s) else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard let data = Data(base64Encoded: s), !data.isEmpty else { return nil }
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
+        // Certains corps Gmail arrivent en Latin-1 / Windows-1252.
+        return String(data: data, encoding: .isoLatin1)
     }
 
     private static func stripHTML(_ html: String) -> String {

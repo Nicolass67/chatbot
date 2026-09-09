@@ -3073,10 +3073,11 @@ private var sendBlockedHint: String {
         }
 
         let execProfile = LocalModelManager.shared.activeDescriptor.executionProfile
+        let runtimeProfile = LocalModelManager.shared.activeRuntimeProfile
         let provider = LocalLLMProvider(
             promptKind: promptKind,
             historyCharBudget: execProfile.contextCharBudget,
-            runtimeProfile: LocalModelManager.shared.activeRuntimeProfile
+            runtimeProfile: runtimeProfile
         )
         streamAccum.text = ""
         streamingText = ""
@@ -3091,10 +3092,10 @@ private var sendBlockedHint: String {
                 throw CancellationError()
             }
             // Les deltas sont déjà sanitizés par LocalLLMProvider ; défense supplémentaire.
-            let cleaned = ChatMLPromptBuilder.stripControlTokens(token)
+            let cleaned = LocalChatTemplate.stripControlTokens(token, profile: runtimeProfile)
             guard !cleaned.isEmpty else { continue }
             streamAccum.text += cleaned
-            let cut = ChatMLPromptBuilder.truncateAssistantOutput(streamAccum.text)
+            let cut = LocalChatTemplate.truncateAssistantOutput(streamAccum.text, profile: runtimeProfile)
             streamAccum.text = cut.text
             if thinkingKind != nil { thinkingKind = nil }
             if tokenFlushTask == nil {
@@ -3111,7 +3112,7 @@ private var sendBlockedHint: String {
         }
         tokenFlushTask?.cancel()
         tokenFlushTask = nil
-        let final = ChatMLPromptBuilder.truncateAssistantOutput(streamAccum.text).text
+        let final = LocalChatTemplate.truncateAssistantOutput(streamAccum.text, profile: runtimeProfile).text
         streamAccum.text = final
         streamingText = final
         let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)

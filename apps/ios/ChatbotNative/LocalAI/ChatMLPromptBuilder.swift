@@ -186,12 +186,23 @@ enum LocalChatTemplate {
     }
 
     /// Coupe avant stop + strip contrôle. Ne laisse jamais un token spécial visible.
+    ///
+    /// Important : les balises think Qwen3 (open/close) **ne** doivent **pas** lever `hitStop`.
+    /// Sinon le stream annule dès le premier bloc think → réponses vides quasi systématiques.
     static func truncateAssistantOutput(
         _ raw: String,
         profile: LocalModelRuntimeProfile = .chatmlQwen
     ) -> TruncationResult {
         var text = raw
         var hit = false
+
+        // Qwen3 thinking : afficher uniquement le texte après la balise de fin ;
+        // bloc ouvert → retenir (rien à montrer) mais continuer la génération.
+        if let close = text.range(of: "</think>", options: .caseInsensitive) {
+            text = String(text[close.upperBound...])
+        } else if let open = text.range(of: "<think>", options: .caseInsensitive) {
+            text = String(text[..<open.lowerBound])
+        }
 
         for stop in profile.stopSequences {
             if let range = text.range(of: stop) {
@@ -207,10 +218,8 @@ enum LocalChatTemplate {
 
         let stripped = stripControlTokens(text, profile: profile)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Si on a stripé des contrôles absents des stopSequences exacts.
-        if stripped.count < text.trimmingCharacters(in: .whitespacesAndNewlines).count {
-            hit = true
-        }
+        // Ne pas lever hitStop juste parce qu’on a retiré des balises de contrôle :
+        // ça coupait le stream en plein milieu (think, im_start partiel, etc.).
 
         return TruncationResult(text: stripped, hitStop: hit)
     }

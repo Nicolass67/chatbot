@@ -8,6 +8,7 @@ enum LocalPrompts {
     N’invente pas de faits, de fichiers, d’e-mails ni d’actions déjà effectuées.
     Si tu manques d’information, dis-le et pose une question courte.
     Ne prétends pas contrôler le PC distant ni LM Studio.
+    Réponds directement au message — pas de raisonnement interne ni de balises techniques.
     """
 
     static let mailSummary = """

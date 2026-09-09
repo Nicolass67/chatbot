@@ -1386,7 +1386,7 @@ struct MailThreadView: View {
                             date: msg.date,
                             snippet: msg.snippet,
                             bodyText: msg.bodyPlain,
-                            bodyHtml: nil,
+                            bodyHtml: msg.bodyHtml,
                             isUnread: msg.labelIds.contains("UNREAD"),
                             hasAttachments: nil,
                             attachments: nil

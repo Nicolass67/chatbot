@@ -24,10 +24,10 @@ final class LocalModelDescriptorTests: XCTestCase {
 
     func testCompatibilityTiersForIPhone14Plus() {
         XCTAssertEqual(LocalModelDescriptor.primary.compatibilityIPhone14Plus, .recommended)
-        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")
-        XCTAssertEqual(gemma?.compatibilityIPhone14Plus, .experimental)
-        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")
-        XCTAssertEqual(e4b?.compatibilityIPhone14Plus, .notRecommended)
+        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m"), "Gemma 4 retire du catalogue")
+        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e4b-it"))
+        let phi = LocalModelDescriptor.descriptor(id: "phi4-mini-3.8b")
+        XCTAssertEqual(phi?.compatibilityIPhone14Plus, .notRecommended)
     }
 
     func testFutureStubModelsNotDownloadableYet() {
@@ -170,6 +170,45 @@ final class ChatMLStopTruncationTests: XCTestCase {
         let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
         XCTAssertFalse(cut.hitStop)
         XCTAssertEqual(cut.text, raw)
+    }
+
+    func testThinkBlockStrippedWithoutHitStop() {
+        let raw = "<think>raisonnement interne</think>\nBonjour !"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertFalse(cut.hitStop)
+        XCTAssertEqual(cut.text, "Bonjour !")
+    }
+
+    func testIncompleteThinkDoesNotCancelGeneration() {
+        let raw = "<think>encore en train de réfléchir"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertFalse(cut.hitStop)
+        XCTAssertEqual(cut.text, "")
+    }
+
+    func testStreamingThinkThenAnswerDoesNotCancelEarly() {
+        let profile = LocalModelRuntimeProfile.chatmlQwen
+        var emitted = 0
+        var display = ""
+        let pieces = ["<think>", "abc", "</think>", "Salut", "<|im_end|>"]
+        var acc = ""
+        var stopped = false
+        for p in pieces {
+            acc += p
+            let step = LocalChatTemplate.streamingSafeEmit(
+                accumulated: acc,
+                alreadyEmittedCount: emitted,
+                profile: profile
+            )
+            display += step.emit
+            emitted = step.newEmittedCount
+            if step.hitStop {
+                stopped = true
+                break
+            }
+        }
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(display, "Salut")
     }
 }
 
@@ -677,12 +716,12 @@ final class AIParityArchitectureTests: XCTestCase {
 
     func testExecutionProfilesDifferByBudgetNotFeatures() {
         let qwen = LocalModelDescriptor.primary.executionProfile
-        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")!.executionProfile
+        let other = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
         XCTAssertEqual(qwen.performanceClass, .compact)
-        XCTAssertEqual(gemma.performanceClass, .ample)
-        XCTAssertLessThan(qwen.maxWorkflowSteps, gemma.maxWorkflowSteps)
-        XCTAssertLessThan(qwen.contextCharBudget, gemma.contextCharBudget)
-        XCTAssertLessThanOrEqual(qwen.maxToolCalls, gemma.maxToolCalls)
+        XCTAssertEqual(other.performanceClass, .balanced)
+        XCTAssertLessThan(qwen.maxWorkflowSteps, other.maxWorkflowSteps)
+        XCTAssertLessThanOrEqual(qwen.contextCharBudget, other.contextCharBudget)
+        XCTAssertLessThanOrEqual(qwen.maxToolCalls, other.maxToolCalls)
     }
 
     func testStructuredActionParserToolAndFinal() {
@@ -750,11 +789,11 @@ final class LlamaInferencePerfTests: XCTestCase {
 
     func testExecutionProfilesCarryInferenceWithoutFeatureGating() {
         let qwen = LocalModelDescriptor.primary.executionProfile
-        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")!.executionProfile
+        let other = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
         XCTAssertTrue(ApplicationCapabilities.full.agent)
         XCTAssertTrue(qwen.inference.preferMetal)
-        XCTAssertTrue(gemma.inference.preferMetal)
-        XCTAssertNotEqual(qwen.maxWorkflowSteps, gemma.maxWorkflowSteps)
+        XCTAssertTrue(other.inference.preferMetal)
+        XCTAssertNotEqual(qwen.maxWorkflowSteps, other.maxWorkflowSteps)
     }
 
     func testResolvedThreadsCappedForA15Class() {
@@ -765,8 +804,8 @@ final class LlamaInferencePerfTests: XCTestCase {
     }
 
     func testHeavyModelProfileUsesConservativeGpuLayers() {
-        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")!.executionProfile
-        XCTAssertEqual(e4b.inference.nGpuLayers, 28)
-        XCTAssertLessThan(e4b.inference.nCtx, LlamaInferenceConfig.a15Default.nCtx)
+        let heavy = LocalModelDescriptor.descriptor(id: "phi4-mini-3.8b")!.executionProfile
+        XCTAssertEqual(heavy.inference.nGpuLayers, 28)
+        XCTAssertLessThan(heavy.inference.nCtx, LlamaInferenceConfig.a15Default.nCtx)
     }
 }

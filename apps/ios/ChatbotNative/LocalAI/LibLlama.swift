@@ -716,7 +716,7 @@ final class LlamaContext: @unchecked Sendable {
             let leftover = String(cString: temporary_invalid_cchars + [0])
             temporary_invalid_cchars.removeAll()
             // Ne pas renvoyer de balises de contrôle résiduelles.
-            return ChatMLPromptBuilder.stripControlTokens(leftover)
+            return LocalChatTemplate.stripControlTokens(leftover, profile: .chatmlQwen)
         }
 
         let new_token_cchars = token_to_piece(token: new_token_id)
@@ -759,20 +759,33 @@ final class LlamaContext: @unchecked Sendable {
         maxTokens: Int32,
         onToken: @Sendable (String) async -> Void
     ) async throws {
+        // Prompt ChatML/Gemma déjà complet → pas de BOS supplémentaire (sinon EOS immédiat fréquent).
+        try await generateOnce(prompt: prompt, maxTokens: maxTokens, addBos: false, onToken: onToken)
+    }
+
+    private func generateOnce(
+        prompt: String,
+        maxTokens: Int32,
+        addBos: Bool,
+        onToken: @Sendable (String) async -> Void
+    ) async throws {
         cancelRequested = false
         is_done = false
-        // Une seule tokenization (évite le double coût de l’ancien chemin).
-        let promptTokens = tokenize(text: prompt, add_bos: true)
-        n_len = Int32(promptTokens.count) + max(1, maxTokens)
-        n_decode = 0
-        // Réinjecte les tokens déjà calculés pour éviter une 2ᵉ passe.
-        cancelRequested = false
-        is_done = false
-        let promptStarted = Date()
-        tokens_list = promptTokens
         temporary_invalid_cchars = []
+        n_decode = 0
+
+        // Critique : vider le KV entre tours — sinon positions 0..n écrasent un cache sale → EOS / vide.
+        llama_memory_clear(llama_get_memory(context), true)
+
+        let promptTokens = tokenize(text: prompt, add_bos: addBos)
+        guard !promptTokens.isEmpty else {
+            throw LlamaError.couldNotInitializeContext("tokenization vide")
+        }
+        n_len = Int32(promptTokens.count) + max(1, maxTokens)
+        tokens_list = promptTokens
         promptTokenCount = tokens_list.count
 
+        let promptStarted = Date()
         let batchLimit = Int(max(inferenceConfig.nBatch, 1))
         var i = 0
         while i < tokens_list.count {
@@ -784,22 +797,63 @@ final class LlamaContext: @unchecked Sendable {
                 llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
             }
             if llama_decode(context, batch) != 0 {
-                is_done = true
-                lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
-                return
+                throw LlamaError.couldNotInitializeContext(
+                    "échec prefill llama_decode (batch \(i)..\(end - 1))"
+                )
             }
             i = end
         }
         n_cur = Int32(tokens_list.count)
         lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
 
+        var generatedPieces = 0
         while !is_done {
             if cancelRequested {
                 throw LlamaError.cancelled
             }
             let piece = try completion_loop()
             if !piece.isEmpty {
+                generatedPieces += 1
                 await onToken(piece)
+            }
+        }
+
+        // Premier token EOG / aucune pièce → une retry (BOS inverse + KV clear).
+        if generatedPieces == 0 {
+            print("[local-ai:gen] empty generation — retry once (bos=\(!addBos))")
+            cancelRequested = false
+            is_done = false
+            temporary_invalid_cchars = []
+            n_decode = 0
+            llama_memory_clear(llama_get_memory(context), true)
+            let retryTokens = tokenize(text: prompt, add_bos: !addBos)
+            guard !retryTokens.isEmpty else {
+                throw LlamaError.couldNotInitializeContext("génération vide (EOG immédiat)")
+            }
+            tokens_list = retryTokens
+            promptTokenCount = tokens_list.count
+            n_len = Int32(retryTokens.count) + max(1, maxTokens)
+            var j = 0
+            while j < tokens_list.count {
+                if cancelRequested { throw LlamaError.cancelled }
+                llama_batch_clear(&batch)
+                let end = min(j + batchLimit, tokens_list.count)
+                for k in j..<end {
+                    let isLast = k == tokens_list.count - 1
+                    llama_batch_add(&batch, tokens_list[k], Int32(k), [0], isLast)
+                }
+                if llama_decode(context, batch) != 0 {
+                    throw LlamaError.couldNotInitializeContext("échec prefill retry")
+                }
+                j = end
+            }
+            n_cur = Int32(tokens_list.count)
+            while !is_done {
+                if cancelRequested { throw LlamaError.cancelled }
+                let piece = try completion_loop()
+                if !piece.isEmpty {
+                    await onToken(piece)
+                }
             }
         }
     }

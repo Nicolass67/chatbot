@@ -154,28 +154,6 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
 
         // MARK: Orange — expérimental sur 6 Go
         LocalModelDescriptor(
-            id: "gemma4-e2b-it-q4_k_m",
-            displayName: "Gemma 4 E2B",
-            provider: "Google / LM Studio community",
-            architecture: "gemma4",
-            parameterCountLabel: "~2.3B eff.",
-            quant: "Q4_K_M",
-            expectedBytes: 3_427_880_384,
-            filename: "gemma-4-E2B-it-Q4_K_M.gguf",
-            downloadURL: URL(string: "https://huggingface.co/lmstudio-community/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf"),
-            sha256: nil,
-            version: "1.0",
-            license: "Gemma",
-            contextLength: 128_000,
-            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
-            runtimeProfile: .gemma,
-            minimumRecommendedRAMGB: 6,
-            estimatedRuntimeMemoryGB: 4.8,
-            compatibilityIPhone14Plus: .experimental,
-            compatibilityNote: "Fichier ~3.4 Go + KV : pression mémoire forte sur 6 Go. Charge explicite seulement.",
-            statusNote: "Expérimental"
-        ),
-        LocalModelDescriptor(
             id: "qwen3-4b-q4_k_m",
             displayName: "Qwen3 4B",
             provider: "Qwen",
@@ -221,28 +199,6 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
         ),
 
         // MARK: Rouge — non recommandé 6 Go
-        LocalModelDescriptor(
-            id: "gemma4-e4b-it",
-            displayName: "Gemma 4 E4B",
-            provider: "Google",
-            architecture: "gemma4",
-            parameterCountLabel: "~4.5B eff.",
-            quant: "Q4_K_M",
-            expectedBytes: 0,
-            filename: "gemma-4-E4B-it-Q4_K_M.gguf",
-            downloadURL: nil,
-            sha256: nil,
-            version: "0",
-            license: "Gemma",
-            contextLength: 128_000,
-            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
-            runtimeProfile: .gemma,
-            minimumRecommendedRAMGB: 8,
-            estimatedRuntimeMemoryGB: 6.5,
-            compatibilityIPhone14Plus: .notRecommended,
-            compatibilityNote: "Trop ambitieux pour 6 Go (poids + KV + marge iOS).",
-            statusNote: "Non recommandé"
-        ),
         LocalModelDescriptor(
             id: "phi4-mini-3.8b",
             displayName: "Phi-4 Mini 3.8B",

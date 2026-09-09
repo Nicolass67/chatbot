@@ -102,6 +102,7 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
             snippet: nil,
             date: nil,
             bodyPlain: nil,
+            bodyHtml: nil,
             labelIds: []
         )
     }
@@ -174,6 +175,7 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
             snippet: m.snippet,
             date: m.date,
             bodyPlain: nil,
+            bodyHtml: nil,
             labelIds: (m.isUnread == true) ? ["UNREAD"] : []
         )
     }
@@ -197,6 +199,7 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
             snippet: m.snippet,
             date: m.date,
             bodyPlain: m.bodyText,
+            bodyHtml: m.bodyHtml,
             labelIds: (m.isUnread == true) ? ["UNREAD"] : []
         )
     }
