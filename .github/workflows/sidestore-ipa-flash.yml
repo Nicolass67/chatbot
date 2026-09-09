@@ -5,6 +5,11 @@ name: SideStore IPA Flash (iOS 27 lockdown fallback)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [sidestore-ios27-lockdown-flash]
+    paths:
+      - vendor/sidestore-ios27-lockdown-fallback/**
+      - .github/workflows/sidestore-ipa-flash.yml
 
 concurrency:
   group: sidestore-ipa-flash-${{ github.ref }}
