@@ -174,9 +174,9 @@ final class LlamaContext: @unchecked Sendable {
     private var cancelRequested = false
     private let inferenceConfig: LlamaInferenceConfig
 
-    /// Dernier diagnostic de load (thread-safe via lock).
+    /// Dernier diagnostic de load (protégé par `diagLock`).
     private static let diagLock = NSLock()
-    private static var _lastDiagnostics: LlamaLoadDiagnostics?
+    nonisolated(unsafe) private static var _lastDiagnostics: LlamaLoadDiagnostics?
     static var lastDiagnostics: LlamaLoadDiagnostics? {
         diagLock.lock(); defer { diagLock.unlock() }
         return _lastDiagnostics
