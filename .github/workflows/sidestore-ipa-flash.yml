@@ -20,7 +20,7 @@ permissions:
   actions: write
 
 env:
-  SIDESTORE_REF: "610f3b16"
+  SIDESTORE_REF: "610f3b16f956e1212f539f4a139cb4ad5f6a194a"
   MINIMUXER_PIN: "2e72b199801de268e2169d24ccc90357cf9ab692"
 
 jobs:
@@ -44,7 +44,8 @@ jobs:
           ref: ${{ env.SIDESTORE_REF }}
           submodules: recursive
           path: sidestore-build
-          fetch-depth: 1
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Overlay transport fallback
         run: |
