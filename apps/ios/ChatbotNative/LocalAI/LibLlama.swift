@@ -3,9 +3,18 @@ import Foundation
 #if canImport(llama)
 import llama
 
-enum LlamaError: Error {
-    case couldNotInitializeContext
+enum LlamaError: Error, LocalizedError {
+    case couldNotInitializeContext(String)
     case cancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .couldNotInitializeContext(let detail):
+            return detail
+        case .cancelled:
+            return "Génération annulée."
+        }
+    }
 }
 
 func llama_batch_clear(_ batch: inout llama_batch) {
@@ -30,7 +39,7 @@ func llama_batch_add(
 }
 
 /// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 2048` (KV cache iPhone).
-/// Metal sur appareil ; `n_gpu_layers = 0` sur simulateur.
+/// CPU-first sur appareil (Metal en secours) ; `n_gpu_layers = 0` sur simulateur.
 /// Classe `@unchecked Sendable` (pointeurs C) : accès sérialisé via `LocalInferenceEngine` (actor).
 final class LlamaContext: @unchecked Sendable {
     private var model: OpaquePointer
@@ -70,36 +79,57 @@ final class LlamaContext: @unchecked Sendable {
     }
 
     static func create_context(path: String) throws -> LlamaContext {
+        // Vérifs avant d’appeler le C (évite un échec opaque).
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else {
+            throw LlamaError.couldNotInitializeContext("fichier absent: \(path)")
+        }
+        let size = (try? fm.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 1_000_000 else {
+            throw LlamaError.couldNotInitializeContext("fichier trop petit (\(size) octets)")
+        }
+
         llama_backend_init()
-        var model_params = llama_model_default_params()
 
-#if targetEnvironment(simulator)
-        model_params.n_gpu_layers = 0
-#else
-        // Offload Metal — mmap par défaut côté llama.cpp (moins de RAM résidente).
-        model_params.n_gpu_layers = 99
-#endif
+        // Sur iPhone, Metal (n_gpu_layers > 0) fait souvent échouer / crasher l’init.
+        // CPU-only = fiable pour Qwen3 1.7B Q4 (~1,2 Go).
+        let layerAttempts: [Int32] = [0]
 
-        let model = llama_model_load_from_file(path, model_params)
-        guard let model else {
-            throw LlamaError.couldNotInitializeContext
+        var lastDetail = "échec inconnu"
+        for layers in layerAttempts {
+            var model_params = llama_model_default_params()
+            model_params.n_gpu_layers = layers
+
+            let model: OpaquePointer? = path.withCString { cPath in
+                llama_model_load_from_file(cPath, model_params)
+            }
+            guard let model else {
+                lastDetail = "chargement GGUF impossible (gpu_layers=\(layers), \(byteLabel(size)))"
+                continue
+            }
+
+            let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+            var ctx_params = llama_context_default_params()
+            ctx_params.n_ctx = 2048
+            ctx_params.n_batch = 512
+            ctx_params.n_ubatch = 512
+            ctx_params.n_threads = Int32(n_threads)
+            ctx_params.n_threads_batch = Int32(n_threads)
+
+            guard let context = llama_init_from_model(model, ctx_params) else {
+                llama_model_free(model)
+                lastDetail = "init contexte impossible (gpu_layers=\(layers)). Mémoire insuffisante ou backend Metal HS."
+                continue
+            }
+
+            return LlamaContext(model: model, context: context)
         }
 
-        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+        throw LlamaError.couldNotInitializeContext(lastDetail)
+    }
 
-        var ctx_params = llama_context_default_params()
-        // Budget réduit pour limiter la KV cache en RAM sur iPhone.
-        ctx_params.n_ctx = 2048
-        ctx_params.n_threads = Int32(n_threads)
-        ctx_params.n_threads_batch = Int32(n_threads)
-
-        let context = llama_init_from_model(model, ctx_params)
-        guard let context else {
-            llama_model_free(model)
-            throw LlamaError.couldNotInitializeContext
-        }
-
-        return LlamaContext(model: model, context: context)
+    private static func byteLabel(_ bytes: Int64) -> String {
+        String(format: "%.0f Mo", Double(bytes) / 1_048_576.0)
     }
 
     func stop() {
@@ -278,10 +308,21 @@ final class LlamaContext: @unchecked Sendable {
 #else
 
 /// Stub quand le module `llama` n’est pas lié — les appels réels passent par `LocalInferenceEngine`.
-enum LlamaError: Error {
-    case couldNotInitializeContext
+enum LlamaError: Error, LocalizedError {
+    case couldNotInitializeContext(String)
     case cancelled
     case notAvailable
+
+    var errorDescription: String? {
+        switch self {
+        case .couldNotInitializeContext(let detail):
+            return detail
+        case .cancelled:
+            return "Génération annulée."
+        case .notAvailable:
+            return "Runtime llama indisponible."
+        }
+    }
 }
 
 #endif

@@ -90,11 +90,11 @@ actor LocalInferenceEngine {
             isLoaded = true
             loadedPath = path
             lastMetrics.loadDuration = Date().timeIntervalSince(started)
-        } catch LlamaError.couldNotInitializeContext {
+        } catch let LlamaError.couldNotInitializeContext(detail) {
             isLoaded = false
             loadedPath = nil
             llama = nil
-            throw LocalInferenceError.loadFailed("impossible d’initialiser le contexte")
+            throw LocalInferenceError.loadFailed(detail)
         } catch {
             isLoaded = false
             loadedPath = nil
