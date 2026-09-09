@@ -78,7 +78,7 @@ enum NativeMailShare {
 }
 
 @MainActor
-final class MailComposeRelayer: NSObject, MFMailComposeViewControllerDelegate {
+final class MailComposeRelayer: NSObject, MFMailComposeViewControllerDelegate, @unchecked Sendable {
     static let shared = MailComposeRelayer()
 
     func mailComposeController(
