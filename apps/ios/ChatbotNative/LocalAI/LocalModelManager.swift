@@ -134,13 +134,36 @@ final class LocalModelManager: ObservableObject {
     // MARK: - Install / Download
 
     func install(model: LocalModelDescriptor = .primary) async {
+        let initialState = state.statusLabel
         guard var remoteURL = model.downloadURL else {
             lastError = "Ce modèle n’est pas encore téléchargeable."
             state = .failed(lastError!)
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "early-exit",
+                "reason": "not-downloadable",
+                "model": model.id,
+                "initialState": initialState,
+            ])
             return
         }
-        if case .downloading = state { return }
-        if case .verifying = state { return }
+        if case .downloading = state {
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "early-exit",
+                "reason": "already-downloading",
+                "model": model.id,
+                "initialState": initialState,
+            ])
+            return
+        }
+        if case .verifying = state {
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "early-exit",
+                "reason": "already-verifying",
+                "model": model.id,
+                "initialState": initialState,
+            ])
+            return
+        }
 
         // Force le téléchargement binaire HF (évite pages HTML / pointeurs LFS).
         if var comps = URLComponents(url: remoteURL, resolvingAgainstBaseURL: false) {
@@ -161,20 +184,41 @@ final class LocalModelManager: ObservableObject {
         state = .downloading(progress: 0)
 
         LocalModelFileAudit.log("local-ai:download", [
-            "phase": "start",
+            "phase": "install-start",
+            "model": model.id,
+            "generation": generation,
+            "initialState": initialState,
+            "final.path": fileSystemPath(modelFileURL),
+            "partial.path": fileSystemPath(partialDownloadURL),
             "url": remoteURL.absoluteString,
             "expectedBytes": model.expectedBytes,
-            "dest": fileSystemPath(modelFileURL),
-            "partial": fileSystemPath(partialDownloadURL),
             "models.entries": LocalModelFileAudit.directoryListing(at: dir).joined(separator: "|"),
         ])
 
         do {
             try await download(from: remoteURL, model: model, generation: generation)
-            guard generation == installGeneration else { return }
+            guard generation == installGeneration else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "generation-mismatch",
+                    "where": "after-download",
+                    "generation": generation,
+                    "currentGeneration": installGeneration,
+                ])
+                return
+            }
             state = .verifying
             try validateInstalledFile(model: model)
-            guard generation == installGeneration else { return }
+            guard generation == installGeneration else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "generation-mismatch",
+                    "where": "after-validation",
+                    "generation": generation,
+                    "currentGeneration": installGeneration,
+                ])
+                return
+            }
             let probe = LocalModelFileAudit.probe(
                 at: modelFileURL,
                 expectedBytes: model.expectedBytes,
@@ -196,10 +240,35 @@ final class LocalModelManager: ObservableObject {
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
         } catch is CancellationError {
-            guard generation == installGeneration else { return }
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "early-exit",
+                "reason": "cancellation",
+                "generation": generation,
+                "currentGeneration": installGeneration,
+            ])
+            guard generation == installGeneration else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "generation-mismatch",
+                    "where": "cancellation-handler",
+                    "generation": generation,
+                    "currentGeneration": installGeneration,
+                ])
+                return
+            }
             applyPresenceToState(presence, clearTransientErrors: false)
         } catch {
-            guard generation == installGeneration else { return }
+            guard generation == installGeneration else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "generation-mismatch",
+                    "where": "failure-handler",
+                    "generation": generation,
+                    "currentGeneration": installGeneration,
+                    "error": error.localizedDescription,
+                ])
+                return
+            }
             lastError = error.localizedDescription
             state = .failed(error.localizedDescription)
             let probe = presence
@@ -317,7 +386,8 @@ final class LocalModelManager: ObservableObject {
         )
         if case .installed(let size) = existing {
             LocalModelFileAudit.log("local-ai:download", [
-                "phase": "skip-already-installed",
+                "phase": "early-exit",
+                "reason": "already-installed",
                 "size": size,
                 "path": fileSystemPath(destination),
             ])
@@ -353,20 +423,64 @@ final class LocalModelManager: ObservableObject {
                 partial: partial,
                 destination: destination
             )
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "download-end",
+                "result": "success",
+                "generation": generation,
+                "final.path": fileSystemPath(destination),
+                "final.exists": fileManager.fileExists(atPath: fileSystemPath(destination)),
+                "final.size": (try? fileManager.attributesOfItem(atPath: fileSystemPath(destination))[.size] as? Int64) ?? 0,
+            ])
         } catch is CancellationError {
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "download-end",
+                "result": "failure",
+                "reason": "cancellation",
+                "generation": generation,
+            ])
             throw CancellationError()
         } catch {
             if existingBytes > 0 {
                 try? fileManager.removeItem(at: partial)
-                try await performDownload(
-                    remoteURL: remoteURL,
-                    model: model,
-                    generation: generation,
-                    existingBytes: 0,
-                    partial: partial,
-                    destination: destination
-                )
+                do {
+                    try await performDownload(
+                        remoteURL: remoteURL,
+                        model: model,
+                        generation: generation,
+                        existingBytes: 0,
+                        partial: partial,
+                        destination: destination
+                    )
+                    LocalModelFileAudit.log("local-ai:download", [
+                        "phase": "download-end",
+                        "result": "success",
+                        "retryAfterPartialFailure": true,
+                        "generation": generation,
+                        "final.path": fileSystemPath(destination),
+                        "final.exists": fileManager.fileExists(atPath: fileSystemPath(destination)),
+                        "final.size": (try? fileManager.attributesOfItem(atPath: fileSystemPath(destination))[.size] as? Int64) ?? 0,
+                    ])
+                } catch {
+                    LocalModelFileAudit.log("local-ai:download", [
+                        "phase": "download-end",
+                        "result": "failure",
+                        "retryAfterPartialFailure": true,
+                        "generation": generation,
+                        "error": error.localizedDescription,
+                        "errorDomain": (error as NSError).domain,
+                        "errorCode": (error as NSError).code,
+                    ])
+                    throw error
+                }
             } else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "download-end",
+                    "result": "failure",
+                    "generation": generation,
+                    "error": error.localizedDescription,
+                    "errorDomain": (error as NSError).domain,
+                    "errorCode": (error as NSError).code,
+                ])
                 throw error
             }
         }
@@ -420,7 +534,20 @@ final class LocalModelManager: ObservableObject {
             }
             let task = urlSession.downloadTask(with: request)
             self.downloadTask = task
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "task-created",
+                "url": remoteURL.absoluteString,
+                "taskIdentifier": task.taskIdentifier,
+                "existingBytes": existingBytes,
+                "generation": generation,
+            ])
             task.resume()
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "task-resumed",
+                "url": remoteURL.absoluteString,
+                "taskIdentifier": task.taskIdentifier,
+                "resumeCalled": true,
+            ])
         }
     }
 
@@ -433,10 +560,22 @@ final class LocalModelManager: ObservableObject {
         recordStorageAudit("validation après téléchargement/move", presence: probe)
         switch probe {
         case .missing:
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "early-exit",
+                "reason": "final-missing-at-validation",
+                "path": modelFilePath,
+            ])
             throw LocalInferenceError.modelMissing
         case .invalid(let size, let sizeOK, let magicOK):
             try? fileManager.removeItem(at: modelFileURL)
             if !sizeOK {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "incorrect-size",
+                    "where": "validateInstalledFile",
+                    "actualBytes": size,
+                    "expectedBytes": model.expectedBytes,
+                ])
                 let actualMB = Double(size) / 1_048_576.0
                 let expectedMB = Double(model.expectedBytes) / 1_048_576.0
                 throw NSError(
@@ -453,6 +592,12 @@ final class LocalModelManager: ObservableObject {
                 )
             }
             if !magicOK {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "invalid-gguf-magic",
+                    "where": "validateInstalledFile",
+                    "actualBytes": size,
+                ])
                 throw NSError(
                     domain: "LocalModelManager",
                     code: 2,
@@ -465,6 +610,13 @@ final class LocalModelManager: ObservableObject {
             throw LocalInferenceError.modelMissing
         case .installed(let size):
             installedBytes = size
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "validateInstalledFile",
+                "result": "pass",
+                "actualBytes": size,
+                "expectedBytes": model.expectedBytes,
+                "path": modelFilePath,
+            ])
         }
     }
 
@@ -537,6 +689,8 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     private let onComplete: @Sendable (Result<Void, Error>) -> Void
     private var finished = false
     private let lock = NSLock()
+    /// Bucket 0…20 (= pas de 5 %) pour logs périodiques didWriteData.
+    private var lastProgressBucket: Int = -1
 
     init(
         remoteURL: URL,
@@ -574,6 +728,18 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         }
         let fraction = min(1, Double(written) / Double(total))
         onProgress(fraction)
+
+        let bucket = Int((fraction * 20.0).rounded(.down))
+        if bucket != lastProgressBucket {
+            lastProgressBucket = bucket
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "progress",
+                "taskIdentifier": downloadTask.taskIdentifier,
+                "totalBytesWritten": written,
+                "totalBytesExpected": total,
+                "percent": String(format: "%.1f", fraction * 100),
+            ])
+        }
     }
 
     func urlSession(
@@ -590,23 +756,30 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
             let tempPath = location.path(percentEncoded: false)
             let tempExists = fm.fileExists(atPath: tempPath)
             let tempSize = (try? fm.attributesOfItem(atPath: tempPath)[.size] as? Int64) ?? 0
+            let tempReadable = fm.isReadableFile(atPath: tempPath)
             let parent = destinationURL.deletingLastPathComponent()
 
-            LocalModelFileAudit.log("local-ai:download", [
-                "phase": "http-finished",
-                "url": remoteURL.absoluteString,
+            LocalModelFileAudit.log("local-ai:download-finished", [
+                "taskIdentifier": downloadTask.taskIdentifier,
+                "location": tempPath,
+                "exists": tempExists,
+                "size": tempSize,
+                "readable": tempReadable,
                 "httpStatus": status,
                 "contentLengthHeader": headerLength.map(String.init) ?? "nil",
                 "expectedContentLength": responseLength,
-                "bytesReceivedTemp": tempSize,
                 "expectedBytes": expectedBytes,
-                "temp.path": tempPath,
-                "temp.exists": tempExists,
-                "temp.readable": fm.isReadableFile(atPath: tempPath),
+                "url": remoteURL.absoluteString,
                 "models.entries.before": LocalModelFileAudit.directoryListing(at: parent).joined(separator: "|"),
             ])
 
             guard (200...299).contains(status) else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "http-non-2xx",
+                    "httpStatus": status,
+                    "taskIdentifier": downloadTask.taskIdentifier,
+                ])
                 try? fm.removeItem(at: location)
                 throw NSError(
                     domain: "LocalModelManager",
@@ -618,6 +791,14 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                 )
             }
             guard tempExists, tempSize > 0 else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "temp-file-absent",
+                    "exists": tempExists,
+                    "size": tempSize,
+                    "taskIdentifier": downloadTask.taskIdentifier,
+                    "location": tempPath,
+                ])
                 throw NSError(
                     domain: "LocalModelManager",
                     code: 4,
@@ -629,27 +810,72 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
             }
 
             let shouldAppend = existingBytes > 0 && status == 206 && fm.fileExists(atPath: partialURL.path(percentEncoded: false))
+            let partialPath = partialURL.path(percentEncoded: false)
 
-            if shouldAppend {
-                try Self.appendFile(from: location, onto: partialURL)
-                try? fm.removeItem(at: location)
-            } else {
-                if fm.fileExists(atPath: partialURL.path(percentEncoded: false)) {
-                    try fm.removeItem(at: partialURL)
+            do {
+                if shouldAppend {
+                    try Self.appendFile(from: location, onto: partialURL)
+                    try? fm.removeItem(at: location)
+                } else {
+                    if fm.fileExists(atPath: partialPath) {
+                        try fm.removeItem(at: partialURL)
+                    }
+                    try Self.moveOrCopy(location, to: partialURL)
                 }
-                try Self.moveOrCopy(location, to: partialURL)
+            } catch {
+                LocalModelFileAudit.log("local-ai:download-move", [
+                    "phase": "temp-to-partial",
+                    "source": tempPath,
+                    "source.exists": fm.fileExists(atPath: tempPath),
+                    "destination": partialPath,
+                    "destination.exists": fm.fileExists(atPath: partialPath),
+                    "destination.size": (try? fm.attributesOfItem(atPath: partialPath)[.size] as? Int64) ?? 0,
+                    "error": error.localizedDescription,
+                    "taskIdentifier": downloadTask.taskIdentifier,
+                ])
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "move-failed",
+                    "where": "temp-to-partial",
+                    "error": error.localizedDescription,
+                ])
+                throw error
             }
 
-            let partialPath = partialURL.path(percentEncoded: false)
             let partialExists = fm.fileExists(atPath: partialPath)
             let partialSize = (try? fm.attributesOfItem(atPath: partialPath)[.size] as? Int64) ?? 0
             LocalModelFileAudit.log("local-ai:download-move", [
-                "phase": "after-temp-to-partial",
-                "partial.exists": partialExists,
-                "partial.size": partialSize,
+                "phase": "temp-to-partial",
+                "source": tempPath,
+                "source.exists": fm.fileExists(atPath: tempPath),
+                "destination": partialPath,
+                "destination.exists": partialExists,
+                "destination.size": partialSize,
+                "error": "nil",
+                "taskIdentifier": downloadTask.taskIdentifier,
+            ])
+
+            let partialMagic = LocalModelFileAudit.isGGUFMagic(at: partialURL, fileManager: fm)
+            let partialSizeOK = LocalModelFileAudit.validateSize(partialSize, expected: expectedBytes)
+            let partialValid = partialExists && partialSizeOK && partialMagic
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "partial-validation",
+                "exists": partialExists,
+                "actualBytes": partialSize,
+                "expectedBytes": expectedBytes,
+                "magicGGUF": partialMagic,
+                "sizeOK": partialSizeOK,
+                "validationResult": partialValid ? "pass" : "fail",
                 "partial.path": partialPath,
             ])
+
             guard partialExists, partialSize > 0 else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "partial-absent-after-move",
+                    "exists": partialExists,
+                    "size": partialSize,
+                ])
                 throw NSError(
                     domain: "LocalModelManager",
                     code: 5,
@@ -657,33 +883,68 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                 )
             }
 
-            if fm.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
-                try fm.removeItem(at: destinationURL)
-            }
-            try Self.moveOrCopy(partialURL, to: destinationURL)
             let destinationPath = destinationURL.path(percentEncoded: false)
+            do {
+                if fm.fileExists(atPath: destinationPath) {
+                    try fm.removeItem(at: destinationURL)
+                }
+                try Self.moveOrCopy(partialURL, to: destinationURL)
+            } catch {
+                LocalModelFileAudit.log("local-ai:download-move-final", [
+                    "source": partialPath,
+                    "destination": destinationPath,
+                    "destination.exists": fm.fileExists(atPath: destinationPath),
+                    "destination.size": (try? fm.attributesOfItem(atPath: destinationPath)[.size] as? Int64) ?? 0,
+                    "error": error.localizedDescription,
+                    "taskIdentifier": downloadTask.taskIdentifier,
+                ])
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "move-failed",
+                    "where": "partial-to-final",
+                    "error": error.localizedDescription,
+                ])
+                throw error
+            }
+
             let destinationExists = fm.fileExists(atPath: destinationPath)
             let destinationReadable = fm.isReadableFile(atPath: destinationPath)
             let destinationSize = (try? fm.attributesOfItem(atPath: destinationPath)[.size] as? Int64) ?? 0
-            let partialExistsAfter = fm.fileExists(atPath: partialPath)
             let magicOK = LocalModelFileAudit.isGGUFMagic(at: destinationURL, fileManager: fm)
-            LocalModelFileAudit.log("local-ai:download-move", [
-                "phase": "after-partial-to-final",
-                "partial.exists": partialExistsAfter,
-                "final.exists": destinationExists,
-                "final.readable": destinationReadable,
-                "final.size": destinationSize,
+            LocalModelFileAudit.log("local-ai:download-move-final", [
+                "source": partialPath,
+                "destination": destinationPath,
+                "destination.exists": destinationExists,
+                "destination.size": destinationSize,
+                "destination.readable": destinationReadable,
+                "destination.ggufMagic": magicOK,
                 "expectedBytes": expectedBytes,
-                "final.ggufMagic": magicOK,
-                "final.path": destinationPath,
+                "error": "nil",
+                "taskIdentifier": downloadTask.taskIdentifier,
                 "models.entries.after": LocalModelFileAudit.directoryListing(at: parent).joined(separator: "|"),
             ])
             guard destinationExists, destinationSize > 0 else {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "final-absent-after-move",
+                    "exists": destinationExists,
+                    "size": destinationSize,
+                ])
                 throw NSError(
                     domain: "LocalModelManager",
                     code: 3,
                     userInfo: [NSLocalizedDescriptionKey: "Move GGUF terminé sans fichier final lisible."]
                 )
+            }
+            if !LocalModelFileAudit.validateSize(destinationSize, expected: expectedBytes) {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "incorrect-size",
+                    "where": "after-final-move-log-only",
+                    "actualBytes": destinationSize,
+                    "expectedBytes": expectedBytes,
+                    "note": "guard-unchanged-size-check-deferred-to-validateInstalledFile",
+                ])
             }
             finish(.success(()))
         } catch {
@@ -696,21 +957,37 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        let ns = error as NSError
-        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
-            finish(.failure(CancellationError()))
+        if let error {
+            let ns = error as NSError
+            LocalModelFileAudit.log("local-ai:download-complete", [
+                "taskIdentifier": task.taskIdentifier,
+                "error": String(describing: type(of: error)),
+                "errorDomain": ns.domain,
+                "errorCode": ns.code,
+                "localizedDescription": error.localizedDescription,
+            ])
+            if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+                LocalModelFileAudit.log("local-ai:download", [
+                    "phase": "early-exit",
+                    "reason": "cancellation",
+                    "taskIdentifier": task.taskIdentifier,
+                ])
+                finish(.failure(CancellationError()))
+                return
+            }
+            if let response = task.response as? HTTPURLResponse, response.statusCode == 416 {
+                try? FileManager.default.removeItem(at: partialURL)
+            }
+            finish(.failure(error))
             return
         }
-        if let response = task.response as? HTTPURLResponse, response.statusCode == 416 {
-            try? FileManager.default.removeItem(at: partialURL)
-        }
-        LocalModelFileAudit.log("local-ai:download", [
-            "phase": "session-error",
-            "error": error.localizedDescription,
-            "errno": ns.code,
+        LocalModelFileAudit.log("local-ai:download-complete", [
+            "taskIdentifier": task.taskIdentifier,
+            "error": "nil",
+            "errorDomain": "nil",
+            "errorCode": "nil",
+            "localizedDescription": "nil",
         ])
-        finish(.failure(error))
     }
 
     private func finish(_ result: Result<Void, Error>) {
