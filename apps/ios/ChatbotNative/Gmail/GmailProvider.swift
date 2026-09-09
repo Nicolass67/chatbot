@@ -1,7 +1,7 @@
 import Foundation
 
 /// Abstraction Gmail : mode distant (PC / APIClient) vs direct (iPhone → Gmail API).
-protocol GmailServing: AnyObject {
+protocol GmailServing: AnyObject, Sendable {
     var isConnected: Bool { get async }
     var accountEmail: String? { get async }
 
@@ -225,7 +225,7 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
 
 /// Gmail sans PC : OAuth local + `DirectGmailClient`.
 @MainActor
-final class DirectGmailProvider: GmailServing {
+final class DirectGmailProvider: GmailServing, @unchecked Sendable {
     private let oauth: GmailOAuthSession
     private let client: DirectGmailClient
 
