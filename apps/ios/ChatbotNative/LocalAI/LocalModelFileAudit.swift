@@ -84,6 +84,22 @@ enum LocalModelFileAudit {
         NSLog("%@", line)
     }
 
+    /// Toute suppression du GGUF final doit passer ici (diagnostic uniquement).
+    static func logFileDelete(
+        path: String,
+        caller: String,
+        file: String = #fileID,
+        line: Int = #line
+    ) {
+        let stack = Thread.callStackSymbols.prefix(12).joined(separator: " <- ")
+        log("local-ai:file-delete", [
+            "path": path,
+            "caller": caller,
+            "source": "\(file):\(line)",
+            "stack": String(stack.prefix(900)),
+        ])
+    }
+
     /// Snapshot lecture-seule du conteneur Models / Application Support.
     /// Ne crée, ne déplace, ne supprime aucun fichier.
     static func snapshotFS(

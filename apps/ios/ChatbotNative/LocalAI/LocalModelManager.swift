@@ -126,6 +126,7 @@ final class LocalModelManager: ObservableObject {
                 installedBytes = 0
                 progress = 0
                 lastError = missingFileDiagnostic()
+                logLoadTrace("refresh-while-busy-forced-notInstalled")
             }
             return
         default:
@@ -286,6 +287,10 @@ final class LocalModelManager: ObservableObject {
             state = .failed(error.localizedDescription)
             let probe = presence
             if case .invalid = probe {
+                LocalModelFileAudit.logFileDelete(
+                    path: modelFilePath,
+                    caller: "LocalModelManager.install/failure-invalid"
+                )
                 try? fileManager.removeItem(at: modelFileURL)
             }
             LocalModelFileAudit.log("local-ai:download", [
@@ -317,6 +322,9 @@ final class LocalModelManager: ObservableObject {
         defer { endExclusive(.delete) }
         cancelDownload()
         await performUnload()
+        if fileManager.fileExists(atPath: modelFilePath) {
+            LocalModelFileAudit.logFileDelete(path: modelFilePath, caller: "LocalModelManager.deleteModel")
+        }
         try? fileManager.removeItem(at: modelFileURL)
         try? fileManager.removeItem(at: partialDownloadURL)
         installedBytes = 0
@@ -334,7 +342,13 @@ final class LocalModelManager: ObservableObject {
 
     func loadIntoEngine() async {
         guard beginExclusive(.load) else { return }
-        defer { endExclusive(.load) }
+        defer {
+            logLoadTrace("defer")
+            endExclusive(.load)
+            logLoadTrace("end")
+        }
+
+        logLoadTrace("start")
 
         // E — tout début de load / Charger (manager)
         LocalModelFileAudit.snapshotFS(point: "E-loadIntoEngine-start", finalPath: modelFilePath)
@@ -344,9 +358,11 @@ final class LocalModelManager: ObservableObject {
             result: "pending",
             watchedFinalPath: modelFilePath
         )
+        logLoadTrace("before-refresh")
         LocalModelFileAudit.snapshotFS(point: "E-before-refreshInstalledState", finalPath: modelFilePath)
         refreshInstalledState()
         LocalModelFileAudit.snapshotFS(point: "E-after-refreshInstalledState", finalPath: modelFilePath)
+        logLoadTrace("after-refresh")
         LocalModelFileAudit.logFSOp(
             "refreshInstalledState",
             phase: "after",
@@ -366,11 +382,13 @@ final class LocalModelManager: ObservableObject {
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
             LocalModelFileAudit.snapshotFS(point: "E-load-blocked-not-installed", finalPath: modelFilePath)
+            logLoadTrace("end-blocked-not-installed")
             return
         }
         guard LocalInferenceEngine.isLlamaRuntimeAvailable else {
             lastError = LocalInferenceError.notAvailable.localizedDescription
             state = .installed
+            logLoadTrace("end-runtime-unavailable")
             return
         }
 
@@ -379,20 +397,28 @@ final class LocalModelManager: ObservableObject {
         lastError = nil
         do {
             LocalModelFileAudit.snapshotFS(point: "E-before-engine-load", finalPath: path)
+            logLoadTrace("before-libllama-load")
             try await engine.load(path: path)
+            logLoadTrace("after-libllama-load")
             LocalModelFileAudit.snapshotFS(point: "E-after-engine-load", finalPath: path)
             // Re-vérifier après load (TOCTOU / sideload parallèle).
             if isInstalled {
                 state = .ready
+                logLoadTrace("success-ready")
             } else {
+                logLoadTrace("before-unload")
                 await engine.unload()
+                logLoadTrace("after-unload")
                 state = .notInstalled
                 lastError = missingFileDiagnostic()
+                logLoadTrace("success-but-file-missing")
             }
         } catch {
             lastError = error.localizedDescription
+            logLoadTrace("catch")
             LocalModelFileAudit.snapshotFS(point: "E-after-engine-load-error", finalPath: path)
             applyPresenceToState(presence, clearTransientErrors: false)
+            logLoadTrace("after-catch-applyPresence")
         }
     }
 
@@ -447,6 +473,17 @@ final class LocalModelManager: ObservableObject {
         applyPresenceToState(presence, clearTransientErrors: false)
     }
 
+    private func logLoadTrace(_ phase: String) {
+        LocalModelFileAudit.log("local-ai:load-trace", [
+            "phase": phase,
+            "fileExists": actualFileExists,
+            "fileSize": actualFileSize,
+            "state": state.statusLabel,
+            "lastError": lastError ?? "",
+            "exclusiveOperation": exclusiveOperation?.rawValue ?? "nil",
+        ])
+    }
+
     // MARK: - Private download
 
     private func download(from remoteURL: URL, model: LocalModelDescriptor, generation: UInt64) async throws {
@@ -468,6 +505,10 @@ final class LocalModelManager: ObservableObject {
             return
         }
         if case .invalid = existing {
+            LocalModelFileAudit.logFileDelete(
+                path: fileSystemPath(destination),
+                caller: "LocalModelManager.download/replace-invalid"
+            )
             try? fileManager.removeItem(at: destination)
         }
 
@@ -641,6 +682,10 @@ final class LocalModelManager: ObservableObject {
             ])
             throw LocalInferenceError.modelMissing
         case .invalid(let size, let sizeOK, let magicOK):
+            LocalModelFileAudit.logFileDelete(
+                path: modelFilePath,
+                caller: "LocalModelManager.validateInstalledFile/invalid"
+            )
             try? fileManager.removeItem(at: modelFileURL)
             if !sizeOK {
                 LocalModelFileAudit.log("local-ai:download", [
@@ -709,10 +754,13 @@ final class LocalModelManager: ObservableObject {
             installedBytes = size
             state = .notInstalled
             lastError = "Fichier modèle invalide ou incomplet (\(byteLabel(size))). Supprimez puis réinstallez."
+            logLoadTrace("applyPresence-invalid-notInstalled")
         case .missing:
             installedBytes = 0
             progress = 0
             state = .notInstalled
+            // Intentionnel : ne touche pas lastError — peut laisser une UI sans message d’erreur.
+            logLoadTrace("applyPresence-missing-notInstalled")
         }
     }
 
