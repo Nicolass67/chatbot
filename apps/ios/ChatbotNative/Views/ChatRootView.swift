@@ -15,7 +15,7 @@ struct ChatRootView: View {
     }
 
     private var useLocalChat: Bool {
-        session.localOnlyMode || ExecutionModeStore.shared.shouldUseLocalLLM
+        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
     }
 
     var body: some View {
@@ -237,7 +237,7 @@ struct ConversationSwitcherSheet: View {
     }
 
     private var useLocalChat: Bool {
-        session.localOnlyMode || ExecutionModeStore.shared.shouldUseLocalLLM
+        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
     }
 
     private var filtered: [ConversationDTO] {

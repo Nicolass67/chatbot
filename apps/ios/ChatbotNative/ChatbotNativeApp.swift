@@ -29,11 +29,13 @@ struct ChatbotNativeApp: App {
                     ExecutionModeStore.shared.bind(infrastructure: infrastructure)
                     AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
                     appearance.republishThemeToWidgets()
+                    requestLocalModelAutoLoadIfNeeded()
                     Task {
                         await WidgetMailSync.syncIfNeeded(session: session, force: true)
                         if session.canEnterApp {
                             await infrastructure.refresh()
                             ExecutionModeStore.shared.refreshDerived()
+                            requestLocalModelAutoLoadIfNeeded()
                         }
                     }
                 }
@@ -45,15 +47,18 @@ struct ChatbotNativeApp: App {
                             await WidgetMailSync.syncIfNeeded(session: session, force: true)
                             await infrastructure.refresh()
                             ExecutionModeStore.shared.refreshDerived()
+                            requestLocalModelAutoLoadIfNeeded()
                         }
                     }
                 }
                 .onChange(of: session.localOnlyMode) { _, _ in
                     ExecutionModeStore.shared.refreshDerived()
+                    requestLocalModelAutoLoadIfNeeded()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     appearance.republishThemeToWidgets()
+                    requestLocalModelAutoLoadIfNeeded()
                     Task {
                         await WidgetMailSync.syncIfNeeded(session: session)
                         if session.canEnterApp {
@@ -63,6 +68,14 @@ struct ChatbotNativeApp: App {
                     }
                 }
         }
+    }
+
+    /// Point d’entrée lifecycle — pas un `.onAppear` de vue reconstruite.
+    private func requestLocalModelAutoLoadIfNeeded() {
+        let wantsLocal =
+            session.localOnlyMode
+            || ExecutionModeStore.shared.preference == .forceLocal
+        LocalModelManager.shared.requestAutoLoadIfNeeded(wantsLocalExecution: wantsLocal)
     }
 
     /// Deep links QA / product. Never bypass auth — intents are applied only after login.

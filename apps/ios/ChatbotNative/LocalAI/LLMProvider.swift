@@ -29,7 +29,7 @@ protocol LLMProvider: Sendable {
 struct RemoteLLMProvider: LLMProvider {
     /// Réservé — le streaming distant productif passe toujours par `ChatStreamingService`.
     var note: String {
-        "ChatScreen utilise ChatStreamingService pour le mode distant (PC / LM Studio)."
+        "ChatScreen utilise ChatStreamingService pour le chat distant (PC / LM Studio)."
     }
 
     func stream(
@@ -80,8 +80,20 @@ struct LocalLLMProvider: LLMProvider {
             let task = Task {
                 do {
                     let stream = await engine.generate(prompt: prompt, maxTokens: maxTokens)
+                    var accumulated = ""
+                    var yieldedCount = 0
                     for try await token in stream {
-                        continuation.yield(token)
+                        accumulated += token
+                        let cut = ChatMLPromptBuilder.truncateAssistantOutput(accumulated)
+                        if cut.text.count > yieldedCount {
+                            let start = cut.text.index(cut.text.startIndex, offsetBy: yieldedCount)
+                            continuation.yield(String(cut.text[start...]))
+                            yieldedCount = cut.text.count
+                        }
+                        if cut.hitStop {
+                            await engine.cancel()
+                            break
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -95,37 +107,16 @@ struct LocalLLMProvider: LLMProvider {
         }
     }
 
-    /// Construit un prompt chat simple (Qwen-style) avec troncature depuis les messages les plus anciens.
+    /// Prompt ChatML Qwen (partagé avec Mail via `ChatMLPromptBuilder`).
     static func buildPrompt(
         system: String,
         messages: [LLMChatMessage],
         charBudget: Int
     ) -> String {
-        var lines: [String] = []
-        lines.append("System: \(system)")
-
-        var selected: [LLMChatMessage] = []
-        var used = system.count + 16
-        for message in messages.reversed() {
-            let cost = message.content.count + 24
-            if used + cost > charBudget, !selected.isEmpty {
-                break
-            }
-            selected.insert(message, at: 0)
-            used += cost
-        }
-
-        for message in selected {
-            switch message.role {
-            case .system:
-                lines.append("System: \(message.content)")
-            case .user:
-                lines.append("User: \(message.content)")
-            case .assistant:
-                lines.append("Assistant: \(message.content)")
-            }
-        }
-        lines.append("Assistant:")
-        return lines.joined(separator: "\n")
+        ChatMLPromptBuilder.buildPrompt(
+            system: system,
+            messages: messages,
+            charBudget: charBudget
+        )
     }
 }

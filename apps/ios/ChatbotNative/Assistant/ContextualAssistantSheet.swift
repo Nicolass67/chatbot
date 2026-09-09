@@ -156,9 +156,17 @@ struct ContextualAssistantSheet: View {
         }
     }
 
+    private var useLocalAssistant: Bool {
+        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
+    }
+
     private func boot() async {
         booting = true
         defer { booting = false }
+        if useLocalAssistant {
+            bootFromLocalStore(forceNew: false)
+            return
+        }
         do {
             if let existing = ConversationSessionStore.conversationId(
                 scope: scope,
@@ -191,7 +199,59 @@ struct ContextualAssistantSheet: View {
         }
     }
 
+    /// Boot local (miroir `ChatRootView.bootFromLocalStore`) — aucun appel PC.
+    private func bootFromLocalStore(forceNew: Bool) {
+        let store = LocalChatStore.shared
+        store.reloadConversations()
+        let titleSeed = Self.seedTitle(sheetTitle: title, contextLabel: contextLabel)
+            ?? "Nouvelle conversation"
+
+        if forceNew {
+            if let old = conversation?.id {
+                ConversationSessionStore.clear(
+                    conversationId: old,
+                    scope: scope,
+                    contextKey: contextKey
+                )
+            } else {
+                ConversationSessionStore.clear(scope: scope, contextKey: contextKey)
+            }
+            let created = store.createConversation(title: titleSeed, scope: scope)
+            ConversationSessionStore.save(
+                conversationId: created.id,
+                scope: scope,
+                contextKey: contextKey
+            )
+            conversation = created.asConversationDTO()
+            error = nil
+            return
+        }
+
+        if let existing = ConversationSessionStore.conversationId(
+            scope: scope,
+            contextKey: contextKey
+        ),
+           let match = store.conversations(scope: scope).first(where: { $0.id == existing }) {
+            conversation = match.asConversationDTO()
+            error = nil
+            return
+        }
+
+        let created = store.createConversation(title: titleSeed, scope: scope)
+        ConversationSessionStore.save(
+            conversationId: created.id,
+            scope: scope,
+            contextKey: contextKey
+        )
+        conversation = created.asConversationDTO()
+        error = nil
+    }
+
     private func createFresh() async {
+        if useLocalAssistant {
+            bootFromLocalStore(forceNew: true)
+            return
+        }
         do {
             if let old = conversation?.id {
                 ConversationSessionStore.clear(
@@ -277,6 +337,10 @@ struct ScopedConversationSwitcher: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var useLocalAssistant: Bool {
+        session.localOnlyMode || ExecutionModeStore.shared.prefersOnDeviceAssistant
     }
 
     private var filtered: [ConversationDTO] {
@@ -386,6 +450,12 @@ struct ScopedConversationSwitcher: View {
     private func load() async {
         loading = true
         defer { loading = false }
+        if useLocalAssistant {
+            LocalChatStore.shared.reloadConversations()
+            items = LocalChatStore.shared.conversations(scope: scope).map { $0.asConversationDTO() }
+            error = nil
+            return
+        }
         do {
             items = try await client.listConversations(scope: scope)
             error = nil
@@ -398,6 +468,14 @@ struct ScopedConversationSwitcher: View {
         guard let target = renameTarget else { return }
         let title = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
+        if useLocalAssistant {
+            LocalChatStore.shared.renameConversation(id: target.id, title: title)
+            LocalChatStore.shared.reloadConversations()
+            items = LocalChatStore.shared.conversations(scope: scope).map { $0.asConversationDTO() }
+            renameTarget = nil
+            AppHaptics.success()
+            return
+        }
         do {
             let updated = try await client.renameConversation(id: target.id, title: title)
             if let idx = items.firstIndex(where: { $0.id == target.id }) {

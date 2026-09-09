@@ -27,6 +27,8 @@ final class LocalModelManager: ObservableObject {
     private var downloadDelegate: DownloadDelegate?
     private var session: URLSession?
     private var installGeneration: UInt64 = 0
+    /// Une seule Task d’auto-load à la fois (évite double `loadIntoEngine` + lastError parasite).
+    private var autoLoadTask: Task<Void, Never>?
 
     private let engine = LocalInferenceEngine.shared
     private let fileManager = FileManager.default
@@ -339,6 +341,35 @@ final class LocalModelManager: ObservableObject {
     }
 
     // MARK: - Engine
+
+    /// Auto-chargement au démarrage / bascule « Toujours local ».
+    /// - Ne télécharge / n’installe jamais.
+    /// - No-op si déjà ready, absent, ou load déjà en cours.
+    /// - Respecte `ModelExclusiveOperation` via `loadIntoEngine`.
+    func requestAutoLoadIfNeeded(wantsLocalExecution: Bool) {
+        guard wantsLocalExecution else { return }
+        guard autoLoadTask == nil else { return }
+        autoLoadTask = Task { @MainActor in
+            defer { self.autoLoadTask = nil }
+            await self.performAutoLoadIfNeeded()
+        }
+    }
+
+    func performAutoLoadIfNeeded() async {
+        refreshInstalledState()
+        let loading: Bool = {
+            if case .loading = state { return true }
+            return false
+        }()
+        guard LocalModelAutoLoadPolicy.shouldAttemptLoad(
+            wantsLocalExecution: true,
+            isInstalled: isInstalled,
+            isReady: isReady,
+            exclusiveBusy: exclusiveOperation != nil,
+            isLoading: loading
+        ) else { return }
+        await loadIntoEngine()
+    }
 
     func loadIntoEngine() async {
         guard beginExclusive(.load) else { return }

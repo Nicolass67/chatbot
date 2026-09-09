@@ -24,6 +24,27 @@ final class LocalModelDescriptorTests: XCTestCase {
 }
 
 final class LocalLLMProviderPromptTests: XCTestCase {
+    func testBuildPromptUsesChatMLAndAssistantGenerationPrompt() {
+        let messages = [
+            LLMChatMessage(role: .user, content: "Test"),
+            LLMChatMessage(role: .assistant, content: "Salut"),
+            LLMChatMessage(role: .user, content: "Suite"),
+        ]
+        let prompt = LocalLLMProvider.buildPrompt(
+            system: "SYS",
+            messages: messages,
+            charBudget: 8_000
+        )
+        XCTAssertTrue(prompt.contains("<|im_start|>system"))
+        XCTAssertTrue(prompt.contains("SYS"))
+        XCTAssertTrue(prompt.contains("<|im_end|>"))
+        XCTAssertTrue(prompt.contains("<|im_start|>user\nTest\n<|im_end|>"))
+        XCTAssertTrue(prompt.contains("<|im_start|>assistant\nSalut\n<|im_end|>"))
+        XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
+        XCTAssertFalse(prompt.hasPrefix("System:"))
+        XCTAssertFalse(prompt.contains("\nUser: Test"))
+    }
+
     func testBuildPromptTruncatesOldestMessages() {
         var messages: [LLMChatMessage] = []
         for i in 0..<20 {
@@ -35,11 +56,138 @@ final class LocalLLMProviderPromptTests: XCTestCase {
             messages: messages,
             charBudget: 800
         )
-        XCTAssertTrue(prompt.hasPrefix("System: SYS"))
-        XCTAssertTrue(prompt.hasSuffix("Assistant:"))
+        XCTAssertTrue(prompt.contains("<|im_start|>system"))
+        XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
         XCTAssertLessThan(prompt.count, 2000)
-        // Les messages les plus récents doivent rester.
         XCTAssertTrue(prompt.contains("u19") || prompt.contains("a19"))
+    }
+}
+
+final class ChatMLStopTruncationTests: XCTestCase {
+    func testStopsOnImEndAndKeepsAnswer() {
+        let raw = "Bonjour, je suis l'assistant.<|im_end|>\n<|im_start|>user\nTest"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertTrue(cut.hitStop)
+        XCTAssertEqual(cut.text, "Bonjour, je suis l'assistant.")
+    }
+
+    func testStopsOnImStartNewTurn() {
+        let raw = "Réponse utile\n<|im_start|>user\nEncore"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertTrue(cut.hitStop)
+        XCTAssertEqual(cut.text, "Réponse utile")
+    }
+
+    func testStopsOnLegacyUserTurnBoundary() {
+        let raw = "Bonjour mode local.\nUser: Test\nAssistant: encore"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertTrue(cut.hitStop)
+        XCTAssertEqual(cut.text, "Bonjour mode local.")
+    }
+
+    func testDoesNotTruncateUserWordMidSentence() {
+        let raw = "Le compte User:admin est invalide."
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertFalse(cut.hitStop)
+        XCTAssertEqual(cut.text, raw)
+    }
+
+    func testNormalAnswerPreservedEntirely() {
+        let raw = "Voici une réponse complète sans faux tour."
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertFalse(cut.hitStop)
+        XCTAssertEqual(cut.text, raw)
+    }
+}
+
+final class ChatSendGateTests: XCTestCase {
+    func testSingleBeginAllowsOneGenerationSlot() {
+        var sending = false
+        XCTAssertTrue(ChatSendGate.tryBegin(isSending: &sending))
+        XCTAssertTrue(sending)
+        XCTAssertFalse(ChatSendGate.tryBegin(isSending: &sending))
+        sending = false
+        XCTAssertTrue(ChatSendGate.tryBegin(isSending: &sending))
+    }
+
+    func testDoubleTapSecondRejected() {
+        var sending = false
+        var generations = 0
+        if ChatSendGate.tryBegin(isSending: &sending) { generations += 1 }
+        if ChatSendGate.tryBegin(isSending: &sending) { generations += 1 }
+        XCTAssertEqual(generations, 1)
+        XCTAssertTrue(sending)
+    }
+}
+
+final class LocalModelAutoLoadPolicyTests: XCTestCase {
+    func testLoadsWhenLocalInstalledNotReady() {
+        XCTAssertTrue(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: true,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: false
+            )
+        )
+    }
+
+    func testSkipsWhenAlreadyReady() {
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: true,
+                isReady: true,
+                exclusiveBusy: false,
+                isLoading: false
+            )
+        )
+    }
+
+    func testSkipsWhenNotInstalledNoDownload() {
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: false,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: false
+            )
+        )
+    }
+
+    func testSkipsWhenRemoteMode() {
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: false,
+                isInstalled: true,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: false
+            )
+        )
+    }
+
+    func testSkipsWhenExclusiveOrLoading() {
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: true,
+                isReady: false,
+                exclusiveBusy: true,
+                isLoading: false
+            )
+        )
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: true,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: true
+            )
+        )
     }
 }
 
@@ -49,6 +197,11 @@ final class ExecutionModePreferenceTests: XCTestCase {
             XCTAssertFalse(mode.title.isEmpty)
             XCTAssertFalse(mode.helpText.isEmpty)
         }
+    }
+
+    func testPrefersOnDeviceWhenForceLocalEvenIfNotReady() {
+        // forceLocal → prefersOnDevice indépendamment de isReady (boot local sans PC).
+        XCTAssertEqual(ExecutionModePreference.forceLocal.title, "Toujours local")
     }
 }
 

@@ -27,6 +27,9 @@ final class ExecutionModeStore: ObservableObject {
 
     func setPreference(_ value: ExecutionModePreference) {
         preference = value
+        if value == .forceLocal {
+            LocalModelManager.shared.requestAutoLoadIfNeeded(wantsLocalExecution: true)
+        }
     }
 
     func bind(infrastructure: InfrastructureStore, models: LocalModelManager = .shared) {
@@ -62,6 +65,13 @@ final class ExecutionModeStore: ObservableObject {
         case .automatic:
             return allowLocalFallback
         }
+    }
+
+    /// Intention on-device (Toujours local) — **indépendante** de `isReady`.
+    /// Sert au boot conversation locale / routage Chat-Mail sans exiger le PC.
+    /// La génération réelle attend toujours un modèle prêt (`shouldUseLocalLLM` / load).
+    var prefersOnDeviceAssistant: Bool {
+        preference == .forceLocal || shouldUseLocalLLM
     }
 
     var statusLabel: String {

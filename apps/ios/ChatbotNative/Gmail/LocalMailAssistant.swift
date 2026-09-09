@@ -289,11 +289,12 @@ final class LocalMailAssistant: ObservableObject {
             lastError = message
             throw LocalMailAssistantError.inference(message)
         }
-        let trimmed = accumulator.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let truncated = ChatMLPromptBuilder.truncateAssistantOutput(accumulator.value).text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !truncated.isEmpty else {
             throw LocalMailAssistantError.inference("Réponse vide du modèle local.")
         }
-        return trimmed
+        return truncated
     }
 
     private func truncatedMailBody(_ text: String) -> String {
@@ -315,16 +316,8 @@ final class LocalMailAssistant: ObservableObject {
     }
 
     private static func buildPrompt(system: String, user: String) -> String {
-        // Format simple compatible Qwen chat — pas de dépendance au backend PC.
-        """
-        <|im_start|>system
-        \(system)
-        <|im_end|>
-        <|im_start|>user
-        \(user)
-        <|im_end|>
-        <|im_start|>assistant
-        """
+        // ChatML Qwen — builder partagé avec le Chat local (`ChatMLPromptBuilder`).
+        ChatMLPromptBuilder.buildPrompt(system: system, user: user)
     }
 
 }
