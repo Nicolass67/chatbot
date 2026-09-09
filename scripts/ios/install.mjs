@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDeployVenv, venvPythonPath } from "./ensure-deploy-venv.mjs";
+import { ensureAppleMobileDeviceSupport } from "./ensure-amds.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "../..");
@@ -420,6 +421,14 @@ export async function installIpa(ipaPath, opts = {}) {
   const abs = path.resolve(ipaPath);
   if (!fs.existsSync(abs)) {
     return { code: 1, message: `IPA introuvable: ${abs}`, backend: "none" };
+  }
+
+  // Store iTunes embeds AMDS but does not keep usbmux (:27015) alive.
+  // Without this, USB isideload fails with ConnectionFailedToUsbmuxdError
+  // even when PnP shows « Apple iPhone » OK.
+  const amds = await ensureAppleMobileDeviceSupport();
+  if (!amds.ok) {
+    console.warn(`[ios:install] ${amds.detail}`);
   }
 
   const transport = String(
