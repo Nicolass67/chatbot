@@ -214,9 +214,10 @@ enum LocalZipXML {
     private static func inflateRaw(_ data: Data) -> Data? {
         guard !data.isEmpty else { return Data() }
         var stream = z_stream()
+        let inputCount = data.count
         var status = data.withUnsafeBytes { src -> Int32 in
             stream.next_in = UnsafeMutablePointer(mutating: src.bindMemory(to: Bytef.self).baseAddress)
-            stream.avail_in = uInt(data.count)
+            stream.avail_in = uInt(inputCount)
             return inflateInit2_(&stream, -MAX_WBITS, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
         }
         guard status == Z_OK else { return nil }
