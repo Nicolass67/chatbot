@@ -171,6 +171,10 @@ struct ChatbotNativeApp: App {
             }
         case "settings":
             nav.openSettings()
+        case "local-ai":
+            if rest.first == "thread-ab" {
+                Task { await LocalThreadABBenchmark.waitAndRun(source: "deeplink") }
+            }
         default:
             break
         }

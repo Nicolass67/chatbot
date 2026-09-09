@@ -437,6 +437,8 @@ private struct LocalModelTestSheet: View {
     @State private var output = ""
     @State private var running = false
     @State private var errorText: String?
+    @State private var gdnText = ""
+    @State private var abRunning = false
 
     var body: some View {
         NavigationStack {
@@ -447,6 +449,14 @@ private struct LocalModelTestSheet: View {
 
                 if running {
                     ProgressView("Génération…")
+                }
+                if abRunning {
+                    ProgressView("A/B threads 2 vs 4… (plusieurs minutes)")
+                }
+                if !gdnText.isEmpty {
+                    Text(gdnText)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
                 }
                 if let errorText {
                     Text(errorText).foregroundStyle(AppTheme.danger).font(CNFont.caption)
@@ -472,17 +482,42 @@ private struct LocalModelTestSheet: View {
                     Button("Lancer") {
                         Task { await runTest() }
                     }
-                    .disabled(!models.isReady || running)
+                    .disabled(!models.isReady || running || abRunning)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("A/B 2/4") {
+                        Task { await runThreadAB() }
+                    }
+                    .disabled(!models.isReady || running || abRunning)
                 }
                 if models.isVisionProjectorInstalled {
-                    ToolbarItem(placement: .primaryAction) {
+                    ToolbarItem(placement: .automatic) {
                         Button("Vision") {
                             Task { await runVisionTest() }
                         }
-                        .disabled(!models.isReady || running)
+                        .disabled(!models.isReady || running || abRunning)
                     }
                 }
             }
+            .task { await refreshGdn() }
+        }
+    }
+
+    private func refreshGdn() async {
+        if let gdn = await LocalInferenceEngine.shared.lastLoadDiagnostics?.gdn {
+            gdnText = gdn.explicitReport
+        }
+    }
+
+    private func runThreadAB() async {
+        abRunning = true
+        errorText = nil
+        defer { abRunning = false }
+        let report = await LocalThreadABBenchmark.runIsolated(source: "settings-tester")
+        gdnText = report.gdn.explicitReport + "\n\n" + report.explicitSummary
+        output = report.explicitSummary
+        if report.runs.filter({ !$0.warmup }).isEmpty {
+            errorText = "Aucune mesure — modèle chargé ?"
         }
     }
 

@@ -82,6 +82,8 @@ struct LlamaLoadDiagnostics: Equatable, Sendable, Codable {
     var fallbackReason: String?
     var llamaLogTail: String
     var estimatedKVBytesHint: Int64?
+    /// Probe GDN fused lu dans les logs llama.cpp au load — pas une déduction Swift.
+    var gdn: LlamaGdnProbeObservation = .unknown
 
     var summaryLine: String {
         let layers: String
@@ -97,6 +99,7 @@ struct LlamaLoadDiagnostics: Equatable, Sendable, Codable {
             "ctx=\(nCtx) batch=\(nBatch)/\(nUbatch)",
             "threads=\(nThreads)/\(nThreadsBatch)",
             "fa=\(flashAttention)",
+            "gdn=\(gdn.probe)/ar=\(gdn.fusedAR)/ch=\(gdn.fusedCH)/auto=\(gdn.autoFgdn)",
             fellBackToCPU ? "FALLBACK_CPU" : "as_requested",
             String(format: "load=%.0fms", loadDurationMs),
         ].joined(separator: " ")

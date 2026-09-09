@@ -26,11 +26,13 @@ private final class LlamaLogCapture: @unchecked Sendable {
     static let shared = LlamaLogCapture()
     private let lock = NSLock()
     private var lines: [String] = []
+    private var gdnLines: [String] = []
     private var fileDiagnostics: [String] = []
 
     func clear() {
         lock.lock()
         lines.removeAll(keepingCapacity: true)
+        gdnLines.removeAll(keepingCapacity: true)
         fileDiagnostics.removeAll(keepingCapacity: true)
         lock.unlock()
     }
@@ -40,7 +42,11 @@ private final class LlamaLogCapture: @unchecked Sendable {
         guard !trimmed.isEmpty else { return }
         lock.lock()
         lines.append(trimmed)
-        if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+        if lines.count > 250 { lines.removeFirst(lines.count - 250) }
+        if LlamaGdnProbeObservation.isRelevantLogLine(trimmed) {
+            gdnLines.append(trimmed)
+            print("[local-ai:gdn-raw] \(trimmed)")
+        }
         lock.unlock()
     }
 
@@ -62,6 +68,12 @@ private final class LlamaLogCapture: @unchecked Sendable {
         if diagnostics.isEmpty { return " — " + logs }
         if logs.isEmpty { return " — " + diagnostics }
         return " — \(logs)\n\n\(diagnostics)"
+    }
+
+    func gdnLogLines() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return gdnLines
     }
 
     var reportsMissingGGUF: Bool {
@@ -214,6 +226,14 @@ final class LlamaContext: @unchecked Sendable {
         llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(config.topP, 1))
         llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
         vocab = llama_model_get_vocab(model)
+    }
+
+    func setThreads(_ n: Int32, batch: Int32) {
+        llama_set_n_threads(context, n, batch)
+    }
+
+    func currentThreads() -> (threads: Int32, batch: Int32) {
+        (llama_n_threads(context), llama_n_threads_batch(context))
     }
 
     deinit {
@@ -400,12 +420,19 @@ final class LlamaContext: @unchecked Sendable {
             fellBackToCPU: fellBack || effectiveBackend == "cpu" && wantMetal,
             fallbackReason: fallbackReason,
             llamaLogTail: LlamaLogCapture.shared.summary,
-            estimatedKVBytesHint: kvHint
+            estimatedKVBytesHint: kvHint,
+            gdn: LlamaGdnProbeObservation.parse(lines: LlamaLogCapture.shared.gdnLogLines())
         )
         diagLock.lock()
         _lastDiagnostics = diag
         diagLock.unlock()
         print("[local-ai:load] \(diag.summaryLine)")
+        print(diag.gdn.explicitReport)
+        if !diag.gdn.rawLines.isEmpty {
+            for line in diag.gdn.rawLines {
+                print("[local-ai:gdn-kept] \(line)")
+            }
+        }
         return ctx
     }
 

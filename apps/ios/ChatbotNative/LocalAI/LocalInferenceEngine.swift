@@ -180,6 +180,23 @@ actor LocalInferenceEngine {
 #endif
     }
 
+#if canImport(llama)
+    func setThreads(_ n: Int32, batch: Int32) {
+        llama?.setThreads(n, batch: batch)
+    }
+
+    func currentThreads() -> (threads: Int32, batch: Int32)? {
+        llama?.currentThreads()
+    }
+#else
+    func setThreads(_ n: Int32, batch: Int32) {
+        _ = n
+        _ = batch
+    }
+
+    func currentThreads() -> (threads: Int32, batch: Int32)? { nil }
+#endif
+
     func unload() async {
 #if canImport(llama)
         cancelGeneration = true

@@ -867,6 +867,8 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(t, 1)
         XCTAssertLessThanOrEqual(t, 4)
         XCTAssertEqual(LlamaInferenceConfig.resolvedThreads(explicit: 2), 2)
+        XCTAssertNil(LlamaInferenceConfig.a15Default.nThreads)
+        XCTAssertNil(LlamaInferenceConfig.a15Default.nThreadsBatch)
     }
 
     func testHeavyModelProfileUsesConservativeGpuLayers() {
@@ -1590,5 +1592,41 @@ final class WorkflowSyncTests: XCTestCase {
             viewportHeight: 700
         )
         XCTAssertEqual(agent, 160)
+    }
+}
+
+final class LlamaGdnProbeObservationTests: XCTestCase {
+    func testParsesEnabledProbeFromLlamaCppLogs() {
+        let obs = LlamaGdnProbeObservation.parse(lines: [
+            "llama_context: resolving fused Gated Delta Net support:",
+            "llama_context: fused Gated Delta Net (autoregressive) enabled",
+            "llama_context: fused Gated Delta Net (chunked) enabled",
+        ])
+        XCTAssertEqual(obs.fusedAR, "ENABLED")
+        XCTAssertEqual(obs.fusedCH, "ENABLED")
+        XCTAssertEqual(obs.autoFgdn, "PROBED")
+        XCTAssertEqual(obs.probe, "ENABLED")
+        XCTAssertTrue(obs.explicitReport.contains("fused_ar = ENABLED"))
+        XCTAssertTrue(obs.explicitReport.contains("probe = ENABLED"))
+    }
+
+    func testParsesDisabledProbeWithReason() {
+        let obs = LlamaGdnProbeObservation.parse(lines: [
+            "llama_context: resolving fused Gated Delta Net support:",
+            "llama_context: fused Gated Delta Net (autoregressive) not supported, set to disabled",
+            "llama_context: fused Gated Delta Net (chunked) not supported, set to disabled",
+        ])
+        XCTAssertEqual(obs.fusedAR, "DISABLED")
+        XCTAssertEqual(obs.fusedCH, "DISABLED")
+        XCTAssertEqual(obs.probe, "DISABLED")
+        XCTAssertTrue(obs.reason.contains("désactivé") || obs.reason.contains("not supported"))
+    }
+
+    func testUnknownWhenNoGdnLines() {
+        let obs = LlamaGdnProbeObservation.parse(lines: [
+            "llama_model_loader: loaded meta data",
+        ])
+        XCTAssertEqual(obs.probe, "UNKNOWN")
+        XCTAssertEqual(obs.autoFgdn, "NOT_OBSERVED")
     }
 }
