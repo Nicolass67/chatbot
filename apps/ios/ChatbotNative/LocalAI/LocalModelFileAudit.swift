@@ -83,4 +83,67 @@ enum LocalModelFileAudit {
         logger.notice("\(line, privacy: .public)")
         NSLog("%@", line)
     }
+
+    /// Snapshot lecture-seule du conteneur Models / Application Support.
+    /// Ne crée, ne déplace, ne supprime aucun fichier.
+    static func snapshotFS(
+        point: String,
+        finalPath: String,
+        fileManager: FileManager = .default
+    ) {
+        let finalURL = URL(fileURLWithPath: finalPath, isDirectory: false)
+        let modelsDirectory = finalURL.deletingLastPathComponent()
+        let applicationSupport = modelsDirectory.deletingLastPathComponent()
+        let partialPath = finalPath + ".download"
+        let exists = fileManager.fileExists(atPath: finalPath)
+        let size = (try? fileManager.attributesOfItem(atPath: finalPath)[.size] as? Int64) ?? 0
+        let partialExists = fileManager.fileExists(atPath: partialPath)
+        log("local-ai:fs-snapshot", [
+            "point": point,
+            "containerUUID": containerUUID(from: finalPath),
+            "modelsDirectory": modelsDirectory.path(percentEncoded: false),
+            "applicationSupport": applicationSupport.path(percentEncoded: false),
+            "finalPath": finalPath,
+            "final.exists": exists,
+            "final.size": size,
+            "final.readable": fileManager.isReadableFile(atPath: finalPath),
+            "partial.exists": partialExists,
+            "partial.path": partialPath,
+            "models.entries": directoryListing(at: modelsDirectory, fileManager: fileManager).joined(separator: "|"),
+            "appSupport.entries": directoryListing(at: applicationSupport, fileManager: fileManager).joined(separator: "|"),
+        ])
+    }
+
+    /// Trace d’une opération filesystem (appelée autour de l’op, sans en changer le résultat).
+    static func logFSOp(
+        _ operation: String,
+        phase: String,
+        source: String? = nil,
+        destination: String? = nil,
+        result: String,
+        watchedFinalPath: String? = nil
+    ) {
+        var fields: [String: any CustomStringConvertible] = [
+            "operation": operation,
+            "phase": phase,
+            "result": result,
+        ]
+        if let source { fields["source"] = source }
+        if let destination { fields["destination"] = destination }
+        if let watchedFinalPath {
+            let fm = FileManager.default
+            fields["watchedFinalPath"] = watchedFinalPath
+            fields["watchedFinal.exists"] = fm.fileExists(atPath: watchedFinalPath)
+            fields["watchedFinal.size"] = (try? fm.attributesOfItem(atPath: watchedFinalPath)[.size] as? Int64) ?? 0
+        }
+        log("local-ai:fs-op", fields)
+    }
+
+    static func containerUUID(from path: String) -> String {
+        // …/Application/<UUID>/Library/…
+        guard let range = path.range(of: "/Application/") else { return "unknown" }
+        let after = path[range.upperBound...]
+        let uuid = after.split(separator: "/").first.map(String.init) ?? "unknown"
+        return uuid
+    }
 }

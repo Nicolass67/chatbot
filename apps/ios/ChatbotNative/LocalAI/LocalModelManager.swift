@@ -182,6 +182,10 @@ final class LocalModelManager: ObservableObject {
         lastError = nil
         progress = 0
         state = .downloading(progress: 0)
+        defer {
+            // C — sortie complète de install() (tous chemins).
+            LocalModelFileAudit.snapshotFS(point: "C-after-install-exit", finalPath: modelFilePath)
+        }
 
         LocalModelFileAudit.log("local-ai:download", [
             "phase": "install-start",
@@ -239,6 +243,8 @@ final class LocalModelManager: ObservableObject {
                 "path": modelFilePath,
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
+            // B — immédiatement après installed-state-set
+            LocalModelFileAudit.snapshotFS(point: "B-after-installed-state-set", finalPath: modelFilePath)
         } catch is CancellationError {
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
@@ -318,7 +324,23 @@ final class LocalModelManager: ObservableObject {
     // MARK: - Engine
 
     func loadIntoEngine() async {
+        // E — tout début de load / Charger (manager)
+        LocalModelFileAudit.snapshotFS(point: "E-loadIntoEngine-start", finalPath: modelFilePath)
+        LocalModelFileAudit.logFSOp(
+            "refreshInstalledState",
+            phase: "before",
+            watchedFinalPath: modelFilePath,
+            result: "pending"
+        )
+        LocalModelFileAudit.snapshotFS(point: "E-before-refreshInstalledState", finalPath: modelFilePath)
         refreshInstalledState()
+        LocalModelFileAudit.snapshotFS(point: "E-after-refreshInstalledState", finalPath: modelFilePath)
+        LocalModelFileAudit.logFSOp(
+            "refreshInstalledState",
+            phase: "after",
+            watchedFinalPath: modelFilePath,
+            result: "done"
+        )
         // Strict : aucun appel llama si le GGUF n’est pas réellement installé.
         guard isInstalled else {
             lastError = missingFileDiagnostic()
@@ -331,6 +353,7 @@ final class LocalModelManager: ObservableObject {
                 "size": actualFileSize,
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
+            LocalModelFileAudit.snapshotFS(point: "E-load-blocked-not-installed", finalPath: modelFilePath)
             return
         }
         guard LocalInferenceEngine.isLlamaRuntimeAvailable else {
@@ -343,7 +366,9 @@ final class LocalModelManager: ObservableObject {
         state = .loading
         lastError = nil
         do {
+            LocalModelFileAudit.snapshotFS(point: "E-before-engine-load", finalPath: path)
             try await engine.load(path: path)
+            LocalModelFileAudit.snapshotFS(point: "E-after-engine-load", finalPath: path)
             // Re-vérifier après load (TOCTOU / sideload parallèle).
             if isInstalled {
                 state = .ready
@@ -354,6 +379,7 @@ final class LocalModelManager: ObservableObject {
             }
         } catch {
             lastError = error.localizedDescription
+            LocalModelFileAudit.snapshotFS(point: "E-after-engine-load-error", finalPath: path)
             applyPresenceToState(presence, clearTransientErrors: false)
         }
     }
@@ -936,6 +962,8 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                     userInfo: [NSLocalizedDescriptionKey: "Move GGUF terminé sans fichier final lisible."]
                 )
             }
+            // A — immédiatement après download-move-final réussi
+            LocalModelFileAudit.snapshotFS(point: "A-after-download-move-final", finalPath: destinationPath)
             if !LocalModelFileAudit.validateSize(destinationSize, expected: expectedBytes) {
                 LocalModelFileAudit.log("local-ai:download", [
                     "phase": "early-exit",

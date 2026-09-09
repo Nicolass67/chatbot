@@ -134,6 +134,10 @@ struct LocalAISettingsView: View {
                         Task {
                             busyAction = true
                             defer { busyAction = false }
+                            LocalModelFileAudit.snapshotFS(
+                                point: "D-charger-button",
+                                finalPath: models.modelFilePath
+                            )
                             await models.loadIntoEngine()
                             execution.refreshDerived()
                         }

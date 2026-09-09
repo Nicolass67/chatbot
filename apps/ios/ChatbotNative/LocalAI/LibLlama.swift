@@ -200,12 +200,16 @@ final class LlamaContext: @unchecked Sendable {
     }
 
     static func create_context(path: String) throws -> LlamaContext {
+        // F — juste avant create_context (entrée)
+        LocalModelFileAudit.snapshotFS(point: "F-before-create_context", finalPath: path)
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else {
+            LocalModelFileAudit.snapshotFS(point: "F-create_context-file-absent", finalPath: path)
             throw LlamaError.couldNotInitializeContext("fichier absent: \(path)")
         }
         let size = (try? fm.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
         guard size > 1_000_000 else {
+            LocalModelFileAudit.snapshotFS(point: "F-create_context-file-too-small", finalPath: path)
             throw LlamaError.couldNotInitializeContext("fichier trop petit (\(size) octets)")
         }
 
@@ -245,14 +249,43 @@ final class LlamaContext: @unchecked Sendable {
                 // néanmoins à faire `fopen` sur le segment "Application Support".
                 // Ne copions qu'en présence de cet ENOENT précis : un échec mémoire
                 // ou de parsing ne doit pas consommer 1,2 Go supplémentaires.
-                if LlamaLogCapture.shared.reportsMissingGGUF,
-                   let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
-                    LlamaLogCapture.shared.clear()
-                    let stagedModel = loadModel(at: stagedPath, params: model_params)
-                    if let stagedModel {
-                        return try finishContext(model: stagedModel)
+                if LlamaLogCapture.shared.reportsMissingGGUF {
+                    LocalModelFileAudit.snapshotFS(point: "before-stageForLlama", finalPath: path)
+                    LocalModelFileAudit.logFSOp(
+                        "stageForLlama",
+                        phase: "enter",
+                        source: path,
+                        watchedFinalPath: path,
+                        result: "pending"
+                    )
+                    if let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
+                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama", finalPath: path)
+                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama-staged", finalPath: stagedPath)
+                        LocalModelFileAudit.logFSOp(
+                            "stageForLlama",
+                            phase: "exit",
+                            source: path,
+                            destination: stagedPath,
+                            watchedFinalPath: path,
+                            result: "ok"
+                        )
+                        LlamaLogCapture.shared.clear()
+                        let stagedModel = loadModel(at: stagedPath, params: model_params)
+                        if let stagedModel {
+                            return try finishContext(model: stagedModel)
+                        }
+                    } else {
+                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama-failed", finalPath: path)
+                        LocalModelFileAudit.logFSOp(
+                            "stageForLlama",
+                            phase: "exit",
+                            source: path,
+                            watchedFinalPath: path,
+                            result: "failed-or-nil"
+                        )
                     }
                 }
+                LocalModelFileAudit.snapshotFS(point: "H-after-all-loadModel-fail", finalPath: path)
                 throw LlamaError.couldNotInitializeContext(
                     "chargement GGUF impossible (\(byteLabel(size))).\(LlamaLogCapture.shared.summary)"
                 )
@@ -267,10 +300,19 @@ final class LlamaContext: @unchecked Sendable {
         let phase = path.contains("/Library/ChatbotModels/")
             ? "before llama (Library/ChatbotModels sans espace)"
             : "before llama (Application Support)"
+        // G — juste avant llama_model_load
+        LocalModelFileAudit.snapshotFS(point: "G-before-llama_model_load", finalPath: path)
         LlamaLogCapture.shared.recordFileDiagnostic(LlamaFileDiagnostics.report(path: path, phase: phase))
-        return path.withCString { cPath in
+        let loaded = path.withCString { cPath in
             llama_model_load_from_file(cPath, params)
         }
+        if loaded == nil {
+            // H — juste après échec de llama_model_load
+            LocalModelFileAudit.snapshotFS(point: "H-after-llama_model_load-fail", finalPath: path)
+        } else {
+            LocalModelFileAudit.snapshotFS(point: "H-after-llama_model_load-ok", finalPath: path)
+        }
+        return loaded
     }
 
     /// Copie de secours, uniquement quand le runtime C ne sait pas ouvrir un
@@ -287,18 +329,80 @@ final class LlamaContext: @unchecked Sendable {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let directory = library.appendingPathComponent("ChatbotModels", isDirectory: true)
+
+        LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-createDirectory", finalPath: sourcePath)
+        LocalModelFileAudit.logFSOp(
+            "createDirectory",
+            phase: "before",
+            destination: directory.path(percentEncoded: false),
+            watchedFinalPath: sourcePath,
+            result: "pending"
+        )
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        LocalModelFileAudit.logFSOp(
+            "createDirectory",
+            phase: "after",
+            destination: directory.path(percentEncoded: false),
+            watchedFinalPath: sourcePath,
+            result: "ok"
+        )
+        LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-createDirectory", finalPath: sourcePath)
 
         let destination = directory.appendingPathComponent(source.lastPathComponent)
-        if fm.fileExists(atPath: destination.path(percentEncoded: false)) {
+        let destPath = destination.path(percentEncoded: false)
+        if fm.fileExists(atPath: destPath) {
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-removeItem-staged", finalPath: sourcePath)
+            LocalModelFileAudit.logFSOp(
+                "removeItem",
+                phase: "before",
+                source: destPath,
+                watchedFinalPath: sourcePath,
+                result: "pending"
+            )
+            // Ne touche que la copie ChatbotModels, pas l'original Application Support.
             try fm.removeItem(at: destination)
+            LocalModelFileAudit.logFSOp(
+                "removeItem",
+                phase: "after",
+                source: destPath,
+                watchedFinalPath: sourcePath,
+                result: "ok"
+            )
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-staged", finalPath: sourcePath)
         }
+        LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-copyItem", finalPath: sourcePath)
+        LocalModelFileAudit.logFSOp(
+            "copyItem",
+            phase: "before",
+            source: sourcePath,
+            destination: destPath,
+            watchedFinalPath: sourcePath,
+            result: "pending"
+        )
         try fm.copyItem(at: source, to: destination)
+        LocalModelFileAudit.logFSOp(
+            "copyItem",
+            phase: "after",
+            source: sourcePath,
+            destination: destPath,
+            watchedFinalPath: sourcePath,
+            result: "ok"
+        )
+        LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-copyItem", finalPath: sourcePath)
 
-        let stagedPath = destination.path(percentEncoded: false)
+        let stagedPath = destPath
         let stagedSize = (try fm.attributesOfItem(atPath: stagedPath)[.size] as? NSNumber)?.int64Value ?? 0
         guard stagedSize == expectedSize else {
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-removeItem-incomplete", finalPath: sourcePath)
+            LocalModelFileAudit.logFSOp(
+                "removeItem",
+                phase: "before-incomplete-staged",
+                source: destPath,
+                watchedFinalPath: sourcePath,
+                result: "pending"
+            )
             try? fm.removeItem(at: destination)
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-incomplete", finalPath: sourcePath)
             throw LlamaError.couldNotInitializeContext("copie de secours GGUF incomplète")
         }
         guard let handle = try? FileHandle(forReadingFrom: destination) else {
@@ -306,7 +410,16 @@ final class LlamaContext: @unchecked Sendable {
         }
         defer { try? handle.close() }
         guard try handle.read(upToCount: 4) == Data("GGUF".utf8) else {
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-removeItem-invalid", finalPath: sourcePath)
+            LocalModelFileAudit.logFSOp(
+                "removeItem",
+                phase: "before-invalid-staged",
+                source: destPath,
+                watchedFinalPath: sourcePath,
+                result: "pending"
+            )
             try? fm.removeItem(at: destination)
+            LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-removeItem-invalid", finalPath: sourcePath)
             throw LlamaError.couldNotInitializeContext("copie de secours GGUF invalide")
         }
         LlamaLogCapture.shared.recordFileDiagnostic(

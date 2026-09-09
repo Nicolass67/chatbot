@@ -69,7 +69,9 @@ actor LocalInferenceEngine {
     }
 
     func load(path: String) async throws {
+        LocalModelFileAudit.snapshotFS(point: "E-engine-load-start", finalPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
+            LocalModelFileAudit.snapshotFS(point: "E-engine-load-missing", finalPath: path)
             throw LocalInferenceError.modelMissing
         }
 
@@ -80,12 +82,28 @@ actor LocalInferenceEngine {
             generationInFlight = false
         }
         if isLoaded {
+            LocalModelFileAudit.logFSOp(
+                "unloadInternal",
+                phase: "before-reload",
+                watchedFinalPath: path,
+                result: "pending"
+            )
+            LocalModelFileAudit.snapshotFS(point: "E-before-unloadInternal", finalPath: path)
             await unloadInternal()
+            LocalModelFileAudit.snapshotFS(point: "E-after-unloadInternal", finalPath: path)
+            LocalModelFileAudit.logFSOp(
+                "unloadInternal",
+                phase: "after-reload",
+                watchedFinalPath: path,
+                result: "done"
+            )
         }
 
         let started = Date()
         do {
+            LocalModelFileAudit.snapshotFS(point: "E-before-create_context-call", finalPath: path)
             let ctx = try LlamaContext.create_context(path: path)
+            LocalModelFileAudit.snapshotFS(point: "E-after-create_context-ok", finalPath: path)
             llama = ctx
             isLoaded = true
             loadedPath = path
@@ -94,11 +112,13 @@ actor LocalInferenceEngine {
             isLoaded = false
             loadedPath = nil
             llama = nil
+            LocalModelFileAudit.snapshotFS(point: "E-after-create_context-fail", finalPath: path)
             throw LocalInferenceError.loadFailed(detail)
         } catch {
             isLoaded = false
             loadedPath = nil
             llama = nil
+            LocalModelFileAudit.snapshotFS(point: "E-after-create_context-error", finalPath: path)
             let ns = error as NSError
             if ns.domain == NSPOSIXErrorDomain && ns.code == ENOMEM {
                 throw LocalInferenceError.outOfMemory
