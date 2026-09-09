@@ -147,8 +147,8 @@ final class LlamaContext: @unchecked Sendable {
         var model_params = llama_model_default_params()
         model_params.n_gpu_layers = 0
         model_params.load_mode = LLAMA_LOAD_MODE_MMAP
-        model_params.devices = UnsafeMutableRawPointer(deviceSlots)
-            .assumingMemoryBound(to: ggml_backend_dev_t.self)
+        // Importé en Swift comme `UnsafeMutablePointer<ggml_backend_dev_t?>`.
+        model_params.devices = deviceSlots
 
         let model: OpaquePointer? = path.withCString { cPath in
             llama_model_load_from_file(cPath, model_params)
