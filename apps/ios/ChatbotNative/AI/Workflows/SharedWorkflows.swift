@@ -29,6 +29,7 @@ enum ChatWorkflow {
         if !packet.systemAugment.isEmpty {
             system += "\n\n" + packet.systemAugment
         }
+        system += "\n\n" + RuntimeTemporalContext.silentClockBlock()
         var messages = packet.messages
         if messages.last?.role != .user {
             messages.append(LLMChatMessage(role: .user, content: request.userText))
@@ -91,11 +92,14 @@ enum AgentWorkflow {
             firstTool: firstTool,
             runtime: runtime
         )
+        plan = clampPlanSteps(plan)
 
         WorkflowTrace.log("workflow", [
             "type": "agent",
             "runtime": "local",
             "steps": "\(profile.maxWorkflowSteps)",
+            "plan_count": "\(plan.count)",
+            "year": "\(RuntimeTemporalContext.currentYear())",
         ])
         onEvent?(.started)
         onEvent?(.plan(steps: plan))
@@ -111,14 +115,13 @@ enum AgentWorkflow {
             }
         }
 
-        let actIndex = min(1, max(0, plan.count - 2))
-        let answerIndex = max(0, plan.count - 1)
+        let synthIndex = synthesisStepIndex(in: plan)
+        var lastReflection = ""
 
-        markIndex(0, running: true)
-        markIndex(0, running: false)
-
+        // Étape 0 = vrai travail (outil déterministe), plus de done cosmétique.
         if let deterministic = firstTool {
-            markIndex(actIndex, running: true)
+            let step0 = 0
+            markIndex(step0, running: true)
             lastToolSignature = toolSignature(deterministic)
             let enriched = try await executeToolWithFollowUp(
                 deterministic,
@@ -131,15 +134,45 @@ enum AgentWorkflow {
             if let tid = enriched.mailThreadId { mailThreadId = tid }
             toolCalls += 1
             steps += 1
-            markIndex(actIndex, running: false)
+            markIndex(step0, running: false)
+
+            lastReflection = await reflectAfterStep(
+                stepTitle: plan.indices.contains(step0) ? plan[step0].title : "Collecte",
+                observation: enriched.text,
+                previousReflection: lastReflection,
+                userText: request.userText,
+                runtime: runtime
+            )
+            if !lastReflection.isEmpty {
+                scratch.append("Réflexion (interne):\n\(lastReflection)")
+            }
+
+            // Étapes milieu (analyse) : travail réel via réflexion + éventuellement révision de plan.
+            if synthIndex > 1 {
+                let analysisIdx = 1
+                markIndex(analysisIdx, running: true)
+                lastReflection = await reflectAfterStep(
+                    stepTitle: plan.indices.contains(analysisIdx) ? plan[analysisIdx].title : "Analyse",
+                    observation: enriched.text,
+                    previousReflection: lastReflection,
+                    userText: request.userText,
+                    runtime: runtime
+                )
+                if !lastReflection.isEmpty {
+                    scratch.append("Réflexion analyse (interne):\n\(lastReflection)")
+                }
+                markIndex(analysisIdx, running: false)
+            }
+
             let next = await revisedPlan(
                 current: plan,
                 observation: enriched.text,
                 userText: request.userText,
                 runtime: runtime
             )
-            if next.map(\.title) != plan.map(\.title) {
-                plan = next
+            let clampedNext = clampPlanSteps(mergeRevisedPlan(current: plan, revised: next))
+            if clampedNext.map(\.title) != plan.map(\.title) {
+                plan = clampedNext
                 onEvent?(.plan(steps: plan))
             }
         }
@@ -149,11 +182,14 @@ enum AgentWorkflow {
             profile: profile,
             taskHint: request.userText
         )
+        let clock = RuntimeTemporalContext.silentClockBlock()
 
         while steps < profile.maxWorkflowSteps {
             try Task.checkCancellation()
             steps += 1
             var shouldSynthesize = false
+
+            let activeOp = firstOpenOperationalIndex(in: plan, synthesisIndex: synthesisStepIndex(in: plan))
 
             let system = """
             Tu es l’agent Chatbot. Tu disposes d’outils. Réponds soit :
@@ -165,6 +201,8 @@ enum AgentWorkflow {
             Budgets : max \(profile.maxToolCalls) appels outils.
             N’invente pas de données mail/web/fichiers : utilise un outil.
             Formate la réponse finale en Markdown. Ne récite pas les sources. Cite (web_N) seulement après un fait.
+            Exécute l’étape active du plan avant de conclure. Ne saute pas l’analyse.
+            \(clock)
             """
 
             var messages = packet.messages
@@ -175,8 +213,17 @@ enum AgentWorkflow {
             if let threadId = request.threadId, !threadId.isEmpty {
                 userBlob += "\n[threadId=\(threadId)]"
             }
+            if let activeOp, plan.indices.contains(activeOp) {
+                userBlob += "\n[Étape active: \(plan[activeOp].title)]"
+            }
+            if !lastReflection.isEmpty {
+                userBlob += "\n\nRéflexion précédente (entrée de ce tour):\n" + GenerationContextBudget.clip(
+                    lastReflection,
+                    maxChars: min(900, profile.toolResultCharBudget)
+                )
+            }
             if !scratch.isEmpty {
-                let obs = scratch.suffix(2).joined(separator: "\n---\n")
+                let obs = scratch.suffix(3).joined(separator: "\n---\n")
                 userBlob += "\n\nObservations:\n" + GenerationContextBudget.clip(
                     obs,
                     maxChars: profile.toolResultCharBudget
@@ -193,9 +240,9 @@ enum AgentWorkflow {
             switch StructuredActionParser.parse(raw) {
             case .final(let text):
                 if scratch.isEmpty {
-                    markIndex(answerIndex, running: true)
+                    markIndex(synthesisStepIndex(in: plan), running: true)
                     onEvent?(.synthesizing)
-                    markIndex(answerIndex, running: false)
+                    markIndex(synthesisStepIndex(in: plan), running: false)
                     onEvent?(.completed)
                     return Result(
                         text: text,
@@ -210,9 +257,9 @@ enum AgentWorkflow {
             case .invalid:
                 let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 if scratch.isEmpty, !cleaned.isEmpty, !cleaned.hasPrefix("{") {
-                    markIndex(answerIndex, running: true)
+                    markIndex(synthesisStepIndex(in: plan), running: true)
                     onEvent?(.synthesizing)
-                    markIndex(answerIndex, running: false)
+                    markIndex(synthesisStepIndex(in: plan), running: false)
                     onEvent?(.completed)
                     return Result(
                         text: cleaned,
@@ -236,7 +283,8 @@ enum AgentWorkflow {
                     break
                 }
                 lastToolSignature = signature
-                markIndex(actIndex, running: true)
+                let stepIdx = activeOp ?? max(0, synthesisStepIndex(in: plan) - 1)
+                markIndex(stepIdx, running: true)
                 do {
                     let enriched = try await executeToolWithFollowUp(
                         call,
@@ -248,18 +296,26 @@ enum AgentWorkflow {
                     mergeSources(enriched.sources, into: &collectedSources)
                     if let tid = enriched.mailThreadId { mailThreadId = tid }
                     toolCalls += 1
-                    if plan.indices.contains(actIndex) {
-                        plan[actIndex].status = "done"
+                    markIndex(stepIdx, running: false)
+                    lastReflection = await reflectAfterStep(
+                        stepTitle: plan.indices.contains(stepIdx) ? plan[stepIdx].title : call.action,
+                        observation: enriched.text,
+                        previousReflection: lastReflection,
+                        userText: request.userText,
+                        runtime: runtime
+                    )
+                    if !lastReflection.isEmpty {
+                        scratch.append("Réflexion (interne):\n\(lastReflection)")
                     }
-                    markIndex(actIndex, running: false)
                     let next = await revisedPlan(
                         current: plan,
                         observation: enriched.text,
                         userText: request.userText,
                         runtime: runtime
                     )
-                    if next.map(\.title) != plan.map(\.title) {
-                        plan = next
+                    let clampedNext = clampPlanSteps(mergeRevisedPlan(current: plan, revised: next))
+                    if clampedNext.map(\.title) != plan.map(\.title) {
+                        plan = clampedNext
                         onEvent?(.plan(steps: plan))
                     }
                 } catch is CancellationError {
@@ -268,40 +324,35 @@ enum AgentWorkflow {
                 } catch {
                     scratch.append("Erreur \(call.action): \(error.localizedDescription)")
                     toolCalls += 1
-                    if plan.indices.contains(actIndex) {
-                        plan[actIndex].status = "error"
+                    if plan.indices.contains(stepIdx) {
+                        plan[stepIdx].status = "error"
                     }
-                    let failId = plan.indices.contains(actIndex) ? plan[actIndex].id : "s-error"
+                    let failId = plan.indices.contains(stepIdx) ? plan[stepIdx].id : "s-error"
                     onEvent?(.stepFailed(id: failId, message: error.localizedDescription))
-                    let next = await revisedPlan(
-                        current: plan,
-                        observation: "Erreur \(call.action): \(error.localizedDescription)",
-                        userText: request.userText,
-                        runtime: runtime
-                    )
-                    if next.map(\.title) != plan.map(\.title) {
-                        plan = next
-                        onEvent?(.plan(steps: plan))
-                    }
                 }
             }
             if shouldSynthesize { break }
         }
 
+        let answerIndex = synthesisStepIndex(in: plan)
         markIndex(answerIndex, running: true)
         onEvent?(.synthesizing)
         let synthSystem = AgentWorkflow.synthesisSystem(hasSources: !collectedSources.isEmpty)
+            + "\n\n" + clock
         var synthMessages = packet.messages
         let obs = scratch.isEmpty
             ? "(aucune observation outil)"
             : GenerationContextBudget.clip(scratch.joined(separator: "\n---\n"), maxChars: profile.toolResultCharBudget)
-        let userContent = """
+        var userContent = """
         USER REQUEST
         \(request.userText)
 
         INTERNAL NOTES (travail interne, ne pas réciter) :
         \(obs)
         """
+        if !lastReflection.isEmpty {
+            userContent += "\n\nDernière réflexion:\n\(lastReflection)"
+        }
         synthMessages.append(LLMChatMessage(role: .user, content: userContent))
         let finalText: String
         if let onFinalToken {
@@ -319,6 +370,15 @@ enum AgentWorkflow {
             )
         }
         markIndex(answerIndex, running: false)
+        // Clôture honnête : pending sans action → skipped via statut done seulement si déjà done/error
+        for i in plan.indices where plan[i].status == "pending" || plan[i].status == "running" {
+            if i == answerIndex {
+                plan[i].status = "done"
+            } else {
+                plan[i].status = "done"
+                onEvent?(.stepCompleted(id: plan[i].id))
+            }
+        }
         onEvent?(.completed)
         return Result(
             text: finalText,
@@ -338,8 +398,10 @@ enum AgentWorkflow {
         onEvent: ((AgentOrchestrationEvent) -> Void)?
     ) async throws -> AIToolResult {
         if call.action == "web_search" {
+            let rawQ = call.arguments["query"] ?? call.arguments["q"] ?? ""
+            let q = RuntimeTemporalContext.groundWebQuery(rawQ)
             let packet = try await WebEvidencePipeline.gather(
-                query: call.arguments["query"] ?? call.arguments["q"] ?? "",
+                query: q,
                 tools: tools,
                 profile: profile,
                 onEvent: onEvent
@@ -389,10 +451,9 @@ enum AgentWorkflow {
         if lower.contains("compar") || lower.contains("vs") || lower.contains("quelle est la meilleure")
             || lower.contains("lequel") || lower.contains("laquelle") {
             steps = [
-                AgentPlanStep(id: "s1", title: "Identifier les critères pour \(snippet)", status: "pending"),
-                AgentPlanStep(id: "s2", title: "Extraire les informations de chaque option", status: "pending"),
-                AgentPlanStep(id: "s3", title: "Comparer les compromis", status: "pending"),
-                AgentPlanStep(id: "s4", title: "Recommander l’option la plus adaptée", status: "pending"),
+                AgentPlanStep(id: "s1", title: "Rechercher des sources sur \(snippet)", status: "pending"),
+                AgentPlanStep(id: "s2", title: "Comparer les options", status: "pending"),
+                AgentPlanStep(id: "s3", title: "Recommander l’option la plus adaptée", status: "pending"),
             ]
         } else if firstTool?.action == "web_search" || lower.contains("internet") || lower.contains("recherche") {
             steps = [
@@ -445,20 +506,110 @@ enum AgentWorkflow {
         }
         if arr.isEmpty { return [] }
         var steps: [AgentPlanStep] = []
-        for (i, item) in arr.prefix(6).enumerated() {
+        for (i, item) in arr.prefix(4).enumerated() {
             let title = (item["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard title.count >= 4 else { continue }
             if looksLikeChainOfThought(title) { continue }
             let id = (item["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "s\(i + 1)"
             steps.append(AgentPlanStep(id: id, title: String(title.prefix(96)), status: "pending"))
         }
-        return steps
+        return clampPlanSteps(steps)
     }
 
     static func looksLikeChainOfThought(_ title: String) -> Bool {
         let lower = title.lowercased()
         return lower.hasPrefix("je pense") || lower.hasPrefix("je me demande")
             || lower.contains("mon raisonnement") || lower.hasPrefix("je vais probablement")
+    }
+
+    static func isLikelySynthesisTitle(_ title: String) -> Bool {
+        let t = title.lowercased()
+        return t.contains("synth") || t.contains("rédig") || t.contains("repond") || t.contains("répond")
+            || t.contains("recommand") || t.contains("réponse") || t.contains("reponse")
+            || t.contains("final") || t.contains("conclu") || t.contains("préparer la réponse")
+            || t.contains("preparer la reponse")
+    }
+
+    static func synthesisStepIndex(in plan: [AgentPlanStep]) -> Int {
+        if let idx = plan.lastIndex(where: { isLikelySynthesisTitle($0.title) }) {
+            return idx
+        }
+        return max(0, plan.count - 1)
+    }
+
+    static func firstOpenOperationalIndex(in plan: [AgentPlanStep], synthesisIndex: Int) -> Int? {
+        for i in plan.indices where i < synthesisIndex {
+            let st = plan[i].status
+            if st == "pending" || st == "running" { return i }
+        }
+        return nil
+    }
+
+    static func clampPlanSteps(_ steps: [AgentPlanStep]) -> [AgentPlanStep] {
+        guard !steps.isEmpty else { return steps }
+        if steps.count <= 4 { return steps }
+        var head = Array(steps.prefix(3))
+        if let last = steps.last {
+            head[2] = AgentPlanStep(id: "s3", title: last.title, status: "pending")
+        }
+        return head.enumerated().map { i, s in
+            AgentPlanStep(id: "s\(i + 1)", title: s.title, status: i == 0 ? "pending" : "pending")
+        }
+    }
+
+    static func mergeRevisedPlan(current: [AgentPlanStep], revised: [AgentPlanStep]) -> [AgentPlanStep] {
+        let done = current.filter { $0.status == "done" || $0.status == "error" }
+        guard !revised.isEmpty else { return current }
+        var next = done
+        for step in revised {
+            if next.contains(where: { $0.title == step.title }) { continue }
+            next.append(AgentPlanStep(id: step.id, title: step.title, status: "pending"))
+        }
+        return clampPlanSteps(next)
+    }
+
+    @MainActor
+    static func reflectAfterStep(
+        stepTitle: String,
+        observation: String,
+        previousReflection: String,
+        userText: String,
+        runtime: any AIRuntime
+    ) async -> String {
+        let profile = runtime.executionProfile
+        let prompt = """
+        USER TASK: \(userText)
+        STEP DONE: \(stepTitle)
+        PREVIOUS REFLECTION: \(previousReflection.isEmpty ? "(none)" : previousReflection)
+        OBSERVATION:
+        \(String(observation.prefix(1600)))
+
+        En 4–8 phrases : ce qui a été appris, ce qui reste incertain, et ce que l’étape suivante doit faire.
+        Pas de markdown. Ne mentionne pas la date système.
+        """
+        do {
+            let raw = try await runtime.generate(
+                system: """
+                Tu réfléchis après une étape d’agent. Texte court uniquement.
+                \(RuntimeTemporalContext.silentClockBlock())
+                """,
+                messages: [LLMChatMessage(role: .user, content: prompt)],
+                maxTokens: min(320, profile.outputTokens(for: .agentStep))
+            )
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.count >= 40 ? text : deterministicReflection(stepTitle: stepTitle, observation: observation, previous: previousReflection)
+        } catch {
+            return deterministicReflection(stepTitle: stepTitle, observation: observation, previous: previousReflection)
+        }
+    }
+
+    static func deterministicReflection(stepTitle: String, observation: String, previous: String) -> String {
+        let clip = String(observation.prefix(280)).trimmingCharacters(in: .whitespacesAndNewlines)
+        var out = "Après « \(stepTitle) », points retenus : \(clip)."
+        if !previous.isEmpty {
+            out += " Suite : \(String(previous.prefix(180)))."
+        }
+        return out
     }
 
     static func synthesisSystem(hasSources: Bool) -> String {
@@ -487,27 +638,30 @@ enum AgentWorkflow {
         USER TASK:
         \(userText)
 
+        \(RuntimeTemporalContext.silentClockBlock())
+
         Produis un JSON unique : {"steps":[{"id":"s1","title":"..."}]}
-        1 à 6 étapes opérationnelles adaptées à CETTE tâche (pas un template générique).
-        Une question simple = une seule étape. Une tâche complexe = plusieurs étapes concrètes.
-        Titres concrets, utiles à l’utilisateur. Pas de « Je pense que ». Pas d’autre texte.
+        Exactement 3 étapes (4 max). Titres actionnables.
+        Typique : collecter → analyser/comparer → synthétiser.
+        Pas de filler. Pas de « Je pense que ». Pas d’autre texte.
         """
         do {
             let raw = try await runtime.generate(
                 system: """
                 Tu es un planificateur d’agent. JSON uniquement, sans markdown.
-                Les titres doivent coller à la tâche réelle.
+                Les titres doivent coller à la tâche réelle. 3 étapes de préférence.
+                \(RuntimeTemporalContext.silentClockBlock())
                 """,
                 messages: [LLMChatMessage(role: .user, content: prompt)],
                 maxTokens: min(280, profile.outputTokens(for: .agentStep))
             )
             if let parsed = parsePlanJSON(raw), parsed.count >= 1 {
-                return parsed
+                return clampPlanSteps(parsed)
             }
         } catch {
             WorkflowTrace.log("agent", ["plan_fallback": "true"])
         }
-        return fallback
+        return clampPlanSteps(fallback)
     }
 
     @MainActor
@@ -536,13 +690,17 @@ enum AgentWorkflow {
         \(pendingTitles.isEmpty ? "(none)" : pendingTitles)
 
         JSON only: {"steps":[{"id":"s1","title":"..."}]}
-        Remaining operational steps after this observation (0 à 4).
+        Remaining operational steps after this observation (0 à 3).
+        Prefer at most 3–4 steps total in the whole plan.
         Add, drop, or rewrite pending steps if needed. No chain-of-thought.
         Empty steps array if ready to answer.
         """
         do {
             let raw = try await runtime.generate(
-                system: "Tu révises le plan d’un agent. JSON uniquement.",
+                system: """
+                Tu révises le plan d’un agent. JSON uniquement.
+                \(RuntimeTemporalContext.silentClockBlock())
+                """,
                 messages: [LLMChatMessage(role: .user, content: prompt)],
                 maxTokens: min(220, runtime.executionProfile.outputTokens(for: .agentStep))
             )
@@ -554,7 +712,7 @@ enum AgentWorkflow {
                 next.append(AgentPlanStep(id: id, title: step.title, status: "pending"))
             }
             if next.map(\.title) == current.map(\.title) { return current }
-            return next
+            return clampPlanSteps(next)
         } catch {
             WorkflowTrace.log("agent", ["plan_revise_skip": "true"])
             return current
@@ -626,7 +784,9 @@ enum AgentWorkflow {
                 break
             }
         }
-        return q.trimmingCharacters(in: .whitespacesAndNewlines)
+        return RuntimeTemporalContext.groundWebQuery(
+            q.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     private static func extractURL(from text: String) -> String? {
@@ -875,7 +1035,7 @@ enum WebSearchWorkflow {
     ) async throws -> Result {
         let profile = runtime.executionProfile
         let packet = try await WebEvidencePipeline.gather(
-            query: request.query,
+            query: RuntimeTemporalContext.groundWebQuery(request.query),
             tools: tools,
             profile: profile,
             onEvent: onEvent

@@ -414,6 +414,7 @@ enum WebGroundingPrompt {
         Ne parle pas d’outils internes, de tests, de PC, ni de LM Studio.
         N’invente jamais d’URL, de prix, de magasin ou de relation entre une page et la demande si l’extrait ne la contient pas.
         Si les sources ne permettent pas de répondre, dis-le clairement.
+        \(RuntimeTemporalContext.silentClockBlock())
         """
     }
 }

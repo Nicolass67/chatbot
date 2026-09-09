@@ -321,7 +321,8 @@ final class MailDraftAndIntentTests: XCTestCase {
             firstTool: nil
         )
         XCTAssertGreaterThanOrEqual(compare.count, 3)
-        XCTAssertTrue(compare.contains(where: { $0.title.lowercased().contains("crit") || $0.title.lowercased().contains("compar") }))
+        XCTAssertLessThanOrEqual(compare.count, 4)
+        XCTAssertTrue(compare.contains(where: { $0.title.lowercased().contains("compar") || $0.title.lowercased().contains("recommand") }))
 
         let simple = AgentWorkflow.goalAwareFallbackPlan(
             userText: "Quelle heure est-il à Tokyo ?",

@@ -78,7 +78,8 @@ enum LocalPrompts {
 
     static func systemPrompt(for kind: LocalPromptKind) -> String {
         switch kind {
-        case .conversation: return conversation
+        case .conversation:
+            return conversation + "\n\n" + RuntimeTemporalContext.silentClockBlock()
         case .mailSummary: return mailSummary
         case .mailReplyDraft: return mailReplyDraft
         case .mailDraftRewrite: return mailDraftRewrite
