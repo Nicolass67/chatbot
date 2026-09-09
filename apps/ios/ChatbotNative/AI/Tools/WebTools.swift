@@ -145,7 +145,7 @@ struct WebSearchTool: AITool {
         if let related = json["RelatedTopics"] as? [Any] {
             appendRelated(related, into: &hits, limit: limit, snippetBudget: snippetBudget)
         }
-        return reindex(hits, limit: limit)
+        return Self.reindex(hits, limit: limit)
     }
 
     private func appendRelated(
@@ -194,7 +194,7 @@ struct WebSearchTool: AITool {
             return []
         }
         let html = String(data: data, encoding: .utf8) ?? ""
-        return parseDuckDuckGoHTML(html, limit: limit, snippetBudget: snippetBudget)
+        return Self.parseDuckDuckGoHTML(html, limit: limit, snippetBudget: snippetBudget)
     }
 
     private func liteSearch(
@@ -216,7 +216,7 @@ struct WebSearchTool: AITool {
             return []
         }
         let html = String(data: data, encoding: .utf8) ?? ""
-        return parseDuckDuckGoLite(html, limit: limit, snippetBudget: snippetBudget)
+        return Self.parseDuckDuckGoLite(html, limit: limit, snippetBudget: snippetBudget)
     }
 
     static func parseDuckDuckGoHTML(_ html: String, limit: Int, snippetBudget: Int) -> [SearchSourceDTO] {
