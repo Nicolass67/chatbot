@@ -86,7 +86,12 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         switch model.id {
         case "qwen3-1.7b-q4_k_m", "lfm25-1.2b-instruct-q4_k_m":
             return .compact
-        case "qwen35-2b-q4_k_m", "granite4-micro-q4_k_m":
+        case "qwen35-2b-q4_k_m":
+            var p = LocalModelExecutionProfile.balanced
+            p.inference.nThreads = 4
+            p.inference.nThreadsBatch = 4
+            return p
+        case "granite4-micro-q4_k_m":
             return .balanced
         case "qwen3-4b-q4_k_m":
             return .ample

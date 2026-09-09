@@ -82,7 +82,7 @@ struct LlamaLoadDiagnostics: Equatable, Sendable, Codable {
     var fallbackReason: String?
     var llamaLogTail: String
     var estimatedKVBytesHint: Int64?
-    /// Probe GDN fused lu dans les logs llama.cpp au load — pas une déduction Swift.
+    /// Chemin GDN observé (logs sched_reserve + cb_eval). Pas une déduction « logs vides = UNKNOWN ».
     var gdn: LlamaGdnProbeObservation = .unknown
 
     var summaryLine: String {

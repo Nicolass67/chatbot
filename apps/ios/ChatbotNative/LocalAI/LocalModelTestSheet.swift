@@ -285,7 +285,7 @@ struct LocalModelTestSheet: View {
 
     private var runtimeDiagnosticSection: some View {
         Section {
-            LabeledContent("GDN fused", value: session.gdn.userFacingFusedLabel)
+            LabeledContent("GDN", value: session.gdn.userFacingFusedLabel)
             Text(session.gdn.userFacingFusedCaption)
                 .font(CNFont.caption)
                 .foregroundStyle(AppTheme.mutedForeground)
@@ -294,7 +294,7 @@ struct LocalModelTestSheet: View {
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                 if session.gdn.rawLines.isEmpty {
-                    Text("Aucune ligne GDN n’a été observée dans les logs llama.cpp.")
+                    Text("Les logs llama.cpp n’ont pas mentionné GDN. Le verdict ci-dessus vient du graphe d’exécution, pas de ces logs.")
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.mutedForeground)
                 }
@@ -302,7 +302,7 @@ struct LocalModelTestSheet: View {
         } header: {
             Text("Diagnostic runtime")
         } footer: {
-            Text("Le diagnostic GDN est informatif. Une valeur non observée n’est pas un échec du test texte.")
+            Text("Le diagnostic GDN observe le graphe d’exécution. « Indéterminable » signifie que le chemin n’a pas pu être lu, pas que GDN est absent.")
         }
     }
 
@@ -403,11 +403,11 @@ struct LocalModelTestSheet: View {
     }
 
     private func refreshGdn() async {
-        let gdn = await LocalInferenceEngine.shared.lastLoadDiagnostics?.gdn ?? .unknown
+        let gdn = await LocalInferenceEngine.shared.gdnSnapshot()
         session.gdn = gdn
         LocalModelTestUILog.event(
             "gdn diagnostic",
-            extra: "probe=\(gdn.probe) label=\(gdn.userFacingFusedLabel) (informatif, pas un échec)"
+            extra: "path=\(gdn.pathKind.rawValue) label=\(gdn.userFacingFusedLabel) source=\(gdn.source)"
         )
     }
 

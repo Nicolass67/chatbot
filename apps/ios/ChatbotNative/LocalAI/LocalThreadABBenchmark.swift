@@ -55,7 +55,7 @@ struct LocalThreadABReport: Codable, Equatable, Sendable {
         return [
             "[local-ai:thread-ab] report model=\(modelId) device=\(deviceModel)",
             "productionThreads=\(productionThreads)/\(productionThreadsBatch)",
-            "gdn probe=\(gdn.probe) ar=\(gdn.fusedAR) ch=\(gdn.fusedCH) auto=\(gdn.autoFgdn)",
+            "gdn \(gdn.userFacingFusedLabel) probe=\(gdn.probe) ar=\(gdn.fusedAR) ch=\(gdn.fusedCH) source=\(gdn.source)",
             "threads=2 n=\(t2.count) TTFT_med_ms=\(med(2) { $0.timeToFirstTokenMs }) tok_s_med=\(med(2) { $0.tokensPerSecond }) total_med_ms=\(med(2) { $0.totalMs })",
             "threads=4 n=\(t4.count) TTFT_med_ms=\(med(4) { $0.timeToFirstTokenMs }) tok_s_med=\(med(4) { $0.tokensPerSecond }) total_med_ms=\(med(4) { $0.totalMs })",
             "energy=\(energyNote)",
@@ -131,7 +131,7 @@ enum LocalThreadABBenchmark {
         let models = LocalModelManager.shared
         let desc = models.activeDescriptor
         let infer = desc.executionProfile.inference
-        let gdn = (await LocalInferenceEngine.shared.lastLoadDiagnostics)?.gdn ?? .unknown
+        let gdn = await LocalInferenceEngine.shared.gdnSnapshot()
         print("[local-ai:thread-ab] start source=\(source) ready=\(models.isReady) model=\(desc.id)")
         print(gdn.explicitReport)
 
@@ -176,6 +176,7 @@ enum LocalThreadABBenchmark {
         }
 
         await LocalInferenceEngine.shared.setThreads(restoreT, batch: restoreB)
+        report.gdn = await LocalInferenceEngine.shared.gdnSnapshot()
         persist(report)
         print(report.explicitSummary)
         if let json = try? JSONEncoder().encode(report), let text = String(data: json, encoding: .utf8) {

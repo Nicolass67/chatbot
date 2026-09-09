@@ -45,7 +45,7 @@ private final class LlamaLogCapture: @unchecked Sendable {
         if lines.count > 250 { lines.removeFirst(lines.count - 250) }
         if LlamaGdnProbeObservation.isRelevantLogLine(trimmed) {
             gdnLines.append(trimmed)
-            print("[local-ai:gdn-raw] \(trimmed)")
+            LocalModelFileAudit.log("local-ai:gdn-raw", ["line": trimmed])
         }
         lock.unlock()
     }
@@ -146,11 +146,80 @@ private enum LlamaFileDiagnostics {
     }
 }
 
+private func llamaCppLogLevelRaw(_ level: ggml_log_level) -> Int32 {
+    unsafeBitCast(level, to: Int32.self)
+}
+
+private func llamaTensorName(_ tensor: UnsafeMutablePointer<ggml_tensor>) -> String {
+    withUnsafePointer(to: tensor.pointee.name) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) }
+    }
+}
+
 private func llamaInstallLogCapture() {
-    llama_log_set({ _, text, _ in
+    llama_log_set({ level, text, _ in
         guard let text else { return }
-        LlamaLogCapture.shared.append(String(cString: text))
+        let line = String(cString: text)
+        LlamaGdnRuntimeObserver.shared.appendLog(levelRaw: llamaCppLogLevelRaw(level), text: line)
+        LlamaLogCapture.shared.append(line)
     }, nil)
+}
+
+private func llamaGdnEvalCallback(
+    _ tensor: UnsafeMutablePointer<ggml_tensor>?,
+    _ ask: Bool,
+    _ userData: UnsafeMutableRawPointer?
+) -> Bool {
+    _ = userData
+    guard let tensor else { return true }
+    let op = tensor.pointee.op
+    let opName = String(cString: ggml_op_name(op))
+    let name = llamaTensorName(tensor)
+    if ask {
+        LlamaGdnRuntimeObserver.shared.noteAsk()
+        // Observer seulement quelques nœuds GDN — ask=true sur tout le graphe casse le batching.
+        return LlamaGdnRuntimeObserver.shared.shouldObserve(opName: opName, tensorName: name)
+    }
+    var deviceName = "unknown"
+    var isCPU = false
+    var isGPU = false
+    if let buffer = tensor.pointee.buffer {
+        if let cName = ggml_backend_buffer_name(buffer) {
+            deviceName = String(cString: cName)
+        }
+        let buft = ggml_backend_buffer_get_type(buffer)
+        if let dev = ggml_backend_buft_get_device(buft) {
+            deviceName = String(cString: ggml_backend_dev_name(dev))
+            switch ggml_backend_dev_type(dev) {
+            case GGML_BACKEND_DEVICE_TYPE_CPU:
+                isCPU = true
+            case GGML_BACKEND_DEVICE_TYPE_GPU, GGML_BACKEND_DEVICE_TYPE_IGPU, GGML_BACKEND_DEVICE_TYPE_ACCEL:
+                isGPU = true
+            default:
+                break
+            }
+        }
+        let lower = deviceName.lowercased()
+        if lower.contains("metal") || lower.contains("gpu") { isGPU = true }
+        if lower.contains("cpu") { isCPU = true }
+    }
+    LlamaGdnRuntimeObserver.shared.recordEvalHit(
+        LlamaGdnEvalHit(
+            opName: opName,
+            tensorName: name,
+            deviceName: deviceName,
+            deviceIsCPU: isCPU,
+            deviceIsGPU: isGPU
+        )
+    )
+    LocalModelFileAudit.log("local-ai:gdn-eval", [
+        "op": opName,
+        "tensor": name,
+        "device": deviceName,
+        "cpu": isCPU ? "yes" : "no",
+        "gpu": isGPU ? "yes" : "no",
+    ])
+    return true
 }
 
 func llama_batch_clear(_ batch: inout llama_batch) {
@@ -199,6 +268,14 @@ final class LlamaContext: @unchecked Sendable {
         return _lastDiagnostics
     }
 
+    static func updateGdn(_ obs: LlamaGdnProbeObservation) {
+        diagLock.lock()
+        defer { diagLock.unlock() }
+        guard var diag = _lastDiagnostics else { return }
+        diag.gdn = obs
+        _lastDiagnostics = diag
+    }
+
     var is_done: Bool = false
     /// Longueur max de génération (tokens prompt + completion).
     var n_len: Int32 = 1024
@@ -234,6 +311,13 @@ final class LlamaContext: @unchecked Sendable {
 
     func currentThreads() -> (threads: Int32, batch: Int32) {
         (llama_n_threads(context), llama_n_threads_batch(context))
+    }
+
+    @discardableResult
+    private func decodeObserved(_ batch: llama_batch) -> Int32 {
+        let rc = llama_decode(context, batch)
+        LlamaGdnRuntimeObserver.shared.markComputeNode()
+        return rc
     }
 
     deinit {
@@ -306,6 +390,7 @@ final class LlamaContext: @unchecked Sendable {
         }
 
         LlamaLogCapture.shared.clear()
+        LlamaGdnRuntimeObserver.shared.resetForModelLoad()
         llamaInstallLogCapture()
 
         let loadStarted = Date()
@@ -397,6 +482,13 @@ final class LlamaContext: @unchecked Sendable {
         // Estimation grossière KV f16 : 2 * n_layer * n_ctx * n_embd * 2 bytes — n_embd inconnu → hint ctx*layers.
         let kvHint = Int64(config.nCtx) * Int64(max(nLayers, 1)) * 256
 
+        let gdn = LlamaGdnRuntimeObserver.shared.snapshot(
+            modelHasGdnLayers: LlamaGdnProbeObservation.modelImpliesGdnLayers(
+                modelId: modelId,
+                architectureHint: quant
+            ),
+            backendEffective: effectiveBackend
+        )
         let diag = LlamaLoadDiagnostics(
             modelPath: path,
             modelId: modelId,
@@ -421,18 +513,22 @@ final class LlamaContext: @unchecked Sendable {
             fallbackReason: fallbackReason,
             llamaLogTail: LlamaLogCapture.shared.summary,
             estimatedKVBytesHint: kvHint,
-            gdn: LlamaGdnProbeObservation.parse(lines: LlamaLogCapture.shared.gdnLogLines())
+            gdn: gdn
         )
         diagLock.lock()
         _lastDiagnostics = diag
         diagLock.unlock()
         print("[local-ai:load] \(diag.summaryLine)")
         print(diag.gdn.explicitReport)
-        if !diag.gdn.rawLines.isEmpty {
-            for line in diag.gdn.rawLines {
-                print("[local-ai:gdn-kept] \(line)")
-            }
-        }
+        LocalModelFileAudit.log("local-ai:gdn", [
+            "path": diag.gdn.pathKind.rawValue,
+            "label": diag.gdn.userFacingFusedLabel,
+            "probe": diag.gdn.probe,
+            "source": diag.gdn.source,
+            "backend": diag.backendEffective,
+            "asks": "\(LlamaGdnRuntimeObserver.shared.evalAskCount())",
+            "compute": LlamaGdnRuntimeObserver.shared.didObserveCompute ? "yes" : "no",
+        ])
         return ctx
     }
 
@@ -653,6 +749,8 @@ final class LlamaContext: @unchecked Sendable {
         ctx_params.n_ubatch = min(config.nUbatch, config.nBatch)
         ctx_params.n_threads = n_threads
         ctx_params.n_threads_batch = n_threads_batch
+        ctx_params.cb_eval = llamaGdnEvalCallback
+        ctx_params.cb_eval_user_data = nil
         // Flash Attention : AUTO laisse llama.cpp décider (Metal FA quand supporté).
         switch config.flashAttention {
         case .auto:
@@ -728,7 +826,7 @@ final class LlamaContext: @unchecked Sendable {
                 let isLast = j == tokens_list.count - 1
                 llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
             }
-            if llama_decode(context, batch) != 0 {
+            if decodeObserved(batch) != 0 {
                 is_done = true
                 lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
                 return
@@ -781,7 +879,7 @@ final class LlamaContext: @unchecked Sendable {
         n_decode += 1
         n_cur += 1
 
-        if llama_decode(context, batch) != 0 {
+        if decodeObserved(batch) != 0 {
             is_done = true
         }
 
@@ -1022,7 +1120,7 @@ final class LlamaContext: @unchecked Sendable {
                 let isLast = j == tokens_list.count - 1
                 llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
             }
-            if llama_decode(context, batch) != 0 {
+            if decodeObserved(batch) != 0 {
                 throw LlamaError.couldNotInitializeContext(
                     "échec prefill llama_decode (batch \(i)..\(end - 1))"
                 )
@@ -1080,7 +1178,7 @@ final class LlamaContext: @unchecked Sendable {
                     let isLast = k == tokens_list.count - 1
                     llama_batch_add(&batch, tokens_list[k], Int32(k), [0], isLast)
                 }
-                if llama_decode(context, batch) != 0 {
+                if decodeObserved(batch) != 0 {
                     throw LlamaError.couldNotInitializeContext("échec prefill retry")
                 }
                 j = end

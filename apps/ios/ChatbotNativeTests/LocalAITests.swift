@@ -912,6 +912,11 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertEqual(qwen.inference.nCtx, 2048)
         XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
         XCTAssertEqual(qwen.performanceClass, .balanced)
+        XCTAssertEqual(qwen.inference.nThreads, 4)
+        XCTAssertEqual(qwen.inference.nThreadsBatch, 4)
+        let granite = LocalModelDescriptor.descriptor(id: "granite4-micro-q4_k_m")!.executionProfile
+        XCTAssertNil(granite.inference.nThreads)
+        XCTAssertNil(granite.inference.nThreadsBatch)
     }
 
     func testOutputTokensExplanationLargerThanShort() {
@@ -1634,7 +1639,8 @@ final class LlamaGdnProbeObservationTests: XCTestCase {
         XCTAssertEqual(obs.fusedCH, "ENABLED")
         XCTAssertEqual(obs.autoFgdn, "PROBED")
         XCTAssertEqual(obs.probe, "ENABLED")
-        XCTAssertEqual(obs.userFacingFusedLabel, "Activé")
+        XCTAssertEqual(obs.pathKind, .fusedMetal)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Fused Metal confirmé")
         XCTAssertTrue(obs.explicitReport.contains("fused_ar = ENABLED"))
         XCTAssertTrue(obs.explicitReport.contains("probe = ENABLED"))
     }
@@ -1648,19 +1654,125 @@ final class LlamaGdnProbeObservationTests: XCTestCase {
         XCTAssertEqual(obs.fusedAR, "DISABLED")
         XCTAssertEqual(obs.fusedCH, "DISABLED")
         XCTAssertEqual(obs.probe, "DISABLED")
-        XCTAssertEqual(obs.userFacingFusedLabel, "Désactivé")
+        XCTAssertEqual(obs.pathKind, .decomposedMetal)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Chemin décomposé Metal confirmé")
         XCTAssertTrue(obs.reason.contains("désactivé") || obs.reason.contains("not supported"))
     }
 
-    func testUnknownWhenNoGdnLines() {
+    func testEmptyLogsAreIndeterminableNotUnknownSuccess() {
         let obs = LlamaGdnProbeObservation.parse(lines: [
             "llama_model_loader: loaded meta data",
         ])
-        XCTAssertEqual(obs.probe, "UNKNOWN")
-        XCTAssertEqual(obs.autoFgdn, "NOT_OBSERVED")
-        XCTAssertEqual(obs.userFacingFusedLabel, "Non observé")
-        XCTAssertNotEqual(obs.userFacingFusedLabel, "Activé")
-        XCTAssertTrue(obs.userFacingFusedCaption.contains("ne permettent pas de confirmer"))
+        XCTAssertEqual(obs.probe, "INDETERMINABLE")
+        XCTAssertEqual(obs.pathKind, .indeterminable)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Indéterminable")
+        XCTAssertNotEqual(obs.userFacingFusedLabel, "Fused Metal confirmé")
+    }
+
+    func testSynthesizeFusedMetalFromEval() {
+        let hit = LlamaGdnEvalHit(
+            opName: "GATED_DELTA_NET",
+            tensorName: "__fgdn_ar__-0",
+            deviceName: "Metal",
+            deviceIsCPU: false,
+            deviceIsGPU: true
+        )
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: [],
+            evalHits: [hit],
+            modelHasGdnLayers: true,
+            backendEffective: "metal",
+            didObserveCompute: true,
+            evalAskCount: 40
+        )
+        XCTAssertEqual(obs.pathKind, .fusedMetal)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Fused Metal confirmé")
+        XCTAssertEqual(obs.source, "cb_eval")
+        XCTAssertEqual(obs.fusedAR, "ENABLED")
+    }
+
+    func testSynthesizeCpuFallbackFromEval() {
+        let hit = LlamaGdnEvalHit(
+            opName: "GATED_DELTA_NET",
+            tensorName: "__fgdn_ar__-0",
+            deviceName: "CPU",
+            deviceIsCPU: true,
+            deviceIsGPU: false
+        )
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: [],
+            evalHits: [hit],
+            modelHasGdnLayers: true,
+            backendEffective: "cpu",
+            didObserveCompute: true,
+            evalAskCount: 12
+        )
+        XCTAssertEqual(obs.pathKind, .cpuFallback)
+        XCTAssertEqual(obs.userFacingFusedLabel, "CPU fallback confirmé")
+    }
+
+    func testSynthesizeDecomposedFromSolveTri() {
+        let hit = LlamaGdnEvalHit(
+            opName: "SOLVE_TRI",
+            tensorName: "gdn_lhs",
+            deviceName: "Metal",
+            deviceIsCPU: false,
+            deviceIsGPU: true
+        )
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: [],
+            evalHits: [hit],
+            modelHasGdnLayers: true,
+            backendEffective: "metal",
+            didObserveCompute: true,
+            evalAskCount: 80
+        )
+        XCTAssertEqual(obs.pathKind, .decomposedMetal)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Chemin décomposé Metal confirmé")
+    }
+
+    func testSynthesizeDecomposedWhenGraphWalkedWithoutFusedOp() {
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: [],
+            evalHits: [],
+            modelHasGdnLayers: true,
+            backendEffective: "metal",
+            didObserveCompute: true,
+            evalAskCount: 120
+        )
+        XCTAssertEqual(obs.pathKind, .decomposedMetal)
+        XCTAssertEqual(obs.probe, "DECOMPOSED")
+        XCTAssertEqual(obs.userFacingFusedLabel, "Chemin décomposé Metal confirmé")
+    }
+
+    func testEmptyLogsAfterComputeWithoutCallbackStayIndeterminable() {
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: ["llama_model_loader: loaded meta data"],
+            evalHits: [],
+            modelHasGdnLayers: true,
+            backendEffective: "metal",
+            didObserveCompute: true,
+            evalAskCount: 0
+        )
+        XCTAssertEqual(obs.pathKind, .indeterminable)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Indéterminable")
+        XCTAssertNotEqual(obs.probe, "UNKNOWN")
+    }
+
+    func testNonGdnModelIsNotApplicable() {
+        let obs = LlamaGdnProbeObservation.synthesize(
+            logLines: [],
+            evalHits: [],
+            modelHasGdnLayers: false,
+            backendEffective: "metal"
+        )
+        XCTAssertEqual(obs.pathKind, .notApplicable)
+        XCTAssertEqual(obs.userFacingFusedLabel, "Sans GDN")
+    }
+
+    func testQwen35ImpliesGdnLayers() {
+        XCTAssertTrue(LlamaGdnProbeObservation.modelImpliesGdnLayers(modelId: "qwen35-2b-q4_k_m"))
+        XCTAssertFalse(LlamaGdnProbeObservation.modelImpliesGdnLayers(modelId: "qwen3-1.7b-q4_k_m"))
     }
 }
 
@@ -1682,7 +1794,7 @@ final class LocalModelTestSessionTests: XCTestCase {
         XCTAssertEqual(LocalModelTestSheet.textProbePrompt, "Réponds uniquement par : Test OK.")
         let session = LocalModelTestSession()
         XCTAssertEqual(session.textPhase, .idle)
-        XCTAssertEqual(session.gdn.userFacingFusedLabel, "Non observé")
+        XCTAssertEqual(session.gdn.userFacingFusedLabel, "Indéterminable")
         XCTAssertEqual(session.textPhase, .idle)
     }
 }

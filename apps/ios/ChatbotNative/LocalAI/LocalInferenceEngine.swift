@@ -188,6 +188,30 @@ actor LocalInferenceEngine {
     func currentThreads() -> (threads: Int32, batch: Int32)? {
         llama?.currentThreads()
     }
+
+    func gdnSnapshot() -> LlamaGdnProbeObservation {
+        let diag = lastLoadDiagnostics
+        let obs = LlamaGdnRuntimeObserver.shared.snapshot(
+            modelHasGdnLayers: LlamaGdnProbeObservation.modelImpliesGdnLayers(
+                modelId: loadedModelId ?? diag?.modelId
+            ),
+            backendEffective: diag?.backendEffective
+        )
+        if var next = lastLoadDiagnostics {
+            next.gdn = obs
+            lastLoadDiagnostics = next
+        }
+        LlamaContext.updateGdn(obs)
+        LocalModelFileAudit.log("local-ai:gdn", [
+            "path": obs.pathKind.rawValue,
+            "label": obs.userFacingFusedLabel,
+            "probe": obs.probe,
+            "source": obs.source,
+            "compute": LlamaGdnRuntimeObserver.shared.didObserveCompute ? "yes" : "no",
+            "asks": "\(LlamaGdnRuntimeObserver.shared.evalAskCount())",
+        ])
+        return obs
+    }
 #else
     func setThreads(_ n: Int32, batch: Int32) {
         _ = n
@@ -195,6 +219,8 @@ actor LocalInferenceEngine {
     }
 
     func currentThreads() -> (threads: Int32, batch: Int32)? { nil }
+
+    func gdnSnapshot() -> LlamaGdnProbeObservation { .unknown }
 #endif
 
     func unload() async {
