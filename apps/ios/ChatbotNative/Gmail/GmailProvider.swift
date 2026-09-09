@@ -205,7 +205,8 @@ final class RemoteGmailProvider: GmailServing, @unchecked Sendable {
 // MARK: - Direct (iPhone)
 
 /// Gmail sans PC : OAuth local + `DirectGmailClient`.
-final class DirectGmailProvider: GmailServing, @unchecked Sendable {
+@MainActor
+final class DirectGmailProvider: GmailServing {
     private let oauth: GmailOAuthSession
     private let client: DirectGmailClient
 
@@ -218,15 +219,11 @@ final class DirectGmailProvider: GmailServing, @unchecked Sendable {
     }
 
     var isConnected: Bool {
-        get async {
-            await MainActor.run { oauth.isConnected }
-        }
+        get async { oauth.isConnected }
     }
 
     var accountEmail: String? {
-        get async {
-            await MainActor.run { oauth.email }
-        }
+        get async { oauth.email }
     }
 
     func listMessages(
@@ -288,7 +285,6 @@ final class DirectGmailProvider: GmailServing, @unchecked Sendable {
     }
 
     private func ensureConnected() async throws {
-        let connected = await MainActor.run { oauth.isConnected }
-        guard connected else { throw DirectGmailError.notConnected }
+        guard oauth.isConnected else { throw DirectGmailError.notConnected }
     }
 }
