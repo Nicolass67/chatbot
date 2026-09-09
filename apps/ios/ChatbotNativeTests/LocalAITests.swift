@@ -16,11 +16,13 @@ final class LocalModelDescriptorTests: XCTestCase {
     }
 
     func testCatalogHasMultiModelsAndOnlyOnePrimary() {
-        XCTAssertGreaterThanOrEqual(LocalModelDescriptor.catalog.count, 3)
+        XCTAssertGreaterThanOrEqual(LocalModelDescriptor.catalog.count, 4)
         XCTAssertEqual(LocalModelDescriptor.catalog.filter { $0.id == LocalModelDescriptor.primary.id }.count, 1)
         XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "lfm25-1.2b-instruct-q4_k_m" })
         XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "qwen35-2b-q4_k_m" })
+        XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "gemma4-e2b-it-q4_0" })
         XCTAssertTrue(LocalModelDescriptor.catalog.allSatisfy(\.isDownloadable))
+        XCTAssertEqual(LocalModelDescriptor.userFacingCatalog.map(\.id).first, "qwen35-2b-q4_k_m")
     }
 
     func testQwen35KeepsLmstudioGGUFAndOptionalMmproj() {
@@ -43,10 +45,29 @@ final class LocalModelDescriptorTests: XCTestCase {
         XCTAssertTrue(m.capabilities.vision)
     }
 
-    func testGemma4RemainsAbsentFromCatalog() {
-        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m"), "Gemma 4 retire du catalogue")
-        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e4b-it"))
-        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id.localizedCaseInsensitiveContains("gemma") })
+    func testGemma4E2BIsExperimentalCatalogEntryBesideQwen() {
+        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m"))
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")!
+        XCTAssertTrue(LocalModelDescriptor.catalog.contains { $0.id == gemma.id })
+        XCTAssertTrue(gemma.isDownloadable)
+        XCTAssertEqual(gemma.filename, "gemma-4-E2B_q4_0-it.gguf")
+        XCTAssertEqual(gemma.expectedBytes, 3_349_516_256)
+        XCTAssertEqual(gemma.sha256, "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634")
+        XCTAssertTrue(gemma.downloadURL!.absoluteString.contains("google/gemma-4-E2B-it-qat-q4_0-gguf"))
+        XCTAssertTrue(gemma.downloadURL!.absoluteString.contains("gemma-4-E2B_q4_0-it.gguf"))
+        XCTAssertFalse(gemma.downloadURL!.absoluteString.contains("bartowski"))
+        XCTAssertEqual(gemma.runtimeProfile.templateKind, .gemma4)
+        XCTAssertEqual(gemma.compatibilityIPhone14Plus, .experimental)
+        XCTAssertFalse(gemma.recommended)
+        XCTAssertTrue(LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.recommended)
+        let mm = gemma.mmproj!
+        XCTAssertEqual(mm.filename, "gemma-4-E2B-it-mmproj.gguf")
+        XCTAssertEqual(mm.expectedBytes, 986_833_664)
+        XCTAssertEqual(mm.sha256, "021059cce659fe7f9170d5599761d7bbaf644b798dab9503aca30dc43e6beb14")
+        XCTAssertTrue(mm.isValidCompanion(ofTextFilename: gemma.filename))
+        XCTAssertTrue(LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.mmproj!.isValidCompanion(ofTextFilename: "Qwen3.5-2B-Q4_K_M.gguf"))
+        XCTAssertFalse(LocalModelInstallPolicy.activatesDownloadedModel)
+        XCTAssertEqual(LocalModelComparisonCase.allCases.count, 10)
     }
 
     func testVisionMarkerInsertedOnlyWhenImagesPresent() {
@@ -59,8 +80,12 @@ final class LocalModelDescriptorTests: XCTestCase {
 
     func testCompatibilityTiersForIPhone14Plus() {
         XCTAssertEqual(LocalModelDescriptor.primary.compatibilityIPhone14Plus, .recommended)
-        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m"), "Gemma 4 retire du catalogue")
-        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e4b-it"))
+        XCTAssertEqual(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")?.compatibilityIPhone14Plus, .experimental)
+        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")
+        XCTAssertNotNil(e4b)
+        XCTAssertFalse(e4b!.isDownloadable)
+        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id == "gemma4-e4b-it" })
+        XCTAssertEqual(e4b?.compatibilityIPhone14Plus, .notRecommended)
         let phi = LocalModelDescriptor.descriptor(id: "phi4-mini-3.8b")
         XCTAssertEqual(phi?.compatibilityIPhone14Plus, .notRecommended)
     }
@@ -71,10 +96,10 @@ final class LocalModelDescriptorTests: XCTestCase {
         for stub in stubs {
             XCTAssertNil(stub.downloadURL, stub.id)
         }
-        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")
-        XCTAssertNotNil(gemma)
-        XCTAssertFalse(gemma!.isDownloadable, "Gemma 4 E2B reste hors téléchargement — trop lourd vs Qwen3.5 2B")
-        XCTAssertFalse(LocalModelDescriptor.downloadable.contains { $0.id == "gemma4-e2b-it-q4_0" })
+        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")
+        XCTAssertNotNil(e4b)
+        XCTAssertFalse(e4b!.isDownloadable)
+        XCTAssertFalse(LocalModelDescriptor.downloadable.contains { $0.id == "gemma4-e4b-it" })
     }
 }
 
@@ -848,6 +873,15 @@ final class LlamaInferencePerfTests: XCTestCase {
         let heavy = LocalModelDescriptor.descriptor(id: "phi4-mini-3.8b")!.executionProfile
         XCTAssertEqual(heavy.inference.nGpuLayers, 28)
         XCTAssertLessThan(heavy.inference.nCtx, LlamaInferenceConfig.a15Default.nCtx)
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")!.executionProfile
+        XCTAssertEqual(gemma.inference.nCtx, 1536)
+        XCTAssertEqual(gemma.inference.imageMaxTokens, 128)
+        XCTAssertFalse(gemma.thinkingEnabled)
+        XCTAssertEqual(gemma.generationTimeoutSeconds, 240)
+        let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
+        XCTAssertEqual(qwen.inference.nCtx, 2048)
+        XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
+        XCTAssertEqual(qwen.performanceClass, .balanced)
     }
 
     func testOutputTokensExplanationLargerThanShort() {
@@ -1091,6 +1125,55 @@ final class LocalParityWorkflowTests: XCTestCase {
         XCTAssertTrue(WebGroundingPrompt.system().contains("web_N"))
         XCTAssertTrue(WebGroundingPrompt.system().contains("JAMAIS"))
         XCTAssertTrue(WebGroundingPrompt.system().contains("extraits indiquent"))
+    }
+
+    func testGemma4ChatTemplateUsesOfficialTurns() {
+        var profile = LocalModelRuntimeProfile.gemma4E2B
+        let prompt = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Bonjour")],
+            charBudget: 2000,
+            profile: profile
+        )
+        XCTAssertTrue(prompt.contains("<bos>"))
+        XCTAssertTrue(prompt.contains("<|turn>system"))
+        XCTAssertTrue(prompt.contains("<|turn>user"))
+        XCTAssertTrue(prompt.contains("<|turn>model"))
+        XCTAssertTrue(prompt.contains("<turn|>"))
+        XCTAssertFalse(prompt.contains("<|im_start|>"))
+        XCTAssertFalse(prompt.contains("<|channel>thought"))
+        profile.enableThinking = true
+        let thinking = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Bonjour")],
+            charBudget: 2000,
+            profile: profile
+        )
+        XCTAssertTrue(thinking.contains("<|channel>thought"))
+        let cut = LocalChatTemplate.truncateAssistantOutput(
+            "<|channel>thought\nraisonnement<channel|>\nRéponse finale<turn|>",
+            profile: .gemma4E2B
+        )
+        XCTAssertEqual(cut.text, "Réponse finale")
+        XCTAssertTrue(cut.hitStop)
+    }
+
+    func testLlamaCppPinRemainsB10809ForGemma4AndQwenVision() {
+        XCTAssertEqual(LlamaCppPinnedRelease.tag, "b10809")
+        XCTAssertTrue(LlamaCppPinnedRelease.gemma4TextArchitectureSupported)
+        XCTAssertTrue(LlamaCppPinnedRelease.gemma4vProjectorSupported)
+        let vendor = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Vendor/LLAMA_XCFRAMEWORK_SOURCE.json")
+        guard let data = try? Data(contentsOf: vendor),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tag = json["tag"] as? String
+        else {
+            XCTFail("LLAMA_XCFRAMEWORK_SOURCE.json introuvable")
+            return
+        }
+        XCTAssertEqual(tag, LlamaCppPinnedRelease.tag)
     }
 
     func testGraniteAndPhiTemplatesAreModelSpecific() {
@@ -1475,12 +1558,16 @@ final class WorkflowSyncTests: XCTestCase {
         XCTAssertNotNil(qwen.mmproj)
         XCTAssertTrue(qwen.nativeVision)
         XCTAssertTrue(qwen.recommended)
+        XCTAssertEqual(qwen.filename, "Qwen3.5-2B-Q4_K_M.gguf")
+        XCTAssertEqual(qwen.mmproj?.filename, "mmproj-Qwen3.5-2B-BF16.gguf")
+        XCTAssertTrue(qwen.downloadURL!.absoluteString.contains("lmstudio-community/Qwen3.5-2B-GGUF"))
         let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")!
         XCTAssertTrue(gemma.capabilities.vision)
-        XCTAssertNil(gemma.mmproj)
-        XCTAssertFalse(gemma.nativeVision)
-        XCTAssertFalse(gemma.isDownloadable)
-        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id == gemma.id })
+        XCTAssertNotNil(gemma.mmproj)
+        XCTAssertTrue(gemma.nativeVision)
+        XCTAssertTrue(gemma.isDownloadable)
+        XCTAssertTrue(LocalModelDescriptor.catalog.contains { $0.id == gemma.id })
+        XCTAssertNotEqual(gemma.mmproj?.filename, qwen.mmproj?.filename)
     }
 
     func testScrollFollowsBottomUnlessUserReleased() {

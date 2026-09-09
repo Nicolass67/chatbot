@@ -37,17 +37,31 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 - Diagnostics : log `[local-ai:load]` / `[local-ai:vision]` / `[local-ai:llama] version=` + écran Réglages IA locale
 - `n_ctx` / batch / threads : paramétrés par modèle (pas de gating features)
 
-## Gemma 4 E2B (étudié, non catalogué)
+## Gemma 4 E2B (expérimental, sélection manuelle)
 
-Non équivalent mémoire à Qwen3.5 2B. Ne pas télécharger automatiquement.
+Candidat de comparaison **à côté** de Qwen3.5 2B. Jamais d’auto-remplacement, jamais de téléchargement automatique, jamais de bascule automatique.
 
-| Source | GGUF texte | mmproj | Total disque |
-|--------|------------|--------|--------------|
-| `google/gemma-4-E2B-it-qat-q4_0-gguf` | 3,35 Go | 0,99 Go | ~4,3 Go |
-| `ggml-org/gemma-4-E2B-it-GGUF` Q4_0 | 2,84 Go | BF16 0,99 Go ou Q8_0 0,56 Go | ~3,4–3,8 Go |
-| `gguf-org/gemma-4-e2b-it-gguf` | 3,04 Go | Q4_0 0,34 Go | ~3,4 Go |
+| Bundle | Fichier | Taille | SHA256 |
+|--------|---------|--------|--------|
+| Texte | `gemma-4-E2B_q4_0-it.gguf` | 3 349 516 256 (~3,35 Go) | `fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634` |
+| Vision | `gemma-4-E2B-it-mmproj.gguf` | 986 833 664 (~987 Mo) | `021059cce659fe7f9170d5599761d7bbaf644b798dab9503aca30dc43e6beb14` |
 
-Qwen3.5 2B Q4_K_M + mmproj BF16 ≈ **1,18 + 0,64 = 1,82 Go** disque. Gemma 4 E2B reste hors cible 6 Go tant que le mmproj Qwen n’a pas été mesuré.
+Source **officielle Google QAT Q4_0** : `google/gemma-4-E2B-it-qat-q4_0-gguf`. Pas bartowski.
+
+Couples **séparés** (ne jamais mélanger les mmproj) :
+
+- Qwen3.5 2B → `Qwen3.5-2B-Q4_K_M.gguf` + `mmproj-Qwen3.5-2B-BF16.gguf` (**inchangés**)
+- Gemma 4 E2B → `gemma-4-E2B_q4_0-it.gguf` + `gemma-4-E2B-it-mmproj.gguf`
+
+Après installation, Qwen reste le modèle actif. L’utilisateur doit appuyer sur **Utiliser Gemma 4 E2B**. Un seul GGUF texte en mémoire. Le mmproj n’est chargé que pour un tour image, puis libéré.
+
+Profil iPhone 14 Plus (prudent, pas 128K) : `n_ctx` 1536, batch 192/96, timeout 240 s, thinking **off** par défaut.
+
+**llama.cpp b10809 conservé** : le tag embarque déjà `LLM_ARCH_GEMMA4` et le projecteur `PROJECTOR_TYPE_GEMMA4V`. Une mise à jour risquerait la vision Qwen3.5 qui fonctionne.
+
+Gemma 4 E4B : hors catalogue utilisateur, non téléchargeable (trop lourd pour 6 Go).
+
+Comparer (Réglages → **Comparer**) : suite debug sur le modèle **déjà chargé**, sans auto-switch. Les mesures décident si Gemma justifie son coût mémoire ; cette doc ne déclare pas que Gemma est meilleur.
 
 ## Modes d’exécution (Réglages)
 

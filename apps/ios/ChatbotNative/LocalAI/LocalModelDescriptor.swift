@@ -43,13 +43,22 @@ struct LocalMmprojDescriptor: Equatable, Hashable, Sendable {
     let quant: String
     let sourceRepo: String
     let compatibilityNote: String
+    let sha256: String?
 
     var expectedSizeLabel: String {
-        let mb = Double(expectedBytes) / 1_048_576.0
-        if mb >= 1024 {
-            return String(format: "%.2f Go", mb / 1024.0)
-        }
-        return String(format: "%.0f Mo", mb)
+        LocalModelByteLabel.binary(expectedBytes)
+    }
+
+    var userFacingSizeLabel: String {
+        LocalModelByteLabel.decimal(expectedBytes)
+    }
+
+    /// Accepte `mmproj-*.gguf` (Qwen) et `*-mmproj.gguf` (Gemma 4). Jamais le GGUF texte.
+    func isValidCompanion(ofTextFilename textFilename: String) -> Bool {
+        let lower = filename.lowercased()
+        guard lower.contains("mmproj") else { return false }
+        guard filename != textFilename else { return false }
+        return true
     }
 }
 
@@ -88,12 +97,7 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     var hasOptionalVisionProjector: Bool { mmproj != nil }
 
     var expectedSizeLabel: String {
-        guard expectedBytes > 0 else { return "—" }
-        let gb = Double(expectedBytes) / 1_073_741_824.0
-        if gb >= 1 {
-            return String(format: "%.2f Go", gb)
-        }
-        return String(format: "%.0f Mo", Double(expectedBytes) / 1_048_576.0)
+        LocalModelByteLabel.binary(expectedBytes)
     }
 
     var estimatedRAMLabel: String {
@@ -103,14 +107,43 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     var userFacingBlurb: String {
         switch id {
         case "qwen35-2b-q4_k_m":
-            return "Rapide · recommandé"
+            return "Recommandé — polyvalent et rapide au quotidien."
         case "qwen3-1.7b-q4_k_m":
-            return "Très rapide · léger"
+            return "Très léger — réponses plus rapides."
         case "lfm25-1.2b-instruct-q4_k_m":
-            return "Ultra léger · rapide"
+            return "Ultra compact — le plus économe."
+        case "gemma4-e2b-it-q4_0":
+            return "Plus puissant, plus lourd."
         default:
-            return "Local"
+            return "Utilisable hors ligne sur cet iPhone."
         }
+    }
+
+    var family: String {
+        switch architecture {
+        case "qwen3", "qwen35": return "qwen"
+        case "gemma4", "gemma": return "gemma"
+        case "lfm2": return "lfm"
+        case "granite": return "granite"
+        case "phi3": return "phi"
+        default: return architecture
+        }
+    }
+
+    var modelURL: URL? { downloadURL }
+    var modelFilename: String { filename }
+    var mmprojURL: URL? { mmproj?.downloadURL }
+    var mmprojFilename: String? { mmproj?.filename }
+    var mmprojExpectedBytes: Int64? { mmproj?.expectedBytes }
+    var mmprojSHA256: String? { mmproj?.sha256 }
+
+    var userFacingTextSizeLabel: String { LocalModelByteLabel.decimal(expectedBytes) }
+    var userFacingVisionSizeLabel: String? {
+        guard let mmproj else { return nil }
+        return LocalModelByteLabel.decimal(mmproj.expectedBytes)
+    }
+    var userFacingPackSizeLabel: String {
+        LocalModelByteLabel.decimal(expectedBytes + (mmproj?.expectedBytes ?? 0))
     }
 
     var nativeVision: Bool { capabilities.vision && mmproj != nil }
@@ -199,12 +232,58 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
                 expectedBytes: 671_372_416,
                 quant: "BF16",
                 sourceRepo: "lmstudio-community/Qwen3.5-2B-GGUF",
-                compatibilityNote: "Même dépôt que le GGUF texte (projection_dim 2048 = embedding 2048, clip.projector_type=qwen3vl_merger). Ne pas substituer le Q4_K_M bartowski (~1,40 Go, MTP)."
+                compatibilityNote: "Même dépôt que le GGUF texte (projection_dim 2048 = embedding 2048, clip.projector_type=qwen3vl_merger). Ne pas substituer le Q4_K_M bartowski (~1,40 Go, MTP).",
+                sha256: nil
+            )
+        ),
+        LocalModelDescriptor(
+            id: "gemma4-e2b-it-q4_0",
+            displayName: "Gemma 4 E2B",
+            provider: "Google",
+            architecture: "gemma4",
+            parameterCountLabel: "E2B",
+            quant: "Q4_0",
+            expectedBytes: 3_349_516_256,
+            filename: "gemma-4-E2B_q4_0-it.gguf",
+            downloadURL: URL(string: "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf"),
+            sha256: "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+            version: "1.0",
+            license: "Gemma",
+            contextLength: 131_072,
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
+            runtimeProfile: .gemma4E2B,
+            minimumRecommendedRAMGB: 8,
+            estimatedRuntimeMemoryGB: 5.2,
+            compatibilityIPhone14Plus: .experimental,
+            compatibilityNote: "Candidat expérimental. Plus lourd que Qwen3.5 2B (~3,35 Go texte + ~987 Mo vision). Qwen reste le modèle recommandé et n’est jamais remplacé automatiquement.",
+            statusNote: "Expérimental",
+            mmproj: LocalMmprojDescriptor(
+                filename: "gemma-4-E2B-it-mmproj.gguf",
+                downloadURL: URL(string: "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B-it-mmproj.gguf")!,
+                expectedBytes: 986_833_664,
+                quant: "BF16",
+                sourceRepo: "google/gemma-4-E2B-it-qat-q4_0-gguf",
+                compatibilityNote: "Projecteur Gemma 4 (gemma4v) du dépôt officiel Google. Ne jamais mélanger avec mmproj-Qwen3.5-2B-BF16.gguf.",
+                sha256: "021059cce659fe7f9170d5599761d7bbaf644b798dab9503aca30dc43e6beb14"
             )
         ),
     ]
 
-    /// Hors UI utilisateur : trop lourds, sans URL, ou Gemma 4 E2B (~3,35 Go + KV, trop juste sur 6 Go).
+    /// Ordre Settings : référence Qwen3.5, puis Gemma expérimental, puis légers.
+    static let userFacingCatalogOrder: [String] = [
+        "qwen35-2b-q4_k_m",
+        "gemma4-e2b-it-q4_0",
+        "lfm25-1.2b-instruct-q4_k_m",
+        "qwen3-1.7b-q4_k_m",
+    ]
+
+    static var userFacingCatalog: [LocalModelDescriptor] {
+        userFacingCatalogOrder
+            .compactMap { descriptor(id: $0) }
+            .filter { catalog.contains($0) && $0.isDownloadable }
+    }
+
+    /// Hors UI utilisateur : trop lourds ou pas encore téléchargeables (Gemma 4 E4B, etc.).
     static let experimentalInternal: [LocalModelDescriptor] = [
         LocalModelDescriptor(
             id: "qwen3-4b-q4_k_m",
@@ -278,26 +357,26 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             mmproj: nil
         ),
         LocalModelDescriptor(
-            id: "gemma4-e2b-it-q4_0",
-            displayName: "Gemma 4 E2B",
+            id: "gemma4-e4b-it",
+            displayName: "Gemma 4 E4B",
             provider: "Google",
             architecture: "gemma4",
-            parameterCountLabel: "E2B",
+            parameterCountLabel: "E4B",
             quant: "Q4_0",
-            expectedBytes: 3_349_516_256,
-            filename: "gemma-4-E2B_q4_0-it.gguf",
+            expectedBytes: 0,
+            filename: "gemma-4-E4B_q4_0-it.gguf",
             downloadURL: nil,
-            sha256: "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+            sha256: nil,
             version: "0",
             license: "Gemma",
-            contextLength: 32_768,
-            capabilities: LocalModelCapabilities(vision: true, audio: true, reasoning: false, multilingual: true),
-            runtimeProfile: .chatmlInstruct,
-            minimumRecommendedRAMGB: 8,
-            estimatedRuntimeMemoryGB: 5.4,
+            contextLength: 131_072,
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
+            runtimeProfile: .gemma4E2B,
+            minimumRecommendedRAMGB: 12,
+            estimatedRuntimeMemoryGB: 8.5,
             compatibilityIPhone14Plus: .notRecommended,
-            compatibilityNote: "Étudié seulement. Q4_0 officiel ~3,35 Go + mmproj 0,34–0,99 Go. Pas équivalent mémoire à Qwen3.5 2B (1,18+0,64 Go). Non téléchargeable.",
-            statusNote: "Expérimental interne — hors UI",
+            compatibilityNote: "Beaucoup trop lourd pour iPhone 14 Plus / 6 Go. Hors catalogue utilisateur — pas de téléchargement.",
+            statusNote: "Hors UI — futur uniquement",
             mmproj: nil
         ),
     ]
@@ -308,5 +387,27 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
 
     static var downloadable: [LocalModelDescriptor] {
         catalog.filter(\.isDownloadable)
+    }
+}
+
+/// Libellés de taille : binaire (validation) vs décimal (UX, aligné Hugging Face).
+enum LocalModelByteLabel {
+    static func binary(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "—" }
+        let gb = Double(bytes) / 1_073_741_824.0
+        if gb >= 1 {
+            return String(format: "%.2f Go", gb)
+        }
+        return String(format: "%.0f Mo", Double(bytes) / 1_048_576.0)
+    }
+
+    static func decimal(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "—" }
+        if bytes >= 1_000_000_000 {
+            let gb = Double(bytes) / 1_000_000_000.0
+            return String(format: "%.2f Go", gb).replacingOccurrences(of: ".", with: ",")
+        }
+        let mb = Double(bytes) / 1_000_000.0
+        return String(format: "%.0f Mo", mb)
     }
 }

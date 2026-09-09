@@ -22,6 +22,11 @@ final class LocalModelManager: ObservableObject {
     /// Téléchargement mmproj — n’altère pas l’état du GGUF texte.
     @Published private(set) var visionProjectorProgress: Double = 0
     @Published private(set) var visionProjectorBusy: Bool = false
+    @Published private(set) var visionInstallModelId: String?
+    /// Téléchargement texte d’un modèle **non actif** : ne mute pas `state` / `activeModelId`.
+    @Published private(set) var textInstallBusy: Bool = false
+    @Published private(set) var textInstallModelId: String?
+    @Published private(set) var textInstallProgress: Double = 0
 
     private static let selectedModelIdKey = "localAI.selectedModelId"
 
@@ -178,7 +183,7 @@ final class LocalModelManager: ObservableObject {
     }
 
     /// Décharge le modèle courant puis charge `model` (un seul en mémoire).
-    /// Appelé **uniquement** sur action utilisateur explicite.
+    /// Appelé **uniquement** sur action utilisateur explicite. Jamais d’auto-switch.
     func switchToModel(_ model: LocalModelDescriptor) async {
         guard isInstalled(model) else {
             lastError = "« \(model.displayName) » n’est pas installé."
@@ -187,15 +192,39 @@ final class LocalModelManager: ObservableObject {
         if activeModelId == model.id, isReady {
             return
         }
-        // Unload d’abord si un autre (ou le même non prêt) occupe le runtime.
-        // Annuler toute génération en cours avant libération (pas de Task orpheline).
+        let previousId = activeModelId
         await engine.cancel()
         let engineLoaded = await engine.isModelLoaded
         if isReady || engineLoaded {
             await unload()
         }
+        var stillLoaded = await engine.isModelLoaded
+        if stillLoaded {
+            await engine.unload()
+            stillLoaded = await engine.isModelLoaded
+        }
+        if stillLoaded {
+            lastError = "Impossible de libérer le modèle en mémoire. Un seul GGUF texte peut être chargé à la fois."
+            LocalModelFileAudit.log("local-ai:lifecycle", [
+                "event": "switch-blocked-still-loaded",
+                "from": previousId,
+                "to": model.id,
+                "loadedPath": await engine.modelPath ?? "",
+            ])
+            return
+        }
         selectModel(id: model.id)
         await loadIntoEngine()
+        if !isReady {
+            let detail = lastError ?? "chargement impossible"
+            selectModel(id: previousId)
+            lastError = "« \(model.displayName) » n’a pas pu être chargé (\(detail)). \(LocalModelDescriptor.descriptor(id: previousId)?.displayName ?? "Le modèle précédent") reste sélectionné — appuie sur Utiliser pour le recharger."
+            LocalModelFileAudit.log("local-ai:lifecycle", [
+                "event": "switch-load-failed-restored-selection",
+                "failed": model.id,
+                "restored": previousId,
+            ])
+        }
     }
 
     func refreshMetalAvailability() {
@@ -214,9 +243,9 @@ final class LocalModelManager: ObservableObject {
 
         switch state {
         case .downloading, .verifying:
-            // Ne pas écraser un téléchargement en cours.
+            // Ne pas écraser un téléchargement en cours du modèle actif.
             return
-        case .loading, .unloading, .generating:
+        case .ready, .loading, .unloading, .generating:
             // Si le fichier a disparu (ex. sideload pendant l’usage), forcer la correction.
             if !probe.isFullyInstalled {
                 state = .notInstalled
@@ -239,19 +268,19 @@ final class LocalModelManager: ObservableObject {
         let initialState = state.statusLabel
         guard var remoteURL = model.downloadURL else {
             lastError = "Ce modèle n’est pas encore téléchargeable."
-            state = .failed(lastError!)
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
                 "reason": "not-downloadable",
                 "model": model.id,
                 "initialState": initialState,
             ])
+            if model.id == activeModelId, !isReady {
+                state = .failed(lastError!)
+            }
             return
         }
-        guard beginExclusive(.install) else { return }
-        defer { endExclusive(.install) }
-
-        if case .downloading = state {
+        if textInstallBusy {
+            lastError = "Un téléchargement est déjà en cours."
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
                 "reason": "already-downloading",
@@ -260,14 +289,20 @@ final class LocalModelManager: ObservableObject {
             ])
             return
         }
-        if case .verifying = state {
-            LocalModelFileAudit.log("local-ai:download", [
-                "phase": "early-exit",
-                "reason": "already-verifying",
-                "model": model.id,
-                "initialState": initialState,
-            ])
-            return
+        if case .downloading = state, model.id == activeModelId { return }
+        if case .verifying = state, model.id == activeModelId { return }
+
+        let mutatesActiveRuntime = model.id == activeModelId && !isReady && state != .generating
+        let needsExclusive = mutatesActiveRuntime
+        if needsExclusive {
+            guard beginExclusive(.install) else { return }
+        }
+        defer {
+            if needsExclusive { endExclusive(.install) }
+            textInstallBusy = false
+            if textInstallModelId == model.id {
+                textInstallModelId = nil
+            }
         }
 
         // Force le téléchargement binaire HF (évite pages HTML / pointeurs LFS).
@@ -280,17 +315,26 @@ final class LocalModelManager: ObservableObject {
             if let u = comps.url { remoteURL = u }
         }
 
-        activeModelId = model.id
-        UserDefaults.standard.set(model.id, forKey: Self.selectedModelIdKey)
-        let dir = modelsDirectory
+        if LocalModelInstallPolicy.activatesDownloadedModel {
+            activeModelId = model.id
+            UserDefaults.standard.set(model.id, forKey: Self.selectedModelIdKey)
+        }
+
+        let destPath = filePath(for: model)
+        let destURL = fileURL(for: model)
+        let partialURL = partialDownloadURL(for: model)
         installGeneration &+= 1
         let generation = installGeneration
         lastError = nil
-        progress = 0
-        state = .downloading(progress: 0)
+        textInstallBusy = true
+        textInstallModelId = model.id
+        textInstallProgress = 0
+        if mutatesActiveRuntime {
+            progress = 0
+            state = .downloading(progress: 0)
+        }
         defer {
-            // C — sortie complète de install() (tous chemins).
-            LocalModelFileAudit.snapshotFS(point: "C-after-install-exit", finalPath: modelFilePath)
+            LocalModelFileAudit.snapshotFS(point: "C-after-install-exit", finalPath: destPath)
         }
 
         LocalModelFileAudit.log("local-ai:download", [
@@ -298,11 +342,14 @@ final class LocalModelManager: ObservableObject {
             "model": model.id,
             "generation": generation,
             "initialState": initialState,
-            "final.path": fileSystemPath(modelFileURL),
-            "partial.path": fileSystemPath(partialDownloadURL),
+            "activatesModel": LocalModelInstallPolicy.activatesDownloadedModel,
+            "mutatesActiveRuntime": mutatesActiveRuntime,
+            "activeModelId": activeModelId,
+            "final.path": destPath,
+            "partial.path": fileSystemPath(partialURL),
             "url": remoteURL.absoluteString,
             "expectedBytes": model.expectedBytes,
-            "models.entries": LocalModelFileAudit.directoryListing(at: dir).joined(separator: "|"),
+            "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
         ])
 
         do {
@@ -317,8 +364,10 @@ final class LocalModelManager: ObservableObject {
                 ])
                 return
             }
-            state = .verifying
-            try validateInstalledFile(model: model)
+            if mutatesActiveRuntime {
+                state = .verifying
+            }
+            try await validateInstalledFile(model: model)
             guard generation == installGeneration else {
                 LocalModelFileAudit.log("local-ai:download", [
                     "phase": "early-exit",
@@ -330,27 +379,30 @@ final class LocalModelManager: ObservableObject {
                 return
             }
             let probe = LocalModelFileAudit.probe(
-                at: modelFileURL,
+                at: destURL,
                 expectedBytes: model.expectedBytes,
                 fileManager: fileManager
             )
             guard case .installed(let size) = probe else {
                 throw LocalInferenceError.modelMissing
             }
-            installedBytes = size
-            progress = 1
-            state = .installed
+            textInstallProgress = 1
+            if mutatesActiveRuntime {
+                installedBytes = size
+                progress = 1
+                state = .installed
+            }
             lastError = nil
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "installed-state-set",
                 "exists": true,
                 "size": size,
                 "expectedBytes": model.expectedBytes,
-                "path": modelFilePath,
+                "path": destPath,
+                "activeUnchanged": activeModelId,
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
-            // B — immédiatement après installed-state-set
-            LocalModelFileAudit.snapshotFS(point: "B-after-installed-state-set", finalPath: modelFilePath)
+            LocalModelFileAudit.snapshotFS(point: "B-after-installed-state-set", finalPath: destPath)
         } catch is CancellationError {
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
@@ -358,17 +410,10 @@ final class LocalModelManager: ObservableObject {
                 "generation": generation,
                 "currentGeneration": installGeneration,
             ])
-            guard generation == installGeneration else {
-                LocalModelFileAudit.log("local-ai:download", [
-                    "phase": "early-exit",
-                    "reason": "generation-mismatch",
-                    "where": "cancellation-handler",
-                    "generation": generation,
-                    "currentGeneration": installGeneration,
-                ])
-                return
+            guard generation == installGeneration else { return }
+            if mutatesActiveRuntime {
+                applyPresenceToState(presence, clearTransientErrors: false)
             }
-            applyPresenceToState(presence, clearTransientErrors: false)
         } catch {
             guard generation == installGeneration else {
                 LocalModelFileAudit.log("local-ai:download", [
@@ -382,21 +427,27 @@ final class LocalModelManager: ObservableObject {
                 return
             }
             lastError = error.localizedDescription
-            state = .failed(error.localizedDescription)
-            let probe = presence
+            if mutatesActiveRuntime {
+                state = .failed(error.localizedDescription)
+            }
+            let probe = LocalModelFileAudit.probe(
+                at: destURL,
+                expectedBytes: model.expectedBytes,
+                fileManager: fileManager
+            )
             if case .invalid = probe {
                 LocalModelFileAudit.logFileDelete(
-                    path: modelFilePath,
+                    path: destPath,
                     caller: "LocalModelManager.install/failure-invalid"
                 )
-                try? fileManager.removeItem(at: modelFileURL)
+                try? fileManager.removeItem(at: destURL)
             }
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "failed",
                 "error": error.localizedDescription,
-                "final.exists": actualFileExists,
-                "final.size": actualFileSize,
-                "path": modelFilePath,
+                "final.exists": fileManager.fileExists(atPath: destPath),
+                "path": destPath,
+                "activeUnchanged": activeModelId,
                 "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
             ])
         }
@@ -409,10 +460,21 @@ final class LocalModelManager: ObservableObject {
         session?.invalidateAndCancel()
         session = nil
         downloadDelegate = nil
+        textInstallBusy = false
+        textInstallProgress = 0
+        textInstallModelId = nil
         if case .downloading = state {
             progress = 0
             applyPresenceToState(presence, clearTransientErrors: false)
         }
+    }
+
+    func isInstallingText(_ model: LocalModelDescriptor) -> Bool {
+        textInstallBusy && textInstallModelId == model.id
+    }
+
+    func isInstallingVision(_ model: LocalModelDescriptor) -> Bool {
+        visionProjectorBusy && visionInstallModelId == model.id
     }
 
     func deleteModel() async {
@@ -459,21 +521,23 @@ final class LocalModelManager: ObservableObject {
             lastError = "Ce modèle n’a pas de projecteur vision."
             return
         }
-        guard mmproj.filename.hasPrefix("mmproj") else {
+        guard mmproj.isValidCompanion(ofTextFilename: model.filename) else {
             lastError = "Nom mmproj invalide — installation refusée."
             return
         }
-        guard mmproj.filename != model.filename else {
-            lastError = "Le mmproj ne peut pas remplacer le GGUF texte."
+        if visionProjectorBusy || textInstallBusy {
+            lastError = "Un téléchargement est déjà en cours."
             return
         }
-        guard beginExclusive(.install) else { return }
-        defer { endExclusive(.install) }
 
         visionProjectorBusy = true
+        visionInstallModelId = model.id
         visionProjectorProgress = 0
         defer {
             visionProjectorBusy = false
+            if visionInstallModelId == model.id {
+                visionInstallModelId = nil
+            }
         }
 
         var remoteURL = mmproj.downloadURL
@@ -513,6 +577,23 @@ final class LocalModelManager: ObservableObject {
             guard case .installed = probe else {
                 throw LocalInferenceError.modelMissing
             }
+            if let expected = mmproj.sha256, !expected.isEmpty {
+                let url = destination
+                let actual = try await Task.detached(priority: .userInitiated) {
+                    try LocalModelFileHash.sha256Hex(of: url)
+                }.value
+                if actual.lowercased() != expected.lowercased() {
+                    try? fileManager.removeItem(at: destination)
+                    throw NSError(
+                        domain: "LocalModelManager",
+                        code: 3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Empreinte SHA256 du pack vision incorrecte. Fichier refusé."
+                        ]
+                    )
+                }
+            }
             visionProjectorProgress = 1
             LocalModelFileAudit.log("local-ai:vision", [
                 "event": "mmproj-installed",
@@ -521,7 +602,7 @@ final class LocalModelManager: ObservableObject {
                 "textGGUFUntouched": model.filename,
             ])
         } catch is CancellationError {
-            applyPresenceToState(presence, clearTransientErrors: false)
+            // Ne pas toucher à l’état du GGUF texte actif.
         } catch {
             lastError = error.localizedDescription
             LocalModelFileAudit.log("local-ai:vision", [
@@ -535,11 +616,15 @@ final class LocalModelManager: ObservableObject {
     /// Retire uniquement le mmproj. Le GGUF texte n’est pas supprimé.
     func deleteVisionProjector(for model: LocalModelDescriptor) async {
         guard let mmproj = model.mmproj else { return }
-        guard mmproj.filename.hasPrefix("mmproj"), mmproj.filename != model.filename else { return }
-        guard beginExclusive(.delete) else { return }
-        defer { endExclusive(.delete) }
-        await engine.unloadVisionProjector()
-        removeVisionProjectorFiles(for: mmproj)
+        guard mmproj.isValidCompanion(ofTextFilename: model.filename) else { return }
+        if model.id == activeModelId {
+            guard beginExclusive(.delete) else { return }
+            defer { endExclusive(.delete) }
+            await engine.unloadVisionProjector()
+            removeVisionProjectorFiles(for: mmproj)
+        } else {
+            removeVisionProjectorFiles(for: mmproj)
+        }
         visionProjectorProgress = 0
         LocalModelFileAudit.log("local-ai:vision", [
             "event": "mmproj-deleted",
@@ -550,7 +635,7 @@ final class LocalModelManager: ObservableObject {
     }
 
     private func removeVisionProjectorFiles(for mmproj: LocalMmprojDescriptor) {
-        guard mmproj.filename.hasPrefix("mmproj") else { return }
+        guard mmproj.filename.lowercased().contains("mmproj") else { return }
         let url = modelsDirectory.appendingPathComponent(mmproj.filename)
         let partial = modelsDirectory.appendingPathComponent(mmproj.filename + ".download")
         if fileManager.fileExists(atPath: fileSystemPath(url)) {
@@ -802,8 +887,8 @@ final class LocalModelManager: ObservableObject {
     // MARK: - Private download
 
     private func download(from remoteURL: URL, model: LocalModelDescriptor, generation: UInt64) async throws {
-        let destination = modelFileURL
-        let partial = partialDownloadURL
+        let destination = fileURL(for: model)
+        let partial = partialDownloadURL(for: model)
 
         let existing = LocalModelFileAudit.probe(
             at: destination,
@@ -934,8 +1019,11 @@ final class LocalModelManager: ObservableObject {
                 onProgress: { [weak self] fraction in
                     Task { @MainActor in
                         guard let self, generation == self.installGeneration else { return }
-                        self.progress = fraction
-                        self.state = .downloading(progress: fraction)
+                        self.textInstallProgress = fraction
+                        if model.id == self.activeModelId, !self.isReady, self.state != .generating {
+                            self.progress = fraction
+                            self.state = .downloading(progress: fraction)
+                        }
                     }
                 },
                 onComplete: { [weak self] result in
@@ -981,9 +1069,11 @@ final class LocalModelManager: ObservableObject {
         }
     }
 
-    private func validateInstalledFile(model: LocalModelDescriptor) throws {
+    private func validateInstalledFile(model: LocalModelDescriptor) async throws {
+        let destURL = fileURL(for: model)
+        let destPath = filePath(for: model)
         let probe = LocalModelFileAudit.probe(
-            at: modelFileURL,
+            at: destURL,
             expectedBytes: model.expectedBytes,
             fileManager: fileManager
         )
@@ -993,15 +1083,15 @@ final class LocalModelManager: ObservableObject {
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
                 "reason": "final-missing-at-validation",
-                "path": modelFilePath,
+                "path": destPath,
             ])
             throw LocalInferenceError.modelMissing
         case .invalid(let size, let sizeOK, let magicOK):
             LocalModelFileAudit.logFileDelete(
-                path: modelFilePath,
+                path: destPath,
                 caller: "LocalModelManager.validateInstalledFile/invalid"
             )
-            try? fileManager.removeItem(at: modelFileURL)
+            try? fileManager.removeItem(at: destURL)
             if !sizeOK {
                 LocalModelFileAudit.log("local-ai:download", [
                     "phase": "early-exit",
@@ -1043,13 +1133,36 @@ final class LocalModelManager: ObservableObject {
             }
             throw LocalInferenceError.modelMissing
         case .installed(let size):
-            installedBytes = size
+            if model.id == activeModelId {
+                installedBytes = size
+            }
+            if let expected = model.sha256, !expected.isEmpty {
+                let url = destURL
+                let actual = try await Task.detached(priority: .userInitiated) {
+                    try LocalModelFileHash.sha256Hex(of: url)
+                }.value
+                if actual.lowercased() != expected.lowercased() {
+                    LocalModelFileAudit.logFileDelete(
+                        path: destPath,
+                        caller: "LocalModelManager.validateInstalledFile/sha256"
+                    )
+                    try? fileManager.removeItem(at: destURL)
+                    throw NSError(
+                        domain: "LocalModelManager",
+                        code: 3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Empreinte SHA256 incorrecte. Le fichier a été refusé (copie Hugging Face officielle requise)."
+                        ]
+                    )
+                }
+            }
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "validateInstalledFile",
                 "result": "pass",
                 "actualBytes": size,
                 "expectedBytes": model.expectedBytes,
-                "path": modelFilePath,
+                "path": destPath,
             ])
         }
     }

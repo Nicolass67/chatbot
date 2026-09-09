@@ -5,6 +5,7 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
     enum ChatTemplateKind: String, Sendable, Hashable {
         case chatml
         case gemma
+        case gemma4
         case granite
         case phi
         case generic
@@ -22,6 +23,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
     var defaultContextLength: Int
     var defaultMaxOutputTokens: Int
     var defaultTemperature: Double
+    /// Gemma 4 : canal thought optionnel. Défaut Hugging Face = false.
+    var enableThinking: Bool
 
     static let chatmlQwen = LocalModelRuntimeProfile(
         templateKind: .chatml,
@@ -41,7 +44,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "<think>\n\n</think>\n\n",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 
     static let gemma = LocalModelRuntimeProfile(
@@ -62,7 +66,32 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
+    )
+
+    static let gemma4E2B = LocalModelRuntimeProfile(
+        templateKind: .gemma4,
+        controlTokens: [
+            "<|turn>",
+            "<turn|>",
+            "<bos>",
+            "<eos>",
+            "<|channel>thought",
+            "<channel|>",
+            "<|image|>",
+        ],
+        stopSequences: [
+            "<turn|>",
+            "<|turn>",
+            "<eos>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
+        defaultContextLength: 1536,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 
     static let chatmlInstruct = LocalModelRuntimeProfile(
@@ -81,7 +110,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 
     static let granite = LocalModelRuntimeProfile(
@@ -99,7 +129,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 
     static let phi = LocalModelRuntimeProfile(
@@ -118,7 +149,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 
     static let generic = LocalModelRuntimeProfile(
@@ -129,7 +161,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
-        defaultTemperature: 0.7
+        defaultTemperature: 0.7,
+        enableThinking: false
     )
 }
 
@@ -147,6 +180,8 @@ enum LocalChatTemplate {
             return buildChatML(system: system, messages: messages, charBudget: charBudget, profile: profile)
         case .gemma:
             return buildGemma(system: system, messages: messages, charBudget: charBudget)
+        case .gemma4:
+            return buildGemma4(system: system, messages: messages, charBudget: charBudget, profile: profile)
         case .granite:
             return buildGranite(system: system, messages: messages, charBudget: charBudget)
         case .phi:
@@ -243,6 +278,43 @@ enum LocalChatTemplate {
             parts.append("<start_of_turn>\(role)\n\(message.content)<end_of_turn>")
         }
         parts.append("<start_of_turn>model\n")
+        return parts.joined(separator: "\n")
+    }
+
+    private static func buildGemma4(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int,
+        profile: LocalModelRuntimeProfile
+    ) -> String {
+        var parts: [String] = ["<bos>"]
+        if !system.isEmpty {
+            parts.append("<|turn>system\n\(system)<turn|>")
+        }
+        var selected: [LLMChatMessage] = []
+        var used = system.count + 32
+        for message in messages.reversed() {
+            var content = message.content
+            let cost = content.count + 40
+            if used + cost > charBudget {
+                if selected.isEmpty {
+                    content = String(content.prefix(max(80, charBudget - used - 40)))
+                    selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
+                }
+                break
+            }
+            selected.insert(message, at: 0)
+            used += cost
+        }
+        for message in selected {
+            let role = message.role == .assistant ? "model" : "user"
+            parts.append("<|turn>\(role)\n\(message.content)<turn|>")
+        }
+        if profile.enableThinking {
+            parts.append("<|turn>model\n<|channel>thought\n")
+        } else {
+            parts.append("<|turn>model\n")
+        }
         return parts.joined(separator: "\n")
     }
 
@@ -353,6 +425,12 @@ enum LocalChatTemplate {
             text = String(text[..<open.lowerBound])
         }
 
+        if let close = text.range(of: "<channel|>") {
+            text = String(text[close.upperBound...])
+        } else if let open = text.range(of: "<|channel>thought") {
+            text = String(text[..<open.lowerBound])
+        }
+
         for stop in profile.stopSequences {
             if let range = text.range(of: stop) {
                 text = String(text[..<range.lowerBound])
@@ -376,7 +454,9 @@ enum LocalChatTemplate {
     /// Préfixe d’un token de contrôle / stop → ne pas encore émettre (évite `<|im_end|>` pièce par pièce).
     static func isPartialControlPrefix(_ suffix: String, profile: LocalModelRuntimeProfile) -> Bool {
         guard !suffix.isEmpty else { return false }
-        let candidates = profile.controlTokens + profile.stopSequences + ["<|", "<start_of_turn", "<end_of_turn"]
+        let candidates = profile.controlTokens + profile.stopSequences + [
+            "<|", "<start_of_turn", "<end_of_turn", "<|turn", "<turn|", "<|channel", "<channel|",
+        ]
         for candidate in candidates {
             if candidate.hasPrefix(suffix), suffix.count < candidate.count {
                 return true

@@ -71,6 +71,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var performanceClass: PerformanceClass
     /// Paramètres llama.cpp / Metal — ne changent pas les features applicatives.
     var inference: LlamaInferenceConfig
+    /// Réflexion Gemma 4 : off par défaut (qualité vs temps à mesurer, jamais forcée).
+    var thinkingEnabled: Bool
+    var thinkingTokenBudget: Int
 
     enum PerformanceClass: String, Sendable, Hashable {
         case compact
@@ -87,6 +90,8 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             return .balanced
         case "qwen3-4b-q4_k_m":
             return .ample
+        case "gemma4-e2b-it-q4_0":
+            return .gemma4E2BExperimental
         case "phi4-mini-3.8b":
             // Modèles plus lourds : même workflows, contexte moteur un peu plus bas + GPU layers plafonnés à tester.
             var p = LocalModelExecutionProfile.ample
@@ -130,7 +135,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             c.nUbatch = 256
             c.temperature = 0.7
             return c
-        }()
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 0
     )
 
     static let balanced = LocalModelExecutionProfile(
@@ -160,7 +167,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             c.nUbatch = 192
             c.temperature = 0.7
             return c
-        }()
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 0
     )
 
     static let ample = LocalModelExecutionProfile(
@@ -190,7 +199,44 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             c.nUbatch = 128
             c.temperature = 0.65
             return c
-        }()
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 0
+    )
+
+    /// iPhone 14 Plus / 6 Go — prudent. Qualité avant vitesse. Pas 128K de contexte.
+    static let gemma4E2BExperimental = LocalModelExecutionProfile(
+        contextCharBudget: 4_000,
+        historyMessageBudget: 10,
+        maxOutputTokens: 512,
+        temperature: 0.7,
+        topP: 0.95,
+        maxWorkflowSteps: 5,
+        maxToolCalls: 5,
+        maxWebResults: 4,
+        maxFetchedPages: 2,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 320,
+        maxMailMessages: 5,
+        maxMailBodyChars: 4_000,
+        maxDocumentChunks: 5,
+        maxChunkChars: 1_200,
+        toolResultCharBudget: 2_000,
+        generationTimeoutSeconds: 240,
+        performanceClass: .balanced,
+        inference: {
+            var c = LlamaInferenceConfig.a15Default
+            c.nCtx = 1536
+            c.nGpuLayers = -1
+            c.nBatch = 192
+            c.nUbatch = 96
+            c.temperature = 0.7
+            c.topP = 0.95
+            c.imageMaxTokens = 128
+            return c
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 256
     )
 
     /// Budget de sortie selon la tâche — pas un max unique pour tout.

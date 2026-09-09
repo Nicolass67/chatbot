@@ -28,3 +28,16 @@ enum LocalModelAutoLoadPolicy {
         return true
     }
 }
+
+/// Télécharger n’active **jamais** le modèle. L’utilisateur doit appuyer sur Utiliser.
+enum LocalModelInstallPolicy {
+    static let activatesDownloadedModel = false
+}
+
+/// Pin llama.cpp : Gemma 4 (`LLM_ARCH_GEMMA4` + `PROJECTOR_TYPE_GEMMA4V`) est déjà dans b10809.
+/// Ne pas bumper : la vision Qwen3.5 fonctionne sur ce tag.
+enum LlamaCppPinnedRelease {
+    static let tag = "b10809"
+    static let gemma4TextArchitectureSupported = true
+    static let gemma4vProjectorSupported = true
+}

@@ -85,4 +85,36 @@ enum LocalVision {
         }
         return image.jpegData(compressionQuality: 0.95)
     }
+
+    /// Image de test avec texte lisible (vision + raisonnement).
+    static func labeledJPEG(title: String, lines: [String], width: Int = 512, height: Int = 384) -> Data? {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { ctx in
+            UIColor(red: 0.96, green: 0.96, blue: 0.94, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            UIColor(red: 0.15, green: 0.22, blue: 0.38, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: 56))
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.boldSystemFont(ofSize: 22),
+                .foregroundColor: UIColor.white,
+            ]
+            (title as NSString).draw(in: CGRect(x: 16, y: 14, width: width - 32, height: 32), withAttributes: titleAttrs)
+            let bodyAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 18),
+                .foregroundColor: UIColor(white: 0.12, alpha: 1),
+            ]
+            var y: CGFloat = 76
+            for line in lines {
+                (line as NSString).draw(
+                    in: CGRect(x: 20, y: y, width: width - 40, height: 28),
+                    withAttributes: bodyAttrs
+                )
+                y += 32
+            }
+        }
+        return image.jpegData(compressionQuality: 0.92)
+    }
 }

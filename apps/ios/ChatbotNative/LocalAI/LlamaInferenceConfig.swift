@@ -27,6 +27,10 @@ struct LlamaInferenceConfig: Equatable, Sendable, Hashable, Codable {
     /// Temperature applied to llama sampler chain at context creation.
     var temperature: Float
     var topP: Float
+    /// 0 = sampler top-k désactivé.
+    var topK: Int32
+    /// Plafond tokens image mtmd. Qwen conserve 192 via `a15Default`.
+    var imageMaxTokens: Int32
 
     /// Profil sûr pour A15 / 6 Go — Metal tenté, fallback CPU côté loader.
     static let a15Default = LlamaInferenceConfig(
@@ -40,7 +44,9 @@ struct LlamaInferenceConfig: Equatable, Sendable, Hashable, Codable {
         flashAttention: .auto,
         useMmap: true,
         temperature: 0.7,
-        topP: 0.9
+        topP: 0.9,
+        topK: 0,
+        imageMaxTokens: 192
     )
 
     static func resolvedThreads(explicit: Int32?) -> Int32 {

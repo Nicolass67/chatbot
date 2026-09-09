@@ -208,6 +208,9 @@ final class LlamaContext: @unchecked Sendable {
         let sparams = llama_sampler_chain_default_params()
         self.sampling = llama_sampler_chain_init(sparams)
         llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(config.temperature))
+        if config.topK > 0 {
+            llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(config.topK))
+        }
         llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(config.topP, 1))
         llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
         vocab = llama_model_get_vocab(model)
@@ -778,7 +781,7 @@ final class LlamaContext: @unchecked Sendable {
         }
         guard let mmprojPath, !mmprojPath.isEmpty else {
             throw LlamaError.couldNotInitializeContext(
-                "mmproj absent — le GGUF texte Qwen3.5 2B n’embarque pas le projecteur vision."
+                "mmproj absent — le GGUF texte n’embarque pas le projecteur vision."
             )
         }
         // Libère le projecteur après le tour : sur 6 Go, garder CLIP + GGUF texte
@@ -812,7 +815,8 @@ final class LlamaContext: @unchecked Sendable {
         params.n_threads = LlamaInferenceConfig.resolvedThreads(explicit: inferenceConfig.nThreads)
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
         params.image_min_tokens = LocalVision.imageMinTokens
-        params.image_max_tokens = LocalVision.imageMaxTokens
+        let imageCap = inferenceConfig.imageMaxTokens > 0 ? inferenceConfig.imageMaxTokens : LocalVision.imageMaxTokens
+        params.image_max_tokens = imageCap
         let loaded = mmprojPath.withCString { cPath in
             mtmd_init_from_file(cPath, model, params)
         }

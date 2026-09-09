@@ -71,6 +71,7 @@ actor LocalInferenceEngine {
 
     private var isLoaded = false
     private var loadedPath: String?
+    private var loadedModelId: String?
     private var cancelGeneration = false
     private var generationInFlight = false
 
@@ -83,6 +84,7 @@ actor LocalInferenceEngine {
 
     var isModelLoaded: Bool { isLoaded }
     var modelPath: String? { loadedPath }
+    var loadedModelIdentifier: String? { loadedModelId }
 
     static var isLlamaRuntimeAvailable: Bool {
 #if canImport(llama)
@@ -141,6 +143,7 @@ actor LocalInferenceEngine {
             llama = ctx
             isLoaded = true
             loadedPath = path
+            loadedModelId = modelId
             lastLoadDiagnostics = LlamaContext.lastDiagnostics
             var metrics = lastMetrics
             metrics.loadDuration = Date().timeIntervalSince(started)
@@ -150,6 +153,7 @@ actor LocalInferenceEngine {
         } catch let LlamaError.couldNotInitializeContext(detail) {
             isLoaded = false
             loadedPath = nil
+            loadedModelId = nil
             llama = nil
             lastLoadDiagnostics = LlamaContext.lastDiagnostics
             LocalModelFileAudit.snapshotFS(point: "E-after-create_context-fail", finalPath: path)
@@ -157,6 +161,7 @@ actor LocalInferenceEngine {
         } catch {
             isLoaded = false
             loadedPath = nil
+            loadedModelId = nil
             llama = nil
             lastLoadDiagnostics = LlamaContext.lastDiagnostics
             LocalModelFileAudit.snapshotFS(point: "E-after-create_context-error", finalPath: path)
@@ -183,6 +188,7 @@ actor LocalInferenceEngine {
 #else
         isLoaded = false
         loadedPath = nil
+        loadedModelId = nil
         cancelGeneration = false
 #endif
     }
@@ -386,6 +392,7 @@ actor LocalInferenceEngine {
         llama = nil
         isLoaded = false
         loadedPath = nil
+        loadedModelId = nil
         cancelGeneration = false
         generationInFlight = false
         lastLoadDiagnostics = nil

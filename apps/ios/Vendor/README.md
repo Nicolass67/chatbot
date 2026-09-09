@@ -14,7 +14,8 @@ Source épinglée : `LLAMA_XCFRAMEWORK_SOURCE.json` (tag nightly `b10809`).
 
 - **Ne jamais committer** `llama.xcframework` ni `*.gguf` (~86 Mo + ~1,28 Go).
 - Headers : `llama.h`, **`mtmd.h`**, **`mtmd-helper.h`** (vision / mmproj) — tag `b10809`
-- Le GGUF Qwen3.5 2B Q4_K_M et son mmproj se téléchargent **dans l’app** (Application Support / Models), pas dans Git.
+- Le GGUF Qwen3.5 2B Q4_K_M, son mmproj, et le bundle expérimental Gemma 4 E2B se téléchargent **dans l’app** (Application Support / Models), pas dans Git.
+- **Ne pas bumper** `b10809` : Qwen3.5 vision (mtmd) fonctionne ; Gemma 4 (`LLM_ARCH_GEMMA4` + `PROJECTOR_TYPE_GEMMA4V`) est déjà dans ce tag.
 - Flash CI fetch automatiquement le XCFramework avant `xcodegen`.
 
 ## Doc produit

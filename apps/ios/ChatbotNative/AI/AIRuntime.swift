@@ -92,7 +92,11 @@ final class LocalAIRuntime: AIRuntime {
     }
 
     var chatTemplateProfile: LocalModelRuntimeProfile {
-        models.activeDescriptor.runtimeProfile
+        var profile = models.activeDescriptor.runtimeProfile
+        if models.activeDescriptor.executionProfile.thinkingEnabled {
+            profile.enableThinking = true
+        }
+        return profile
     }
 
     var isReady: Bool { models.isReady }
