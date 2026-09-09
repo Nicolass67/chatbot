@@ -15,6 +15,14 @@ protocol AIRuntime: AnyObject {
         maxTokens: Int?
     ) async throws -> String
 
+    /// Streaming commun Chat / Mail / Agent / Web / Files.
+    func generateStream(
+        system: String,
+        messages: [LLMChatMessage],
+        maxTokens: Int?,
+        onToken: @escaping @MainActor (String) -> Void
+    ) async throws -> String
+
     func cancel() async
 }
 
@@ -88,6 +96,15 @@ final class LocalAIRuntime: AIRuntime {
         messages: [LLMChatMessage],
         maxTokens: Int? = nil
     ) async throws -> String {
+        try await generateStream(system: system, messages: messages, maxTokens: maxTokens, onToken: { _ in })
+    }
+
+    func generateStream(
+        system: String,
+        messages: [LLMChatMessage],
+        maxTokens: Int?,
+        onToken: @escaping @MainActor (String) -> Void
+    ) async throws -> String {
         if !models.isReady {
             await models.loadIntoEngine()
         }
@@ -107,12 +124,21 @@ final class LocalAIRuntime: AIRuntime {
 
         let accumulator = RuntimeStringAccumulator()
         let engineRef = engine
+        let emitted = StreamEmitCounter()
         do {
             try await engineRef.generate(prompt: prompt, maxTokens: tokens) { piece in
                 accumulator.append(piece)
-                let cut = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template)
-                if cut.hitStop {
-                    accumulator.replace(with: cut.text)
+                let step = LocalChatTemplate.streamingSafeEmit(
+                    accumulated: accumulator.value,
+                    alreadyEmittedCount: emitted.count,
+                    profile: template
+                )
+                emitted.count = step.newEmittedCount
+                if !step.emit.isEmpty {
+                    await onToken(step.emit)
+                }
+                if step.hitStop {
+                    accumulator.replace(with: step.displayText)
                     await engineRef.cancel()
                 }
             }
@@ -175,5 +201,14 @@ private final class RuntimeStringAccumulator: @unchecked Sendable {
     func replace(with text: String) {
         lock.lock(); defer { lock.unlock() }
         buffer = text
+    }
+}
+
+private final class StreamEmitCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); defer { lock.unlock() }; value = newValue }
     }
 }

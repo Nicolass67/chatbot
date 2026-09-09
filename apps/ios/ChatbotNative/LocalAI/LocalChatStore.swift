@@ -7,19 +7,22 @@ struct LocalConversation: Identifiable, Codable, Hashable, Sendable {
     var scope: ConversationScope
     var createdAt: Date
     var updatedAt: Date
+    var chatMode: String?
 
     init(
         id: String = UUID().uuidString,
         title: String = "Nouvelle conversation",
         scope: ConversationScope = .general,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        chatMode: String? = nil
     ) {
         self.id = id
         self.title = title
         self.scope = scope
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.chatMode = chatMode
     }
 }
 
@@ -179,6 +182,13 @@ final class LocalChatStore: ObservableObject {
         return message
     }
 
+    func setChatMode(_ mode: String, conversationId: String) {
+        guard let idx = conversations.firstIndex(where: { $0.id == conversationId }) else { return }
+        conversations[idx].chatMode = mode
+        conversations[idx].updatedAt = Date()
+        persistConversations()
+    }
+
     func replaceMessages(_ messages: [LocalMessage], for conversationId: String) {
         persistMessages(messages, for: conversationId)
         if let idx = conversations.firstIndex(where: { $0.id == conversationId }) {
@@ -222,7 +232,7 @@ extension LocalConversation {
             id: id,
             title: title,
             updatedAt: formatter.string(from: updatedAt),
-            chatMode: nil,
+            chatMode: chatMode,
             reasoningEffort: nil,
             scope: scope.rawValue,
             contextKey: nil,

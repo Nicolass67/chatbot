@@ -810,4 +810,83 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertEqual(heavy.inference.nGpuLayers, 28)
         XCTAssertLessThan(heavy.inference.nCtx, LlamaInferenceConfig.a15Default.nCtx)
     }
+
+    func testOutputTokensExplanationLargerThanShort() {
+        let p = LocalModelExecutionProfile.compact
+        XCTAssertGreaterThan(p.outputTokens(for: .explanation), p.outputTokens(for: .short))
+        XCTAssertGreaterThan(p.outputTokens(for: .mailReply), 320)
+        XCTAssertEqual(ApplicationCapabilities.full.agent, true)
+        XCTAssertEqual(ApplicationCapabilities.full.files, true)
+        XCTAssertEqual(ApplicationCapabilities.full.web, true)
+    }
+
+    func testMarkdownNotStrippedByControlSanitizer() {
+        let raw = "# Titre\n\n**gras** et *italique*\n- item"
+        let cut = LocalChatTemplate.truncateAssistantOutput(raw, profile: .chatmlQwen)
+        XCTAssertTrue(cut.text.contains("**gras**"))
+        XCTAssertTrue(cut.text.contains("# Titre"))
+        XCTAssertFalse(cut.text.contains("<|im_end|>"))
+    }
+
+    func testSpecialTokensNeverSurviveTruncation() {
+        let raw = "Hello<|im_end|>\n<|im_start|>assistant\nsecret"
+        let cut = LocalChatTemplate.truncateAssistantOutput(raw, profile: .chatmlQwen)
+        XCTAssertEqual(cut.text, "Hello")
+        XCTAssertFalse(cut.text.contains("<|"))
+    }
+
+    func testAgentAntiLoopSignature() {
+        let a = AIToolCall(action: "web_search", arguments: ["query": "x"])
+        let b = AIToolCall(action: "web_search", arguments: ["query": "x"])
+        let c = AIToolCall(action: "web_search", arguments: ["query": "y"])
+        XCTAssertEqual(AgentWorkflow.toolSignature(a), AgentWorkflow.toolSignature(b))
+        XCTAssertNotEqual(AgentWorkflow.toolSignature(a), AgentWorkflow.toolSignature(c))
+    }
+
+    func testMailThreadPromptIsChronologicalAndIsolated() {
+        let older = DirectMailMessage(
+            id: "1", threadId: "t", subject: "Sujet", from: "a@b.c",
+            snippet: "old", date: "2020-01-01", bodyPlain: "Ancien corps", bodyHtml: nil, labelIds: []
+        )
+        let newer = DirectMailMessage(
+            id: "2", threadId: "t", subject: "Sujet", from: "a@b.c",
+            snippet: "new", date: "2024-01-01", bodyPlain: "Pouvez-vous confirmer mardi ?", bodyHtml: nil, labelIds: []
+        )
+        let thread = DirectMailThread(
+            id: "t", threadId: "t", subject: "Sujet", from: "a@b.c",
+            snippet: "new", date: "2024-01-01", bodyPlain: nil, labelIds: [],
+            messages: [newer, older]
+        )
+        let prompt = MailThreadPromptBuilder.userPrompt(
+            thread: thread,
+            profile: .compact,
+            kind: .reply(instruction: "Réponds.")
+        )
+        XCTAssertTrue(prompt.contains("Pouvez-vous confirmer mardi"))
+        XCTAssertTrue(prompt.contains("Ancien corps"))
+        XCTAssertTrue(prompt.contains("dernier, prioritaire"))
+        XCTAssertFalse(prompt.contains("Nouvelle conversation"))
+        XCTAssertFalse(prompt.lowercased().contains("mémoire personnelle"))
+        let idxOld = prompt.range(of: "Ancien corps")!.lowerBound
+        let idxNew = prompt.range(of: "Pouvez-vous confirmer mardi")!.lowerBound
+        XCTAssertLessThan(idxOld, idxNew)
+    }
+
+    func testPlainBodyForSendStripsMarkdownLate() {
+        let md = "**Bonjour**,\n\n- item"
+        let plain = MailThreadPromptBuilder.plainBodyForSend(md)
+        XCTAssertFalse(plain.contains("**"))
+        XCTAssertTrue(plain.contains("Bonjour"))
+    }
+
+    func testConversationPromptAllowsMarkdownAndExplanations() {
+        XCTAssertTrue(LocalPrompts.conversation.contains("Markdown"))
+        XCTAssertEqual(LocalPrompts.conversationTask(for: "Explique-moi la théorie des cordes"), .explanation)
+        XCTAssertEqual(LocalPrompts.conversationTask(for: "ok"), .short)
+    }
+
+    func testLocalFilesRootIdStable() {
+        XCTAssertTrue(LocalFilesStore.isLocalRoot(LocalFilesStore.rootId))
+        XCTAssertEqual(LocalFilesStore.root().enabled, true)
+    }
 }

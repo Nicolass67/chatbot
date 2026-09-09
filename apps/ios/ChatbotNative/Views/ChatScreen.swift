@@ -28,6 +28,10 @@ struct ChatScreen: View {
     var onOpenSettings: (() -> Void)? = nil
     /// Scope forcé (Assistant Mail/Files). Nil = Chat général.
     var forcedScope: ConversationScope? = nil
+
+    private var usesOnDeviceAI: Bool {
+        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
+    }
     var forcedActiveContext: ActiveContextHint? = nil
     /// Clé de persistance folder:/file:/… (sinon on tombait sur `__global__` et on écrasait la conv).
     var persistenceKeyOverride: String? = nil
@@ -942,9 +946,22 @@ struct ChatScreen: View {
                 }
                 let answer = try await MailSummarizeWorkflow.run(
                     .init(threadId: trimmedThread),
-                    runtime: LocalAIRuntime.shared
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                        if let idx = self.messages.firstIndex(where: { $0.id == summaryId }) {
+                            let prev = self.messages[idx]
+                            self.messages[idx] = MessageDTO(
+                                id: prev.id,
+                                role: prev.role,
+                                content: prev.content + token,
+                                createdAt: prev.createdAt,
+                                attachments: prev.attachments
+                            )
+                        }
+                    }
                 )
-                let clean = ChatMLPromptBuilder.truncateAssistantOutput(answer).text
+                let clean = LocalChatTemplate.truncateAssistantOutput(answer).text
                 guard !clean.isEmpty else {
                     throw LocalMailAssistantError.inference("Résumé vide.")
                 }
@@ -1060,9 +1077,13 @@ struct ChatScreen: View {
                         threadId: trimmedThread,
                         instruction: instruction ?? "Propose une réponse polie et concise."
                     ),
-                    runtime: LocalAIRuntime.shared
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                        self.draftCardText += token
+                    }
                 )
-                let body = ChatMLPromptBuilder.truncateAssistantOutput(confirmation.proposedBody).text
+                let body = LocalChatTemplate.truncateAssistantOutput(confirmation.proposedBody).text
                 guard !body.isEmpty else {
                     throw LocalMailAssistantError.inference("Réponse vide.")
                 }
@@ -1709,7 +1730,7 @@ Corps actuel:
                 }
                 .padding(.horizontal, AppTheme.space16)
             }
-            if let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
+            if !usesOnDeviceAI, let banner = ServiceStatusBanner.chatContext(infra: infra, onRepair: { serviceId in
                 Task { await infra.repairService(id: serviceId) }
             }) {
                 banner
@@ -1887,8 +1908,8 @@ Corps actuel:
                     sendTask?.cancel()
                     sendTask = nil
                     Task { await streamingService.cancel() }
-                    if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
-                        Task { await LocalInferenceEngine.shared.cancel() }
+                    if usesOnDeviceAI {
+                        Task { await LocalAIRuntime.shared.cancel() }
                     }
                     finalizeStoppedStream()
                 },
@@ -2425,6 +2446,14 @@ private var sendBlockedHint: String {
     }
 
     private func loadSettings() async {
+        if usesOnDeviceAI {
+            settingsHydrated = true
+            webSearchEnabled = toolChannel == .web
+            selectedModel = LocalModelManager.shared.activeDescriptor.displayName
+            reasoningModes = []
+            runtimeStatus = LocalModelManager.shared.isReady ? "READY" : "OFFLINE"
+            return
+        }
         async let web = client.getWebSearchEnabled()
         async let settings = client.getSettings()
         async let modelList = client.listModels()
@@ -2467,6 +2496,10 @@ private var sendBlockedHint: String {
         let previous = chatMode
         guard next != previous else { return }
         chatMode = next
+        if usesOnDeviceAI {
+            LocalChatStore.shared.setChatMode(next, conversationId: conversation.id)
+            return
+        }
         Task {
             do {
                 try await client.patchConversationMode(id: conversation.id, mode: next)
@@ -2481,6 +2514,9 @@ private var sendBlockedHint: String {
         let previous = webSearchEnabled
         guard next != previous else { return }
         webSearchEnabled = next
+        if usesOnDeviceAI {
+            return
+        }
         Task {
             do {
                 try await client.setWebSearchEnabled(next)
@@ -2905,6 +2941,11 @@ private var sendBlockedHint: String {
                     tools: tools,
                     onStep: { step in
                         thinkingKind = .custom(step.label)
+                    },
+                    onFinalToken: { token in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                        self.streamAccum.text += token
+                        self.streamingText = self.streamAccum.text
                     }
                 )
                 guard gen == sendGeneration, !Task.isCancelled else {
@@ -2913,12 +2954,54 @@ private var sendBlockedHint: String {
                     return
                 }
                 thinkingKind = nil
-                streamingText = ""
-                streamAccum.text = ""
                 let content = agentResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty {
                     throw AIRuntimeError.emptyGeneration
                 }
+                streamingText = ""
+                streamAccum.text = ""
+                messages.append(
+                    MessageDTO(
+                        id: "asst-\(UUID().uuidString)",
+                        role: "assistant",
+                        content: content,
+                        createdAt: nil
+                    )
+                )
+                _ = LocalChatStore.shared.appendMessage(
+                    conversationId: conversation.id,
+                    role: .assistant,
+                    content: content
+                )
+                isSending = false
+                sendTask = nil
+                return
+            }
+
+            if (toolChannel == .web || webSearchEnabled), forcedScope == nil {
+                thinkingKind = .custom("Recherche web…")
+                let runtime = LocalAIRuntime.shared
+                let tools = AIToolRegistry.makeLocalDefault()
+                let answer = try await WebSearchWorkflow.run(
+                    .init(query: effectiveText, synthesize: true),
+                    runtime: runtime,
+                    tools: tools,
+                    onToken: { token in
+                        if self.thinkingKind != nil { self.thinkingKind = nil }
+                        self.streamAccum.text += token
+                        self.streamingText = self.streamAccum.text
+                    }
+                )
+                guard gen == sendGeneration, !Task.isCancelled else {
+                    thinkingKind = nil
+                    isSending = false
+                    return
+                }
+                let content = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty { throw AIRuntimeError.emptyGeneration }
+                thinkingKind = nil
+                streamingText = ""
+                streamAccum.text = ""
                 messages.append(
                     MessageDTO(
                         id: "asst-\(UUID().uuidString)",
@@ -3072,50 +3155,34 @@ private var sendBlockedHint: String {
             history.append(LLMChatMessage(role: .user, content: userText))
         }
 
-        let execProfile = LocalModelManager.shared.activeDescriptor.executionProfile
-        let runtimeProfile = LocalModelManager.shared.activeRuntimeProfile
-        let provider = LocalLLMProvider(
-            promptKind: promptKind,
-            historyCharBudget: execProfile.contextCharBudget,
-            runtimeProfile: runtimeProfile
-        )
         streamAccum.text = ""
         streamingText = ""
-
-        for try await token in provider.stream(
-            messages: history,
-            systemPrompt: LocalPrompts.systemPrompt(for: promptKind),
-            maxTokens: execProfile.maxOutputTokens
-        ) {
-            guard generation == sendGeneration, !Task.isCancelled else {
-                await LocalInferenceEngine.shared.cancel()
-                throw CancellationError()
-            }
-            // Les deltas sont déjà sanitizés par LocalLLMProvider ; défense supplémentaire.
-            let cleaned = LocalChatTemplate.stripControlTokens(token, profile: runtimeProfile)
-            guard !cleaned.isEmpty else { continue }
-            streamAccum.text += cleaned
-            let cut = LocalChatTemplate.truncateAssistantOutput(streamAccum.text, profile: runtimeProfile)
-            streamAccum.text = cut.text
-            if thinkingKind != nil { thinkingKind = nil }
-            if tokenFlushTask == nil {
-                tokenFlushTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 40_000_000)
-                    tokenFlushTask = nil
-                    streamingText = streamAccum.text
+        let result = try await ChatWorkflow.run(
+            .init(
+                userText: userText,
+                history: history,
+                systemPrompt: LocalPrompts.systemPrompt(for: promptKind),
+                taskHint: userText
+            ),
+            runtime: LocalAIRuntime.shared,
+            onToken: { token in
+                guard generation == self.sendGeneration else { return }
+                self.streamAccum.text += token
+                if self.thinkingKind != nil { self.thinkingKind = nil }
+                if self.tokenFlushTask == nil {
+                    self.tokenFlushTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 40_000_000)
+                        self.tokenFlushTask = nil
+                        self.streamingText = self.streamAccum.text
+                    }
                 }
             }
-            if cut.hitStop {
-                await LocalInferenceEngine.shared.cancel()
-                break
-            }
-        }
+        )
         tokenFlushTask?.cancel()
         tokenFlushTask = nil
-        let final = LocalChatTemplate.truncateAssistantOutput(streamAccum.text, profile: runtimeProfile).text
-        streamAccum.text = final
-        streamingText = final
-        let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        streamAccum.text = trimmed
+        streamingText = trimmed
         guard !trimmed.isEmpty else {
             throw AIRuntimeError.emptyGeneration
         }

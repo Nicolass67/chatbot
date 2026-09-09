@@ -158,6 +158,7 @@ final class AIToolRegistry {
         registry.register(MailSummarizeTool())
         registry.register(MailDraftReplyTool())
         registry.register(FilesListTool())
+        registry.register(FilesSearchTool())
         registry.register(MemoryRecallTool())
         return registry
     }

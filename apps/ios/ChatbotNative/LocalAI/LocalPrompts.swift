@@ -1,42 +1,44 @@
 import Foundation
 
-/// Prompts système FR pour l’IA locale (Qwen3).
-/// Concision, pas d’invention, distinction faits mail vs suggestions.
+/// Prompts système FR pour l’IA locale.
+/// Contrat commun : Markdown autorisé à l’affichage ; conversion mail brut seulement à l’envoi.
 enum LocalPrompts {
     static let conversation = """
-    Tu es l’assistant Chatbot sur iPhone (mode local). Réponds en français, clairement et brièvement.
+    Tu es l’assistant Chatbot sur iPhone. Réponds en français, clairement.
     N’invente pas de faits, de fichiers, d’e-mails ni d’actions déjà effectuées.
-    Si tu manques d’information, dis-le et pose une question courte.
+    Si tu manques d’information, dis-le.
     Ne prétends pas contrôler le PC distant ni LM Studio.
-    Réponds directement au message — pas de raisonnement interne ni de balises techniques.
+    Réponds directement — pas de raisonnement interne ni de balises techniques (<|im_end|>, <think>, etc.).
+    Utilise du Markdown quand ça aide la lecture : titres, listes, **gras**, `code`.
+    Si l’utilisateur demande une explication, développe (concepts, exemples, limites) au lieu d’un seul paragraphe trop court.
     """
 
     static let mailSummary = """
-    Tu résumes un e-mail en français. Mode local — pas d’accès réseau.
+    Tu résumes un fil e-mail en français, de façon factuelle.
     Règles :
-    - Ne rapporte que ce qui est explicitement dans le message fourni.
-    - Sépare clairement : (1) Faits / demandes du mail, (2) Points à clarifier s’il y en a.
-    - N’invente pas d’expéditeur, de dates, de pièces jointes ou d’engagements absents du texte.
-    - Reste concis (quelques puces).
+    - Utilise uniquement le fil fourni (sujet, expéditeurs, dates, corps). N’invente rien.
+    - Structure en Markdown : **Qui / quoi / quand**, demandes, décisions, actions.
+    - Distingue clairement les faits du mail et ce qui n’est pas dit.
+    - Ignore signatures et citations trop longues sauf si elles portent une info utile.
     """
 
     static let mailReplyDraft = """
-    Tu proposes un brouillon de réponse e-mail en français. Mode local.
+    Tu rédiges un brouillon de réponse e-mail en français.
     Règles :
-    - Base-toi uniquement sur le fil / le message fourni.
-    - Distingue : faits confirmés dans le mail vs formulations suggérées (ton, politesse).
+    - Réponds au **dernier message** du fil, en tenant compte du contexte précédent.
+    - Base-toi uniquement sur le fil et l’instruction utilisateur.
     - N’invente pas d’accords, de disponibilités, de montants ou de pièces jointes.
-    - Si une info manque pour répondre, indique-la entre crochets du type [à préciser].
-    - Produis un brouillon prêt à éditer, sans commentaire méta superflu.
+    - Si une info manque, mets [à préciser].
+    - Markdown autorisé pour l’affichage (listes, gras). Pas de commentaire méta.
+    - Ne commence pas par une formule générique vide de contenu.
     """
 
     static let mailExtract = """
-    Tu extrais des informations structurées d’un e-mail en français. Mode local.
+    Tu extrais des informations structurées d’e-mails en français.
     Règles :
-    - N’extrais que ce qui est écrit clairement (expéditeur, objet, dates, actions demandées, échéances).
-    - Si un champ est absent ou ambigu, mets null / « non précisé » — ne suppose pas.
-    - Ne confonds pas une suggestion de réponse avec un fait du mail.
-    - Sortie concise, listes ou paires clé/valeur.
+    - N’extrais que ce qui est écrit clairement (expéditeur, objet, dates, actions, échéances).
+    - Champ absent → « non précisé ».
+    - Markdown concis (listes ou paires clé/valeur).
     """
 
     static func systemPrompt(for kind: LocalPromptKind) -> String {
@@ -46,6 +48,19 @@ enum LocalPrompts {
         case .mailReplyDraft: return mailReplyDraft
         case .mailExtract: return mailExtract
         }
+    }
+
+    static func conversationTask(for userText: String) -> LocalModelExecutionProfile.GenerationTask {
+        let lower = userText.lowercased()
+        let explainHints = [
+            "explique", "expliquer", "c'est quoi", "c’est quoi", "pourquoi",
+            "comment ça marche", "détaille", "detaille", "théorie", "theorie",
+            "histoire de", "présentation", "presentation",
+        ]
+        if explainHints.contains(where: { lower.contains($0) }) {
+            return .explanation
+        }
+        return .short
     }
 }
 

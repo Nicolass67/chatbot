@@ -79,6 +79,9 @@ struct WebSearchTool: AITool {
         }
 
         if lines.isEmpty {
+            if let htmlFallback = try? await htmlFallback(query: query, limit: limit, snippetBudget: snippetBudget) {
+                return htmlFallback
+            }
             return AIToolResult(
                 action: name,
                 ok: true,
@@ -87,6 +90,48 @@ struct WebSearchTool: AITool {
             )
         }
 
+        let header = "Résultats web pour « \(query) » (max \(limit)):"
+        return AIToolResult(
+            action: name,
+            ok: true,
+            text: ([header] + lines).joined(separator: "\n"),
+            truncated: false
+        )
+    }
+
+    private func htmlFallback(
+        query: String,
+        limit: Int,
+        snippetBudget: Int
+    ) async throws -> AIToolResult? {
+        var components = URLComponents(string: "https://html.duckduckgo.com/html/")!
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            return nil
+        }
+        let html = String(data: data, encoding: .utf8) ?? ""
+        var lines: [String] = []
+        let pattern = #"class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+            let range = NSRange(html.startIndex..<html.endIndex, in: html)
+            let matches = regex.matches(in: html, options: [], range: range)
+            for match in matches.prefix(limit) {
+                guard let urlRange = Range(match.range(at: 1), in: html),
+                      let titleRange = Range(match.range(at: 2), in: html) else { continue }
+                let href = String(html[urlRange])
+                let title = String(html[titleRange])
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.isEmpty { continue }
+                lines.append("- \(String(title.prefix(snippetBudget))) (\(href))")
+            }
+        }
+        guard !lines.isEmpty else { return nil }
         let header = "Résultats web pour « \(query) » (max \(limit)):"
         return AIToolResult(
             action: name,

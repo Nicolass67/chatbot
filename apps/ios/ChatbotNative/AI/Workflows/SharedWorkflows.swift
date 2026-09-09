@@ -16,7 +16,8 @@ enum ChatWorkflow {
     @MainActor
     static func run(
         _ request: Request,
-        runtime: any AIRuntime
+        runtime: any AIRuntime,
+        onToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
         let profile = runtime.executionProfile
         let packet = ConversationContextCompressor.compress(
@@ -32,11 +33,21 @@ enum ChatWorkflow {
         if messages.last?.role != .user {
             messages.append(LLMChatMessage(role: .user, content: request.userText))
         }
-        let text = try await runtime.generate(
-            system: system,
-            messages: messages,
-            maxTokens: profile.maxOutputTokens
-        )
+        let text: String
+        if let onToken {
+            text = try await runtime.generateStream(
+                system: system,
+                messages: messages,
+                maxTokens: profile.outputTokens(for: LocalPrompts.conversationTask(for: request.userText)),
+                onToken: onToken
+            )
+        } else {
+            text = try await runtime.generate(
+                system: system,
+                messages: messages,
+                maxTokens: profile.outputTokens(for: LocalPrompts.conversationTask(for: request.userText))
+            )
+        }
         return Result(text: text)
     }
 }
@@ -65,16 +76,19 @@ enum AgentWorkflow {
         _ request: Request,
         runtime: any AIRuntime,
         tools: AIToolRegistry,
-        onStep: ((StepEvent) -> Void)? = nil
+        onStep: ((StepEvent) -> Void)? = nil,
+        onFinalToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
         let profile = runtime.executionProfile
         var toolCalls = 0
         var steps = 0
         var scratch: [String] = []
+        var lastToolSignature: String?
 
         // 1) Pré-sélection déterministe d’outils (le petit modèle ne “décide” pas seul).
         if let deterministic = deterministicFirstTool(for: request) {
             onStep?(StepEvent(label: "Outil : \(deterministic.action)"))
+            lastToolSignature = toolSignature(deterministic)
             let result = try await tools.execute(deterministic, profile: profile)
             scratch.append("Résultat \(deterministic.action):\n\(result.text)")
             toolCalls += 1
@@ -100,6 +114,7 @@ enum AgentWorkflow {
             \(tools.catalogSummary)
             Budgets : max \(profile.maxToolCalls) appels outils, réponses concises.
             Ne invente pas de données mail/web/fichiers : utilise un outil.
+            Formate la réponse finale en Markdown.
             """
 
             var messages = packet.messages
@@ -118,7 +133,7 @@ enum AgentWorkflow {
             let raw = try await runtime.generate(
                 system: system,
                 messages: messages,
-                maxTokens: min(profile.maxOutputTokens, 512)
+                maxTokens: profile.outputTokens(for: .agentStep)
             )
 
             switch StructuredActionParser.parse(raw) {
@@ -137,6 +152,12 @@ enum AgentWorkflow {
                     onStep?(StepEvent(label: "Budget outils atteint — synthèse"))
                     break
                 }
+                let signature = toolSignature(call)
+                if signature == lastToolSignature {
+                    onStep?(StepEvent(label: "Boucle outil — synthèse"))
+                    break
+                }
+                lastToolSignature = signature
                 onStep?(StepEvent(label: "Outil : \(call.action)"))
                 do {
                     let result = try await tools.execute(call, profile: profile)
@@ -151,7 +172,7 @@ enum AgentWorkflow {
 
         // Synthèse finale forcée (déterministe + LLM court).
         onStep?(StepEvent(label: "Synthèse"))
-        let synthSystem = "Synthetise une réponse claire et concise pour l’utilisateur à partir des observations. Pas de JSON."
+        let synthSystem = "Synthétise une réponse claire en Markdown pour l’utilisateur à partir des observations. Pas de JSON. Cite les sources si présentes."
         var synthMessages = packet.messages
         let obs = scratch.isEmpty ? "(aucune observation outil)" : scratch.joined(separator: "\n---\n")
         synthMessages.append(
@@ -160,11 +181,21 @@ enum AgentWorkflow {
                 content: "Demande: \(request.userText)\n\nObservations:\n\(obs)\n\nRéponds à l’utilisateur."
             )
         )
-        let finalText = try await runtime.generate(
-            system: synthSystem,
-            messages: synthMessages,
-            maxTokens: profile.maxOutputTokens
-        )
+        let finalText: String
+        if let onFinalToken {
+            finalText = try await runtime.generateStream(
+                system: synthSystem,
+                messages: synthMessages,
+                maxTokens: profile.outputTokens(for: .agentFinal),
+                onToken: onFinalToken
+            )
+        } else {
+            finalText = try await runtime.generate(
+                system: synthSystem,
+                messages: synthMessages,
+                maxTokens: profile.outputTokens(for: .agentFinal)
+            )
+        }
         return Result(text: finalText, stepsUsed: steps, toolCallsUsed: toolCalls)
     }
 
@@ -180,6 +211,11 @@ enum AgentWorkflow {
             || lower.contains("recherche web")
             || lower.contains("sur internet")
             || lower.contains("google")
+            || lower.contains("dernières informations")
+            || lower.contains("dernieres informations")
+            || lower.contains("actualité")
+            || lower.contains("actualite")
+            || (lower.contains("recherche") && (lower.contains("web") || lower.contains("internet") || lower.contains("en ligne")))
             || (lower.contains("web") && (lower.contains("cherche") || lower.contains("recherche"))) {
             return AIToolCall(action: "web_search", arguments: ["query": request.userText])
         }
@@ -200,6 +236,9 @@ enum AgentWorkflow {
             }
         }
         if lower.contains("fichier") || lower.contains("files") || lower.contains("document") {
+            if lower.contains("cherche") || lower.contains("trouve") || lower.contains("recherche") {
+                return AIToolCall(action: "files_search", arguments: ["query": request.userText])
+            }
             return AIToolCall(action: "files_list", arguments: ["path": ""])
         }
         if lower.contains("souviens") || lower.contains("mémoire") || lower.contains("memoire") {
@@ -216,6 +255,11 @@ enum AgentWorkflow {
             return String(text[r])
         }
     }
+
+    static func toolSignature(_ call: AIToolCall) -> String {
+        let args = call.arguments.keys.sorted().map { "\($0)=\(call.arguments[$0] ?? "")" }.joined(separator: "&")
+        return "\(call.action)|\(args)"
+    }
 }
 
 enum MailSummarizeWorkflow {
@@ -224,10 +268,14 @@ enum MailSummarizeWorkflow {
     }
 
     @MainActor
-    static func run(_ request: Request, runtime: any AIRuntime) async throws -> String {
-        _ = runtime.executionProfile // budgets appliqués dans LocalMailAssistant via profile
+    static func run(
+        _ request: Request,
+        runtime: any AIRuntime,
+        onToken: (@MainActor (String) -> Void)? = nil
+    ) async throws -> String {
+        _ = runtime
         let assistant = LocalMailAssistant()
-        return try await assistant.summarizeThread(threadId: request.threadId)
+        return try await assistant.summarizeThread(threadId: request.threadId, onToken: onToken)
     }
 }
 
@@ -238,12 +286,17 @@ enum MailReplyWorkflow {
     }
 
     @MainActor
-    static func run(_ request: Request, runtime: any AIRuntime) async throws -> MailSendConfirmation {
-        _ = runtime.executionProfile
+    static func run(
+        _ request: Request,
+        runtime: any AIRuntime,
+        onToken: (@MainActor (String) -> Void)? = nil
+    ) async throws -> MailSendConfirmation {
+        _ = runtime
         let assistant = LocalMailAssistant()
         return try await assistant.draftReply(
             threadId: request.threadId,
-            instruction: request.instruction
+            instruction: request.instruction,
+            onToken: onToken
         )
     }
 }
@@ -258,24 +311,34 @@ enum WebSearchWorkflow {
     static func run(
         _ request: Request,
         runtime: any AIRuntime,
-        tools: AIToolRegistry
+        tools: AIToolRegistry,
+        onToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> String {
         let profile = runtime.executionProfile
         let call = AIToolCall(action: "web_search", arguments: ["query": request.query])
         let result = try await tools.execute(call, profile: profile)
         guard request.synthesize else { return result.text }
 
-        let text = try await runtime.generate(
-            system: "Réponds en français avec sources si présentes. Sois concis.",
-            messages: [
-                LLMChatMessage(
-                    role: .user,
-                    content: "Question: \(request.query)\n\nRésultats:\n\(result.text)"
-                ),
-            ],
-            maxTokens: profile.maxOutputTokens
+        let messages = [
+            LLMChatMessage(
+                role: .user,
+                content: "Question: \(request.query)\n\nRésultats:\n\(result.text)"
+            ),
+        ]
+        let system = "Réponds en français en Markdown. Cite les sources si présentes. N’invente pas d’URL."
+        if let onToken {
+            return try await runtime.generateStream(
+                system: system,
+                messages: messages,
+                maxTokens: profile.outputTokens(for: .webSynthesize),
+                onToken: onToken
+            )
+        }
+        return try await runtime.generate(
+            system: system,
+            messages: messages,
+            maxTokens: profile.outputTokens(for: .webSynthesize)
         )
-        return text
     }
 }
 
@@ -299,14 +362,14 @@ enum FilesWorkflow {
             )
             if request.userQuestion.isEmpty { return list.text }
             return try await runtime.generate(
-                system: "Aide sur les fichiers. Utilise uniquement les données fournies.",
+                system: "Aide sur les fichiers. Utilise uniquement les données fournies. Markdown autorisé.",
                 messages: [
                     LLMChatMessage(
                         role: .user,
                         content: "Question: \(request.userQuestion)\n\nDonnées:\n\(list.text)"
                     ),
                 ],
-                maxTokens: profile.maxOutputTokens
+                maxTokens: profile.outputTokens(for: .files)
             )
         } catch let error as AIRuntimeError {
             // Échec technique d’outil — pas “Files désactivé parce que modèle petit”.

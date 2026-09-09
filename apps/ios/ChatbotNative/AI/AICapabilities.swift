@@ -185,6 +185,56 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         }()
     )
 
+    /// Budget de sortie selon la tâche — pas un max unique pour tout.
+    enum GenerationTask: String, Sendable {
+        case short
+        case explanation
+        case mailSummary
+        case mailReply
+        case agentStep
+        case agentFinal
+        case webSynthesize
+        case files
+    }
+
+    func outputTokens(for task: GenerationTask) -> Int {
+        switch performanceClass {
+        case .compact:
+            switch task {
+            case .short: return 256
+            case .explanation: return 768
+            case .mailSummary: return 448
+            case .mailReply: return 512
+            case .agentStep: return 320
+            case .agentFinal: return 640
+            case .webSynthesize: return 640
+            case .files: return 512
+            }
+        case .balanced:
+            switch task {
+            case .short: return 320
+            case .explanation: return 896
+            case .mailSummary: return 512
+            case .mailReply: return 640
+            case .agentStep: return 384
+            case .agentFinal: return 768
+            case .webSynthesize: return 768
+            case .files: return 640
+            }
+        case .ample:
+            switch task {
+            case .short: return 384
+            case .explanation: return 1024
+            case .mailSummary: return 640
+            case .mailReply: return 768
+            case .agentStep: return 448
+            case .agentFinal: return 896
+            case .webSynthesize: return 896
+            case .files: return 768
+            }
+        }
+    }
+
     func with(
         maxWorkflowSteps: Int? = nil,
         maxToolCalls: Int? = nil,

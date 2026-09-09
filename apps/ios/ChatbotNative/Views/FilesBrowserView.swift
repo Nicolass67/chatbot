@@ -116,12 +116,15 @@ struct FilesBrowserView: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
-    /// Files est exclusivement serveur (PC) — pas de fallback local.
+    /// Files PC si runtime distant ; sandbox iPhone si IA locale.
+    private var usesOnDeviceFiles: Bool {
+        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
+    }
+
     private var filesRequiresPc: Bool {
+        if usesOnDeviceFiles { return false }
         if infra.isPcOnline { return false }
         return infra.isPcConfirmedOffline
-            || session.localOnlyMode
-            || executionMode.shouldUseLocalLLM
     }
 
     private func openFilesAssistant(_ context: FilesAssistantContext) {
@@ -160,7 +163,7 @@ struct FilesBrowserView: View {
             ZStack {
                 AmbientBackground()
                 VStack(spacing: 0) {
-                    if let banner = ServiceStatusBanner.backendContext(
+                    if !usesOnDeviceFiles, let banner = ServiceStatusBanner.backendContext(
                         infra: infra,
                         surface: "Fichiers",
                         onRepair: { id in Task { await infra.repairService(id: id) } },
@@ -850,6 +853,14 @@ struct FilesBrowserView: View {
         loading = true
         defer { loading = false }
         do {
+            if usesOnDeviceFiles {
+                let local = LocalFilesStore.root()
+                roots = [local]
+                rootsById = [local.id: local]
+                error = nil
+                consumePendingFilesDeepLink()
+                return
+            }
             roots = try await client.listFileRoots()
             rootsById = Dictionary(roots.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             error = nil
@@ -870,6 +881,13 @@ struct FilesBrowserView: View {
         do {
             try await Task.sleep(nanoseconds: 250_000_000)
             guard searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            if usesOnDeviceFiles {
+                searchHits = LocalFilesStore.search(
+                    query: trimmed,
+                    profile: LocalModelManager.shared.activeDescriptor.executionProfile
+                )
+                return
+            }
             searchHits = try await client.searchFiles(query: trimmed, mode: "all")
         } catch {
             searchHits = []
@@ -1703,7 +1721,12 @@ struct FileFolderView: View {
         }
         defer { loading = false }
         do {
-            let list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
+            let list: FileListDTO
+            if LocalFilesStore.isLocalRoot(root.id) {
+                list = try LocalFilesStore.list(relativePath: path)
+            } else {
+                list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
+            }
             entries = Self.sorted(list.entries, by: sortMode)
             let fileCount = entries.filter { !isFolder($0) }.count
             let previews: [WidgetSharedStore.FilePreviewItem] = entries.prefix(6).map { entry in
@@ -1736,6 +1759,7 @@ struct FileFolderView: View {
 
     private func loadMoreIfNeeded() async {
         guard let cursor = nextCursor, !loadingMore else { return }
+        if LocalFilesStore.isLocalRoot(root.id) { return }
         loadingMore = true
         defer { loadingMore = false }
         do {
@@ -2297,6 +2321,22 @@ struct FilePreviewView: View {
     private func load() async {
         loading = true
         defer { loading = false }
+        if fileId.hasPrefix("local:") {
+            let rel = String(fileId.dropFirst("local:".count))
+            if let text = LocalFilesStore.readText(relativePath: rel, maxChars: 12_000) {
+                content = FileContentDTO(
+                    kind: "text",
+                    text: text,
+                    name: title,
+                    mime: "text/plain",
+                    truncated: text.count >= 12_000
+                )
+                error = nil
+                return
+            }
+            error = "Aperçu local indisponible pour ce type de fichier."
+            return
+        }
         do {
             let dto = try await client.fetchFileContent(fileId: fileId)
             content = dto

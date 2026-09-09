@@ -1200,6 +1200,7 @@ struct MailThreadView: View {
     @State private var assistantDetent: PresentationDetent = .large
     @State private var confirmSend = false
     @State private var sendStatus: String?
+    @State private var aiTask: Task<Void, Never>?
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -1207,6 +1208,10 @@ struct MailThreadView: View {
 
     private var useDirectGmail: Bool {
         MailDataSource.prefersDirect(session: session, execution: executionMode, infra: infra)
+    }
+
+    private var usesOnDeviceAI: Bool {
+        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
     }
 
     private var threadId: String {
@@ -1288,6 +1293,13 @@ struct MailThreadView: View {
             notifyReadLocallyIfNeeded()
             await load()
         }
+        .onDisappear {
+            aiTask?.cancel()
+            aiTask = nil
+            if usesOnDeviceAI {
+                Task { await LocalAIRuntime.shared.cancel() }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1329,7 +1341,8 @@ struct MailThreadView: View {
                             replyRecipientSuggestions = []
                         },
                         onRetry: {
-                            Task { await runSuggest() }
+                            aiTask?.cancel()
+                            aiTask = Task { await runSuggest() }
                         },
                         onSend: { confirmSend = true },
                         onCommitHeaders: {
@@ -1429,6 +1442,22 @@ struct MailThreadView: View {
             aiStatus = nil
         }
         do {
+            if usesOnDeviceAI {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                let text = try await MailSummarizeWorkflow.run(
+                    .init(threadId: threadId),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        self.aiStatus = nil
+                        self.summaryText = (self.summaryText ?? "") + token
+                    }
+                )
+                summaryText = text
+                AppHaptics.success()
+                return
+            }
             final class Box: @unchecked Sendable { var value = "" }
             let box = Box()
             try await client.streamSummarizeMail(threadId: threadId) { token in
@@ -1440,6 +1469,8 @@ struct MailThreadView: View {
                 }
             }
             AppHaptics.success()
+        } catch is CancellationError {
+            return
         } catch {
             self.error = error.localizedDescription
         }
@@ -1457,6 +1488,26 @@ struct MailThreadView: View {
             draftStreaming = false
         }
         do {
+            if usesOnDeviceAI {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                replyDraft = ""
+                let confirmation = try await MailReplyWorkflow.run(
+                    .init(threadId: threadId, instruction: "Propose une réponse au dernier message."),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { token in
+                        self.aiStatus = nil
+                        self.replyDraft = (self.replyDraft ?? "") + token
+                    }
+                )
+                replyDraft = confirmation.proposedBody
+                replyDraftId = confirmation.draftId
+                if replyDraftTo.isEmpty { replyDraftTo = confirmation.to }
+                if replyDraftSubject.isEmpty { replyDraftSubject = confirmation.subject }
+                AppHaptics.success()
+                return
+            }
             let result = try await client.streamSuggestMailReply(threadId: threadId) { token in
                 Task { @MainActor in
                     self.aiStatus = nil
@@ -1490,6 +1541,9 @@ struct MailThreadView: View {
         defer { aiBusy = false }
         do {
             body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if usesOnDeviceAI {
+                body = MailThreadPromptBuilder.plainBodyForSend(body)
+            }
             let to = replyDraftTo
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

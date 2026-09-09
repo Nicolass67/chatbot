@@ -93,22 +93,55 @@ struct MailDraftReplyTool: AITool {
     }
 }
 
-/// Files — même outil ; sans PC PathGuard = échec technique d’outil, pas “feature absente”.
+/// Files — Documents iPhone en local ; PathGuard PC si une session distante est utilisée.
 struct FilesListTool: AITool {
     var name: String { "files_list" }
-    var summary: String { "Liste des fichiers (nécessite backend PC). Arguments: path (optionnel)" }
+    var summary: String { "Liste des fichiers locaux (iPhone) ou distants. Arguments: path (optionnel)" }
 
     func execute(
         arguments: [String: String],
         profile: LocalModelExecutionProfile
     ) async throws -> AIToolResult {
-        _ = arguments
-        _ = profile
-        // Sans session PC authentifiée, PathGuard serveur est indisponible.
-        // Ce n’est PAS un gating modèle : c’est une dépendance d’infrastructure.
-        throw AIRuntimeError.toolFailed(
-            "L’outil Files nécessite le backend PC (PathGuard). Connecte le PC pour lister les fichiers distants. " +
-            "Les documents locaux du téléphone pourront être traités via extraction/chunks quand un chemin local est fourni."
+        let path = (arguments["path"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let text = try LocalFilesStore.catalogText(path: path, profile: profile)
+            return AIToolResult(action: name, ok: true, text: text, truncated: false)
+        } catch {
+            throw AIRuntimeError.toolFailed(error.localizedDescription)
+        }
+    }
+}
+
+struct FilesSearchTool: AITool {
+    var name: String { "files_search" }
+    var summary: String { "Recherche des fichiers locaux par nom. Arguments: query" }
+
+    func execute(
+        arguments: [String: String],
+        profile: LocalModelExecutionProfile
+    ) async throws -> AIToolResult {
+        let query = (arguments["query"] ?? arguments["q"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            throw AIRuntimeError.toolInvalidArguments("query requis")
+        }
+        let hits = LocalFilesStore.search(query: query, profile: profile)
+        if hits.isEmpty {
+            return AIToolResult(
+                action: name,
+                ok: true,
+                text: "Aucun fichier local nommé comme « \(query) ».",
+                truncated: false
+            )
+        }
+        let lines = hits.prefix(profile.maxDocumentChunks).map { hit in
+            "- \(hit.name ?? hit.filename ?? hit.fileId) path=\(hit.relativePath ?? "")"
+        }
+        return AIToolResult(
+            action: name,
+            ok: true,
+            text: "Fichiers locaux :\n" + lines.joined(separator: "\n"),
+            truncated: hits.count > profile.maxDocumentChunks
         )
     }
 }
