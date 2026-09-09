@@ -90,6 +90,7 @@ struct FilesBrowserView: View {
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
+    @ObservedObject private var executionMode = ExecutionModeStore.shared
     /// Pile typée (pas `NavigationPath`) pour pouvoir la cacher entre onglets.
     @State private var path: [FilesDestination] = []
     @State private var roots: [FileRootDTO] = []
@@ -113,6 +114,14 @@ struct FilesBrowserView: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    /// Files est exclusivement serveur (PC) — pas de fallback local.
+    private var filesRequiresPc: Bool {
+        if infra.isPcOnline { return false }
+        return infra.isPcConfirmedOffline
+            || session.localOnlyMode
+            || executionMode.shouldUseLocalLLM
     }
 
     private func openFilesAssistant(_ context: FilesAssistantContext) {
@@ -629,7 +638,13 @@ struct FilesBrowserView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+        if filesRequiresPc {
+            SoftEmptyState(
+                systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                title: "Files indisponible",
+                message: "Files nécessite la connexion au PC."
+            )
+        } else if !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
             searchResults
         } else if loading && roots.isEmpty {
             SoftLoadingBlock(label: "Chargement des disques…")
@@ -826,6 +841,12 @@ struct FilesBrowserView: View {
     }
 
     private func loadRoots() async {
+        if filesRequiresPc {
+            roots = []
+            error = nil
+            loading = false
+            return
+        }
         loading = true
         defer { loading = false }
         do {

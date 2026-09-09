@@ -1,3 +1,5 @@
 // Tracked defaults (placeholders). Optional Local.xcconfig overrides for this machine.
 CHATBOT_PUBLIC_BASE_URL = https:/$()/your-worker.example.workers.dev
+// Client ID OAuth iOS public (Google Cloud) — jamais de secret. Surcharger via Local.xcconfig.
+GOOGLE_OAUTH_IOS_CLIENT_ID =
 #include? "Local.xcconfig"

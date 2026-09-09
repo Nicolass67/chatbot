@@ -14,6 +14,10 @@ struct ChatRootView: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
+    private var useLocalChat: Bool {
+        session.localOnlyMode || ExecutionModeStore.shared.shouldUseLocalLLM
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -86,6 +90,9 @@ struct ChatRootView: View {
             guard let req else { return }
             Task { await openContextChat(req) }
         }
+        .onChange(of: session.localOnlyMode) { _, _ in
+            Task { await bootOrRestoreGeneral(forceNew: false) }
+        }
         .onAppear {
             if let conversation {
                 ConversationSessionStore.save(
@@ -101,6 +108,10 @@ struct ChatRootView: View {
         booting = true
         bootError = nil
         defer { booting = false }
+        if useLocalChat {
+            bootFromLocalStore(forceNew: forceNew)
+            return
+        }
         do {
             if forceNew {
                 if let old = conversation?.id {
@@ -142,7 +153,45 @@ struct ChatRootView: View {
         }
     }
 
+    private func bootFromLocalStore(forceNew: Bool) {
+        let store = LocalChatStore.shared
+        store.reloadConversations()
+        if forceNew {
+            if let old = conversation?.id {
+                ConversationSessionStore.clear(conversationId: old, scope: .general)
+            } else {
+                ConversationSessionStore.clear(scope: .general)
+            }
+            let created = store.createConversation(scope: .general)
+            ConversationSessionStore.save(conversationId: created.id, scope: .general)
+            conversation = created.asConversationDTO()
+            return
+        }
+        if let existing = ConversationSessionStore.conversationId(scope: .general),
+           let match = store.conversations(scope: .general).first(where: { $0.id == existing }) {
+            conversation = match.asConversationDTO()
+            return
+        }
+        if let recent = store.conversations(scope: .general).first {
+            ConversationSessionStore.save(conversationId: recent.id, scope: .general)
+            conversation = recent.asConversationDTO()
+            return
+        }
+        let created = store.createConversation(scope: .general)
+        ConversationSessionStore.save(conversationId: created.id, scope: .general)
+        conversation = created.asConversationDTO()
+    }
+
     private func openExisting(id: String) async {
+        if useLocalChat {
+            LocalChatStore.shared.reloadConversations()
+            if let match = LocalChatStore.shared.conversations(scope: .general).first(where: { $0.id == id }) {
+                ConversationSessionStore.save(conversationId: match.id, scope: .general)
+                conversation = match.asConversationDTO()
+            }
+            nav.openConversationId = nil
+            return
+        }
         do {
             let list = try await client.listConversations(scope: .general)
             if let match = list.first(where: { $0.id == id }) {
@@ -185,6 +234,10 @@ struct ConversationSwitcherSheet: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var useLocalChat: Bool {
+        session.localOnlyMode || ExecutionModeStore.shared.shouldUseLocalLLM
     }
 
     private var filtered: [ConversationDTO] {
@@ -378,6 +431,12 @@ struct ConversationSwitcherSheet: View {
     private func load() async {
         loading = true
         defer { loading = false }
+        if useLocalChat {
+            LocalChatStore.shared.reloadConversations()
+            items = LocalChatStore.shared.conversations(scope: .general).map { $0.asConversationDTO() }
+            error = nil
+            return
+        }
         do {
             items = try await client.listConversations(scope: .general)
             error = nil
@@ -387,6 +446,14 @@ struct ConversationSwitcherSheet: View {
     }
 
     private func create() async {
+        if useLocalChat {
+            let created = LocalChatStore.shared.createConversation(scope: .general)
+            let dto = created.asConversationDTO()
+            ConversationSessionStore.save(conversationId: dto.id, scope: .general)
+            items.insert(dto, at: 0)
+            onCreated(dto)
+            return
+        }
         do {
             let created = try await client.createConversation(scope: .general)
             ConversationSessionStore.save(conversationId: created.id, scope: .general)
@@ -398,6 +465,11 @@ struct ConversationSwitcherSheet: View {
     }
 
     private func delete(_ conv: ConversationDTO) async {
+        if useLocalChat {
+            LocalChatStore.shared.deleteConversation(id: conv.id)
+            items.removeAll { $0.id == conv.id }
+            return
+        }
         do {
             try await client.deleteConversation(id: conv.id)
             items.removeAll { $0.id == conv.id }
@@ -410,6 +482,14 @@ struct ConversationSwitcherSheet: View {
         guard let target = renameTarget else { return }
         let title = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
+        if useLocalChat {
+            LocalChatStore.shared.renameConversation(id: target.id, title: title)
+            if let idx = items.firstIndex(where: { $0.id == target.id }) {
+                items[idx].title = title
+            }
+            renameTarget = nil
+            return
+        }
         do {
             let updated = try await client.renameConversation(id: target.id, title: title)
             if let idx = items.firstIndex(where: { $0.id == target.id }) {

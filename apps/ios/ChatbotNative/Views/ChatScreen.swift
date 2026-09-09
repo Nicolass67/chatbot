@@ -22,6 +22,7 @@ struct ChatScreen: View {
     @Environment(AppNavigation.self) private var nav
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var executionMode = ExecutionModeStore.shared
     let conversation: ConversationDTO
     var onOpenHistory: (() -> Void)? = nil
     var onOpenSettings: (() -> Void)? = nil
@@ -179,6 +180,12 @@ struct ChatScreen: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
+                if executionMode.showsLocalBanner {
+                    ExecutionModeBanner(label: executionMode.statusLabel)
+                        .padding(.horizontal, AppTheme.space12)
+                        .padding(.top, AppTheme.space8)
+                        .padding(.bottom, AppTheme.space4)
+                }
                 if let scope = forcedScope, scope == .mail {
                     PersistentProductActionsBar(
                         scope: scope,
@@ -341,6 +348,9 @@ struct ChatScreen: View {
             isLoadingOlderMessages = false
             scrollAnchorAfterPrepend = nil
             Task { await streamingService.cancel() }
+            if executionMode.shouldUseLocalLLM {
+                Task { await LocalInferenceEngine.shared.cancel() }
+            }
             if forcedScope == .mail, !nav.mailStickyAttachSources.isEmpty {
                 Task { await rehydrateMailStickyAttachments() }
             }
@@ -1772,6 +1782,9 @@ Corps actuel:
                     sendTask?.cancel()
                     sendTask = nil
                     Task { await streamingService.cancel() }
+                    if executionMode.shouldUseLocalLLM {
+                        Task { await LocalInferenceEngine.shared.cancel() }
+                    }
                     finalizeStoppedStream()
                 },
                 onPickDoc: { showDocImporter = true },
@@ -1793,6 +1806,10 @@ Corps actuel:
     }
 
     private var assistantReadyForSend: Bool {
+        // Mode local : indépendant du runtime LM Studio PC.
+        if executionMode.shouldUseLocalLLM || session.localOnlyMode {
+            return LocalModelManager.shared.isInstalled || LocalModelManager.shared.isReady
+        }
         switch runtimeStatus.uppercased() {
         case "READY", "BUSY":
             return !modelSwitching
@@ -1874,6 +1891,12 @@ Corps actuel:
 
 
 private var sendBlockedHint: String {
+        if executionMode.shouldUseLocalLLM || session.localOnlyMode {
+            if LocalModelManager.shared.isInstalled || LocalModelManager.shared.isReady {
+                return "IA locale"
+            }
+            return "Installe l’IA locale"
+        }
         switch displayRuntimeStatus.uppercased() {
         case "OFFLINE": return "Choisis un modèle"
         case "LOADING", "LOADING_MODEL", "SWITCHING": return "Patiente…"
@@ -1884,6 +1907,10 @@ private var sendBlockedHint: String {
 
     private func refreshRuntimeStatus() async {
         guard !modelSwitching else { return }
+        if executionMode.shouldUseLocalLLM || session.localOnlyMode {
+            runtimeStatus = LocalModelManager.shared.isReady ? "READY" : (LocalModelManager.shared.isInstalled ? "READY" : "OFFLINE")
+            return
+        }
         if let snap = try? await client.runtimeSnapshot() {
             applySnapshotToRuntime(snap)
         } else if let status = try? await client.runtimeStatus() {
@@ -1915,6 +1942,12 @@ private var sendBlockedHint: String {
     }
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
+        if session.localOnlyMode || executionMode.shouldUseLocalLLM {
+            let local = LocalChatStore.shared.messages(for: conversation.id)
+            messages = local.map { $0.asMessageDTO() }
+            hasMoreOlderMessages = false
+            return
+        }
         do {
             let page = try await client.listMessages(
                 conversationId: conversation.id,
@@ -2624,12 +2657,283 @@ private var sendBlockedHint: String {
         await send(options: ChatSendOptions(regenerate: true, mode: chatMode))
     }
 
+    /// Envoi via IA locale (Qwen) — indépendant du PC / SSE distant.
+    private func sendViaLocalLLM(
+        rawText: String,
+        displayText: String,
+        hideUserMessage: Bool,
+        options: ChatSendOptions?
+    ) async {
+        var effectiveText = rawText
+        if effectiveText.isEmpty, options?.regenerate == true {
+            effectiveText = messages.last(where: { $0.role == "user" })?.content ?? ""
+        }
+        guard !effectiveText.isEmpty else { return }
+        let shownText = displayText.isEmpty ? effectiveText : displayText
+
+        isSending = true
+        sendGeneration &+= 1
+        let gen = sendGeneration
+        error = nil
+        canRetrySend = false
+
+        if options?.regenerate != true {
+            draft = ""
+            editingMessageId = nil
+        }
+
+        // Files nécessite le PC — ne pas faire semblant via le LLM local.
+        if forcedScope == .files {
+            if options?.regenerate != true, !hideUserMessage {
+                let userMsg = MessageDTO(
+                    id: "local-\(UUID().uuidString)",
+                    role: "user",
+                    content: shownText,
+                    createdAt: nil
+                )
+                messages.append(userMsg)
+                _ = LocalChatStore.shared.appendMessage(
+                    conversationId: conversation.id,
+                    role: .user,
+                    content: shownText
+                )
+            }
+            let reply =
+                "Files nécessite la connexion au PC. L’IA locale ne peut pas lister ni ouvrir tes fichiers."
+            messages.append(
+                MessageDTO(
+                    id: "asst-\(UUID().uuidString)",
+                    role: "assistant",
+                    content: reply,
+                    createdAt: nil
+                )
+            )
+            _ = LocalChatStore.shared.appendMessage(
+                conversationId: conversation.id,
+                role: .assistant,
+                content: reply
+            )
+            isSending = false
+            thinkingKind = nil
+            sendTask = nil
+            return
+        }
+
+        if options?.regenerate != true, !hideUserMessage {
+            messages.append(
+                MessageDTO(
+                    id: "local-\(UUID().uuidString)",
+                    role: "user",
+                    content: shownText,
+                    createdAt: nil
+                )
+            )
+            _ = LocalChatStore.shared.appendMessage(
+                conversationId: conversation.id,
+                role: .user,
+                content: shownText
+            )
+        }
+
+        thinkingKind = .reflecting
+        streamingText = ""
+        streamAccum.text = ""
+        tokenFlushTask?.cancel()
+        tokenFlushTask = nil
+
+        if let pinId = messages.last(where: { $0.role == "user" })?.id {
+            requestPinMessageToTop(pinId)
+        }
+
+        do {
+            if !LocalModelManager.shared.isReady {
+                await LocalModelManager.shared.loadIntoEngine()
+            }
+            guard LocalModelManager.shared.isReady else {
+                throw LocalMailAssistantError.modelNotReady
+            }
+
+            // Mail scope + Gmail direct : intents search / résumé / réponse.
+            if forcedScope == .mail, GmailOAuthSession.shared.isConnected {
+                let assistant = LocalMailAssistant()
+                let lower = effectiveText.lowercased()
+                let threadId = forcedActiveContext?.mailThreadId
+                let answer: String
+                if let threadId, !threadId.isEmpty, isMailReplyIntent(effectiveText) {
+                    thinkingKind = .custom("Préparation de la réponse…")
+                    let confirmation = try await assistant.draftReply(
+                        threadId: threadId,
+                        instruction: effectiveText
+                    )
+                    answer =
+                        """
+                        Proposition de réponse (non envoyée) :
+
+                        \(confirmation.proposedBody)
+
+                        L’envoi réel nécessite une confirmation explicite.
+                        """
+                } else if let threadId, !threadId.isEmpty,
+                          lower.contains("résum") || lower.contains("resum") {
+                    thinkingKind = .custom("Analyse du message…")
+                    answer = try await assistant.summarizeThread(threadId: threadId)
+                } else if lower.contains("cherche") || lower.contains("recherche")
+                            || lower.contains("trouve") || lower.contains("mails")
+                            || lower.contains("e-mail") || lower.contains("email") {
+                    thinkingKind = .custom("Recherche mail…")
+                    answer = try await assistant.searchAndAnswer(effectiveText)
+                } else {
+                    answer = try await streamLocalChatReply(
+                        userText: effectiveText,
+                        promptKind: .mailExtract,
+                        generation: gen
+                    )
+                }
+
+                guard gen == sendGeneration, !Task.isCancelled else {
+                    thinkingKind = nil
+                    isSending = false
+                    return
+                }
+
+                thinkingKind = nil
+                streamingText = ""
+                streamAccum.text = ""
+                messages.append(
+                    MessageDTO(
+                        id: "asst-\(UUID().uuidString)",
+                        role: "assistant",
+                        content: answer,
+                        createdAt: nil
+                    )
+                )
+                _ = LocalChatStore.shared.appendMessage(
+                    conversationId: conversation.id,
+                    role: .assistant,
+                    content: answer
+                )
+                isSending = false
+                sendTask = nil
+                return
+            }
+
+            let promptKind: LocalPromptKind =
+                forcedScope == .mail ? .mailExtract : .conversation
+            let finalText = try await streamLocalChatReply(
+                userText: effectiveText,
+                promptKind: promptKind,
+                generation: gen
+            )
+
+            guard gen == sendGeneration, !Task.isCancelled else {
+                thinkingKind = nil
+                isSending = false
+                return
+            }
+
+            thinkingKind = nil
+            let content = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            streamingText = ""
+            streamAccum.text = ""
+            if !content.isEmpty {
+                messages.append(
+                    MessageDTO(
+                        id: "asst-\(UUID().uuidString)",
+                        role: "assistant",
+                        content: content,
+                        createdAt: nil
+                    )
+                )
+                _ = LocalChatStore.shared.appendMessage(
+                    conversationId: conversation.id,
+                    role: .assistant,
+                    content: content
+                )
+            }
+        } catch is CancellationError {
+            await LocalInferenceEngine.shared.cancel()
+            thinkingKind = nil
+        } catch {
+            if Self.isUserCancellation(error) {
+                thinkingKind = nil
+            } else {
+                self.error = error.localizedDescription
+                canRetrySend = true
+                thinkingKind = nil
+                streamingText = ""
+                streamAccum.text = ""
+            }
+        }
+
+        if gen == sendGeneration {
+            isSending = false
+            sendTask = nil
+        }
+    }
+
+    /// Stream tokens locaux → `streamingText` / `streamAccum`, retourne le texte final.
+    private func streamLocalChatReply(
+        userText: String,
+        promptKind: LocalPromptKind,
+        generation: UInt64
+    ) async throws -> String {
+        var history: [LLMChatMessage] = messages.compactMap { msg in
+            guard msg.role == "user" || msg.role == "assistant" else { return nil }
+            let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
+            return LLMChatMessage(role: role, content: msg.content)
+        }
+        // messages includes the just-appended user turn; ensure last is userText if empty history edge.
+        if history.last?.role != .user {
+            history.append(LLMChatMessage(role: .user, content: userText))
+        }
+
+        let provider = LocalLLMProvider(promptKind: promptKind)
+        streamAccum.text = ""
+        streamingText = ""
+
+        for try await token in provider.stream(
+            messages: history,
+            systemPrompt: LocalPrompts.systemPrompt(for: promptKind),
+            maxTokens: 512
+        ) {
+            guard generation == sendGeneration, !Task.isCancelled else {
+                await LocalInferenceEngine.shared.cancel()
+                throw CancellationError()
+            }
+            streamAccum.text += token
+            if thinkingKind != nil { thinkingKind = nil }
+            // Flush léger (pas à chaque token) — réutilise le pattern coalesce.
+            if tokenFlushTask == nil {
+                tokenFlushTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 40_000_000)
+                    tokenFlushTask = nil
+                    streamingText = streamAccum.text
+                }
+            }
+        }
+        tokenFlushTask?.cancel()
+        tokenFlushTask = nil
+        streamingText = streamAccum.text
+        return streamAccum.text
+    }
+
     private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false, rewriteDraftCard: Bool = false) async {
         guard !isSending else { return }
         let rawText = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
         let isEdit = editingMessageId != nil
         guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
+
+        // IA locale (avant mail reply produit / SSE distant).
+        if executionMode.shouldUseLocalLLM || session.localOnlyMode {
+            await sendViaLocalLLM(
+                rawText: rawText,
+                displayText: rawText,
+                hideUserMessage: hideUserMessage,
+                options: options
+            )
+            return
+        }
 
         // Réponse au fil mail : API produit (contexte thread garanti), pas un brouillon orphelin.
         if !rewriteDraftCard,
@@ -3370,6 +3674,9 @@ private var sendBlockedHint: String {
     private func finalizeStoppedStream() {
         isSending = false
         thinkingKind = nil
+        if executionMode.shouldUseLocalLLM || session.localOnlyMode {
+            Task { await LocalInferenceEngine.shared.cancel() }
+        }
         if agentActivity.visible || agentActivity.webPhase != .idle || !agentActivity.planSteps.isEmpty {
             if let start = agentActivity.startedAt {
                 agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))

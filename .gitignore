@@ -99,6 +99,15 @@ apps/ios/QA.xcconfig
 scripts/ios/.deploy-venv/
 sidestore-prep/signed-app/
 
+# Modèles GGUF on-device (jamais committer — téléchargés dans Application Support)
+*.gguf
+*.gguf.download
+local-models/
+models-local/
+apps/ios/Vendor/llama.xcframework/
+apps/ios/Vendor/llama-*-xcframework.zip
+apps/ios/Vendor/build-apple/
+
 
 .build-home/
 

@@ -22,6 +22,8 @@ struct MailInboxView: View {
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
+    @ObservedObject private var gmailOAuth = GmailOAuthSession.shared
+    @ObservedObject private var executionMode = ExecutionModeStore.shared
     @State private var messages: [MailMessageSummary] = []
     @State private var loading = false
     /// Barre inline (liste déjà peuplée).
@@ -69,6 +71,14 @@ struct MailInboxView: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    /// PC offline / mode local → Gmail API directe depuis l’iPhone.
+    private var useDirectGmail: Bool {
+        session.localOnlyMode
+            || executionMode.shouldUseLocalLLM
+            || executionMode.preference == .forceLocal
+            || infra.isPcConfirmedOffline
     }
 
     private var rangeLabel: String {
@@ -337,6 +347,14 @@ struct MailInboxView: View {
                     nav.presentMailAssistant = false
                 }
             }
+            .onChange(of: gmailOAuth.isConnected) { _, connected in
+                Task {
+                    await loadOAuth()
+                    if connected, useDirectGmail, messages.isEmpty {
+                        scheduleLoad(resetPagination: true)
+                    }
+                }
+            }
             .onChange(of: nav.qaIntent) { _, intent in
                 handleQaIntent(intent)
             }
@@ -415,23 +433,28 @@ struct MailInboxView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(AppTheme.muted)
                     VStack(alignment: .leading, spacing: AppTheme.space4) {
-                        Text(oauthConfigured
-                             ? "Aucun compte Gmail connecté"
-                             : "OAuth Google non configuré côté serveur")
+                        Text(useDirectGmail
+                             ? "Aucun compte Gmail (direct) connecté"
+                             : (oauthConfigured
+                                ? "Aucun compte Gmail connecté"
+                                : "OAuth Google non configuré côté serveur"))
                             .font(CNFont.callout.weight(.semibold))
                             .foregroundStyle(AppTheme.foreground)
-                        Text(oauthConfigured
-                             ? "Connecte Gmail pour lire et agir depuis l’app."
-                             : "Configure GOOGLE_CLIENT_* sur le serveur.")
+                        Text(useDirectGmail
+                             ? "Connecte Gmail sur cet iPhone (indépendant du PC)."
+                             : (oauthConfigured
+                                ? "Connecte Gmail pour lire et agir depuis l’app."
+                                : "Configure GOOGLE_CLIENT_* sur le serveur."))
                             .font(CNFont.caption)
                             .foregroundStyle(AppTheme.muted)
-                        if oauthConfigured {
-                            Button("Connecter Gmail") {
+                        if useDirectGmail || oauthConfigured {
+                            Button(useDirectGmail ? "Connecter Gmail (direct)" : "Connecter Gmail") {
                                 Task { await connectGmail() }
                             }
                             .font(CNFont.callout.weight(.semibold))
                             .foregroundStyle(AppTheme.accent)
                             .padding(.top, 4)
+                            .disabled(useDirectGmail && gmailOAuth.isBusy)
                         }
                     }
                     Spacer(minLength: 0)
@@ -597,6 +620,18 @@ struct MailInboxView: View {
 
     private func loadOAuth() async {
         defer { oauthCheckCompleted = true }
+        if useDirectGmail {
+            gmailOAuth.restoreFromKeychain()
+            oauthConfigured = GmailOAuthConfig.isConfigured
+            if let email = gmailOAuth.email, gmailOAuth.isConnected {
+                oauthEmails = [email]
+            } else if gmailOAuth.isConnected {
+                oauthEmails = ["Gmail connecté"]
+            } else {
+                oauthEmails = []
+            }
+            return
+        }
         if let res = try? await client.oauthAccounts() {
             oauthConfigured = res.configured
             oauthEmails = res.emails
@@ -729,7 +764,7 @@ struct MailInboxView: View {
                 messages = []
             }
             self.error = friendlyMailError(error)
-            if case APIClientError.unauthorized = error {
+            if case APIClientError.unauthorized = error, !useDirectGmail, !session.localOnlyMode {
                 await session.logout()
             }
         }
@@ -740,6 +775,20 @@ struct MailInboxView: View {
         query: String?,
         pageToken: String?
     ) async throws -> MailMessagesPage {
+        if useDirectGmail {
+            let provider = DirectGmailProvider()
+            let combined = Self.directGmailQuery(category: category, extra: query)
+            let page = try await provider.listMessages(
+                query: combined,
+                pageToken: pageToken,
+                maxResults: pageSize
+            )
+            return MailMessagesPage(
+                messages: page.messages.map { Self.mapDirectMessage($0) },
+                nextPageToken: page.nextPageToken,
+                resultSizeEstimate: page.resultSizeEstimate
+            )
+        }
         var lastError: Error?
         for attempt in 0..<3 {
             do {
@@ -763,6 +812,51 @@ struct MailInboxView: View {
             }
         }
         throw lastError ?? APIClientError.decode
+    }
+
+    private static func directGmailQuery(category: String, extra: String?) -> String? {
+        var parts: [String] = []
+        switch category {
+        case "inbox": parts.append("in:inbox")
+        case "primary": parts.append("category:primary")
+        case "promotions": parts.append("category:promotions")
+        case "social": parts.append("category:social")
+        case "updates": parts.append("category:updates")
+        case "sent": parts.append("in:sent")
+        case "drafts": parts.append("in:drafts")
+        default: break
+        }
+        if let extra, !extra.isEmpty {
+            parts.append(extra)
+        }
+        let joined = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    static func mapDirectMessage(_ m: DirectMailMessage) -> MailMessageSummary {
+        MailMessageSummary(
+            id: m.id,
+            threadId: m.threadId,
+            from: parseDirectFrom(m.from),
+            subject: m.subject,
+            snippet: m.snippet,
+            date: m.date,
+            isUnread: m.labelIds.contains("UNREAD"),
+            hasAttachments: nil
+        )
+    }
+
+    static func parseDirectFrom(_ header: String?) -> MailAddressDTO? {
+        guard let header, !header.isEmpty else { return nil }
+        if let start = header.firstIndex(of: "<"),
+           let end = header.firstIndex(of: ">"),
+           start < end {
+            let email = String(header[header.index(after: start)..<end])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = String(header[..<start]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return MailAddressDTO(email: email, name: name.isEmpty ? nil : name)
+        }
+        return MailAddressDTO(email: header, name: nil)
     }
 
     private func isQuotaMailError(_ error: Error) -> Bool {
@@ -966,6 +1060,18 @@ struct MailInboxView: View {
     }
 
     private func connectGmail() async {
+        if useDirectGmail {
+            gmailOAuth.connect()
+            // Rafraîchir l’état après callback OAuth (deep link).
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await loadOAuth()
+            if gmailOAuth.isConnected {
+                scheduleLoad(resetPagination: true)
+            } else if let err = gmailOAuth.lastError {
+                self.error = err
+            }
+            return
+        }
         do {
             let url = try await client.gmailAuthorizationURL()
             await MainActor.run { UIApplication.shared.open(url) }
@@ -1055,8 +1161,10 @@ struct MailRow: View {
 
 struct MailThreadView: View {
     @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var infra: InfrastructureStore
     @Environment(AppNavigation.self) private var nav
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var executionMode = ExecutionModeStore.shared
     let summary: MailMessageSummary
     /// Notifie la liste parente (lu local) — sans refresh réseau de l’inbox.
     var onMarkedRead: (() -> Void)? = nil
@@ -1084,6 +1192,13 @@ struct MailThreadView: View {
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
+    }
+
+    private var useDirectGmail: Bool {
+        session.localOnlyMode
+            || executionMode.shouldUseLocalLLM
+            || executionMode.preference == .forceLocal
+            || infra.isPcConfirmedOffline
     }
 
     private var threadId: String {
@@ -1249,9 +1364,32 @@ struct MailThreadView: View {
         loading = true
         defer { loading = false }
         do {
+            if useDirectGmail {
+                let direct = try await DirectGmailProvider().getThread(id: threadId)
+                thread = MailThreadDTO(
+                    id: direct.id,
+                    subject: direct.subject ?? summary.subject,
+                    messages: direct.messages.map { msg in
+                        MailThreadMessage(
+                            id: msg.id,
+                            threadId: msg.threadId ?? direct.threadId ?? direct.id,
+                            from: MailInboxView.parseDirectFrom(msg.from),
+                            subject: msg.subject,
+                            date: msg.date,
+                            snippet: msg.snippet,
+                            bodyText: msg.bodyPlain,
+                            bodyHtml: nil,
+                            isUnread: msg.labelIds.contains("UNREAD"),
+                            hasAttachments: nil,
+                            attachments: nil
+                        )
+                    }
+                )
+                error = nil
+                return
+            }
             thread = try await client.fetchMailThread(id: threadId)
             error = nil
-            notifyReadLocallyIfNeeded()
             try? await client.markMailRead(id: summary.id)
         } catch is CancellationError {
             return
@@ -1261,7 +1399,7 @@ struct MailThreadView: View {
             } else {
                 self.error = error.localizedDescription
             }
-            if case APIClientError.unauthorized = error {
+            if case APIClientError.unauthorized = error, !useDirectGmail, !session.localOnlyMode {
                 await session.logout()
             }
         }

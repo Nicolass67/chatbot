@@ -13,6 +13,8 @@ final class AppSessionStore: NSObject, ObservableObject {
     @Published var lastError: String?
     @Published var isUnlocked = true
     @Published var biometricLockEnabled: Bool = UserDefaults.standard.bool(forKey: "biometricLockEnabled")
+    /// Mode hors-ligne : Chat + IA locale sans session Cloudflare (Gmail direct optionnel).
+    @Published var localOnlyMode = false
 
     /// Host placeholder (Public.xcconfig / builds sans injection CI).
     static let placeholderHost = "your-worker.example.workers.dev"
@@ -38,6 +40,22 @@ final class AppSessionStore: NSObject, ObservableObject {
     private var authSession: ASWebAuthenticationSession?
 
     var isAuthenticated: Bool { token?.isEmpty == false }
+
+    /// Accès app : session distante **ou** mode local uniquement.
+    var canEnterApp: Bool { isAuthenticated || localOnlyMode }
+
+    func enterLocalOnlyMode() {
+        localOnlyMode = true
+        isUnlocked = true
+        lastError = nil
+        if userId == nil || userId?.isEmpty == true {
+            userId = "local-device"
+        }
+    }
+
+    func exitLocalOnlyMode() {
+        localOnlyMode = false
+    }
 
     var sessionExpiringSoon: Bool {
         guard let expiresAt,
@@ -210,6 +228,7 @@ final class AppSessionStore: NSObject, ObservableObject {
         userId = nil
         expiresAt = nil
         isUnlocked = true
+        localOnlyMode = false
     }
 }
 

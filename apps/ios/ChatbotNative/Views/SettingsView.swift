@@ -7,6 +7,7 @@ struct SettingsView: View {
 
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var appearance: AppearanceStore
+    @ObservedObject private var gmailOAuth = GmailOAuthSession.shared
     @State private var webSearchEnabled = false
     @State private var statusNote: String?
     @State private var runtimeStatus: String = "…"
@@ -23,6 +24,9 @@ struct SettingsView: View {
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
+
+    private var gmailDirectConnected: Bool { gmailOAuth.isConnected }
+    private var gmailDirectEmail: String? { gmailOAuth.email }
 
     private var appVersion: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
@@ -113,6 +117,47 @@ struct SettingsView: View {
                 .listRowBackground(AppTheme.surface)
 
                 ThemeColorSettingsSection()
+
+                LocalAISettingsView()
+
+                Section {
+                    if gmailDirectConnected {
+                        if let email = gmailDirectEmail {
+                            Label(email, systemImage: "envelope.fill")
+                                .foregroundStyle(AppTheme.foreground)
+                        } else {
+                            Label("Gmail connecté", systemImage: "envelope.fill")
+                                .foregroundStyle(AppTheme.foreground)
+                        }
+                        Button("Déconnecter Gmail (iPhone)", role: .destructive) {
+                            Task { await GmailOAuthSession.shared.disconnect() }
+                        }
+                    } else {
+                        Text("Aucun compte Gmail direct sur cet iPhone.")
+                            .foregroundStyle(AppTheme.muted)
+                        Button("Connecter Gmail (direct)") {
+                            GmailOAuthSession.shared.connect()
+                        }
+                        .foregroundStyle(AppTheme.accent)
+                        .disabled(GmailOAuthSession.shared.isBusy || !GmailOAuthConfig.isConfigured)
+                        if !GmailOAuthConfig.isConfigured {
+                            Text("Client Google OAuth iOS manquant (GoogleOAuthIosClientID).")
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.warning)
+                        }
+                    }
+                    Text("Indépendant de l’OAuth Gmail du PC. Requis pour Mail hors-ligne / mode local.")
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.muted)
+                    if let err = GmailOAuthSession.shared.lastError {
+                        Text(err)
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.danger)
+                    }
+                } header: {
+                    Text("Gmail direct (iPhone)")
+                }
+                .listRowBackground(AppTheme.surface)
 
                 Section {
                     Toggle("Retours haptiques", isOn: $hapticsEnabled)

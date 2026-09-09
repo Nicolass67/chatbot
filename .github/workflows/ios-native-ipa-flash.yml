@@ -117,6 +117,20 @@ jobs:
           echo "Flash build=\`${FLASH_BUILD}\` sha=\`${SHA_SHORT}\` host=\`${FLASH_HOST}\`" >> "$GITHUB_STEP_SUMMARY"
           cat Flash.xcconfig
 
+      - name: Cache llama XCFramework
+        uses: actions/cache@v4
+        with:
+          path: apps/ios/Vendor/llama.xcframework
+          key: llama-xcframework-${{ hashFiles('apps/ios/Vendor/LLAMA_XCFRAMEWORK_SOURCE.json') }}
+          restore-keys: |
+            llama-xcframework-
+
+      - name: Fetch llama.cpp XCFramework
+        run: |
+          set -euo pipefail
+          node scripts/ios/fetch-llama-xcframework.mjs
+          test -d apps/ios/Vendor/llama.xcframework
+
       - name: Generate Xcode project
         working-directory: apps/ios
         run: xcodegen generate

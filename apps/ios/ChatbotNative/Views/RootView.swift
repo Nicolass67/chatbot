@@ -6,7 +6,7 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if session.isAuthenticated {
+            if session.canEnterApp {
                 if session.isUnlocked {
                     MainTabView()
                         .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -20,10 +20,10 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.smooth(duration: AppTheme.motionStandard), value: session.isAuthenticated)
+        .animation(.smooth(duration: AppTheme.motionStandard), value: session.canEnterApp)
         .animation(.smooth(duration: AppTheme.motionQuick), value: session.isUnlocked)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background, session.biometricLockEnabled, session.isAuthenticated {
+            if phase == .background, session.biometricLockEnabled, session.canEnterApp {
                 session.isUnlocked = false
             }
         }
@@ -137,6 +137,38 @@ struct LoginView: View {
                 .padding(.horizontal, AppTheme.space32)
                 .accessibilityIdentifier(A11yID.Auth.login)
                 .accessibilityLabel("Se connecter avec Cloudflare Access")
+
+                if LocalModelManager.shared.isInstalled || LocalModelManager.shared.isReady {
+                    Button {
+                        AppHaptics.medium()
+                        if LocalModelManager.shared.isReady {
+                            ExecutionModeStore.shared.setPreference(.forceLocal)
+                        }
+                        session.enterLocalOnlyMode()
+                        ExecutionModeStore.shared.refreshDerived()
+                    } label: {
+                        Text("Continuer en mode local")
+                            .font(CNFont.body.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: AppTheme.touchMin)
+                            .padding(.horizontal, AppTheme.space16)
+                            .background(AppTheme.surfaceElevated)
+                            .foregroundStyle(AppTheme.foreground)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: AppTheme.radiusXl, style: .continuous)
+                                    .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
+                            )
+                    }
+                    .padding(.horizontal, AppTheme.space32)
+                    .accessibilityLabel("Continuer en mode local sans connexion")
+
+                    Text("Chat fonctionne hors-ligne. Gmail nécessite Google OAuth (Internet).")
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, AppTheme.space40)
+                }
 
                 Text("Cloudflare Access · session sécurisée sur cet appareil")
                     .font(CNFont.caption2)

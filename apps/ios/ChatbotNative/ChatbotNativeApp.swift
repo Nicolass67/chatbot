@@ -14,6 +14,8 @@ struct ChatbotNativeApp: App {
                 .environmentObject(session)
                 .environmentObject(appearance)
                 .environmentObject(infrastructure)
+                .environmentObject(ExecutionModeStore.shared)
+                .environmentObject(LocalModelManager.shared)
                 .environment(nav)
                 .environment(\.themeRevision, appearance.themeRevision)
                 .tint(AppTheme.accent)
@@ -24,12 +26,14 @@ struct ChatbotNativeApp: App {
                 }
                 .onAppear {
                     infrastructure.bind(session: session)
+                    ExecutionModeStore.shared.bind(infrastructure: infrastructure)
                     AppearanceStore.applyWindowInterfaceStyle(appearance.mode.uiUserInterfaceStyle)
                     appearance.republishThemeToWidgets()
                     Task {
                         await WidgetMailSync.syncIfNeeded(session: session, force: true)
-                        if session.isAuthenticated {
+                        if session.canEnterApp {
                             await infrastructure.refresh()
+                            ExecutionModeStore.shared.refreshDerived()
                         }
                     }
                 }
@@ -40,16 +44,21 @@ struct ChatbotNativeApp: App {
                         Task {
                             await WidgetMailSync.syncIfNeeded(session: session, force: true)
                             await infrastructure.refresh()
+                            ExecutionModeStore.shared.refreshDerived()
                         }
                     }
+                }
+                .onChange(of: session.localOnlyMode) { _, _ in
+                    ExecutionModeStore.shared.refreshDerived()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     appearance.republishThemeToWidgets()
                     Task {
                         await WidgetMailSync.syncIfNeeded(session: session)
-                        if session.isAuthenticated {
+                        if session.canEnterApp {
                             await infrastructure.refresh()
+                            ExecutionModeStore.shared.refreshDerived()
                         }
                     }
                 }
@@ -65,6 +74,10 @@ struct ChatbotNativeApp: App {
         // Product shortcuts (non-qa)
         switch host {
         case "oauth":
+            // Gmail direct PKCE : chatbot-native://oauth/gmail?...
+            if GmailOAuthSession.shared.handleCallbackURL(url) {
+                return
+            }
             nav.openSettings()
             return
         case "chat":
@@ -94,7 +107,7 @@ struct ChatbotNativeApp: App {
         let rest = Array(route.dropFirst())
 
         // Require auth for QA navigation intents (except login screen stays as-is).
-        guard session.isAuthenticated else { return }
+        guard session.canEnterApp else { return }
 
         switch head {
         case "chat":
