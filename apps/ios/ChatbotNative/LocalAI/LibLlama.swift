@@ -224,7 +224,7 @@ final class LlamaContext: @unchecked Sendable {
         var summaries: [String] = []
         let count = Int(ggml_backend_dev_count())
         for i in 0..<count {
-            guard let dev = ggml_backend_dev_get(UInt32(i)) else { continue }
+            guard let dev = ggml_backend_dev_get(i) else { continue }
             let type = ggml_backend_dev_type(dev)
             let name = String(cString: ggml_backend_dev_name(dev))
             let typeLabel: String
@@ -420,7 +420,7 @@ final class LlamaContext: @unchecked Sendable {
             var metalDev: ggml_backend_dev_t?
             let count = Int(ggml_backend_dev_count())
             for i in 0..<count {
-                guard let dev = ggml_backend_dev_get(UInt32(i)) else { continue }
+                guard let dev = ggml_backend_dev_get(i) else { continue }
                 let name = String(cString: ggml_backend_dev_name(dev))
                 if name.localizedCaseInsensitiveContains("metal") {
                     metalDev = dev
