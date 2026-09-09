@@ -156,7 +156,11 @@ enum AgentWorkflow {
                 userBlob += "\n[threadId=\(threadId)]"
             }
             if !scratch.isEmpty {
-                userBlob += "\n\nObservations:\n" + scratch.suffix(3).joined(separator: "\n---\n")
+                let obs = scratch.suffix(2).joined(separator: "\n---\n")
+                userBlob += "\n\nObservations:\n" + GenerationContextBudget.clip(
+                    obs,
+                    maxChars: profile.toolResultCharBudget
+                )
             }
             messages.append(LLMChatMessage(role: .user, content: userBlob))
 
@@ -232,13 +236,14 @@ enum AgentWorkflow {
 
         mark("answer")
         onEvent?(.synthesizing)
-        let synthSystem = WebGroundingPrompt.system() + "\nSynthétise à partir des observations. Pas de JSON."
+        let synthSystem = collectedSources.isEmpty
+            ? "Synthétise à partir des observations. Pas de JSON. Markdown autorisé."
+            : WebGroundingPrompt.system() + "\nSynthétise à partir des extraits. Pas de JSON."
         var synthMessages = packet.messages
-        let obs = scratch.isEmpty ? "(aucune observation outil)" : scratch.joined(separator: "\n---\n")
-        var userContent = "Demande: \(request.userText)\n\nObservations:\n\(obs)"
-        if !collectedSources.isEmpty {
-            userContent += "\n\nSources:\n" + WebURLNormalizer.numberedSourcesBlock(collectedSources)
-        }
+        let obs = scratch.isEmpty
+            ? "(aucune observation outil)"
+            : GenerationContextBudget.clip(scratch.joined(separator: "\n---\n"), maxChars: profile.toolResultCharBudget)
+        let userContent = "Demande: \(request.userText)\n\n\(obs)"
         synthMessages.append(LLMChatMessage(role: .user, content: userContent + "\n\nRéponds à l’utilisateur."))
         let finalText: String
         if let onFinalToken {
@@ -275,13 +280,22 @@ enum AgentWorkflow {
         onEvent: ((AgentOrchestrationEvent) -> Void)?
     ) async throws -> AIToolResult {
         if call.action == "web_search" {
-            let query = call.arguments["query"] ?? call.arguments["q"] ?? ""
-            onEvent?(.webSearch(query: query))
-            onEvent?(.toolStarted(tool: "web_search", query: query))
-        } else {
-            onEvent?(.toolStarted(tool: call.action, query: call.arguments["query"]))
+            let packet = try await WebEvidencePipeline.gather(
+                query: call.arguments["query"] ?? call.arguments["q"] ?? "",
+                tools: tools,
+                profile: profile,
+                onEvent: onEvent
+            )
+            return AIToolResult(
+                action: "web_search",
+                ok: true,
+                text: packet.promptBlock,
+                truncated: true,
+                sources: packet.sources
+            )
         }
 
+        onEvent?(.toolStarted(tool: call.action, query: call.arguments["query"]))
         let result = try await tools.execute(call, profile: profile)
         if !result.sources.isEmpty {
             onEvent?(.sources(result.sources))
@@ -289,39 +303,7 @@ enum AgentWorkflow {
         } else {
             onEvent?(.toolCompleted(tool: call.action, sourceCount: 0))
         }
-
-        guard call.action == "web_search", !result.sources.isEmpty else {
-            return result
-        }
-
-        let fetchCount = min(3, result.sources.count, max(1, profile.maxWebResults))
-        var contents: [String: String] = [:]
-        var extra = result.text
-        for (idx, source) in result.sources.prefix(fetchCount).enumerated() {
-            try Task.checkCancellation()
-            onEvent?(.sourceOpened(source: source, index: idx + 1, total: fetchCount))
-            do {
-                let fetched = try await tools.execute(
-                    AIToolCall(action: "web_fetch", arguments: ["url": source.url]),
-                    profile: profile
-                )
-                contents[source.id] = String(fetched.text.prefix(profile.maxWebSnippetChars * 2))
-                extra += "\n\n" + fetched.text
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                extra += "\n\n(Page \(source.domain ?? source.url) inaccessible)"
-            }
-        }
-        let block = WebURLNormalizer.numberedSourcesBlock(result.sources, contents: contents)
-        return AIToolResult(
-            action: result.action,
-            ok: result.ok,
-            text: extra + "\n\n" + block,
-            truncated: result.truncated,
-            sources: result.sources,
-            mailThreadId: result.mailThreadId
-        )
+        return result
     }
 
     private static func mergeSources(_ incoming: [SearchSourceDTO], into bag: inout [SearchSourceDTO]) {
@@ -531,7 +513,7 @@ enum MailMailboxWorkflow {
         let messages = [
             LLMChatMessage(
                 role: .user,
-                content: "Question: \(request.userText)\n\nMails:\n\(result.text)"
+                content: "Question: \(request.userText)\n\nMails:\n\(GenerationContextBudget.clip(result.text, maxChars: profile.toolResultCharBudget))"
             ),
         ]
         let text: String
@@ -573,46 +555,17 @@ enum WebSearchWorkflow {
         onToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
         let profile = runtime.executionProfile
-        let q = AgentWorkflow.compactWebQuery(request.query)
-        let call = AIToolCall(action: "web_search", arguments: ["query": q])
-        onEvent?(.webSearch(query: q))
-        var result = try await tools.execute(call, profile: profile)
-        if !result.sources.isEmpty {
-            onEvent?(.sources(result.sources))
-        }
-
-        if !result.sources.isEmpty {
-            let fetchCount = min(3, result.sources.count)
-            var contents: [String: String] = [:]
-            for (idx, source) in result.sources.prefix(fetchCount).enumerated() {
-                try Task.checkCancellation()
-                onEvent?(.sourceOpened(source: source, index: idx + 1, total: fetchCount))
-                do {
-                    let fetched = try await tools.execute(
-                        AIToolCall(action: "web_fetch", arguments: ["url": source.url]),
-                        profile: profile
-                    )
-                    contents[source.id] = String(fetched.text.prefix(profile.maxWebSnippetChars * 2))
-                    result.text += "\n\n" + fetched.text
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    continue
-                }
-            }
-            result.text += "\n\n" + WebURLNormalizer.numberedSourcesBlock(result.sources, contents: contents)
-        }
-
+        let packet = try await WebEvidencePipeline.gather(
+            query: request.query,
+            tools: tools,
+            profile: profile,
+            onEvent: onEvent
+        )
         guard request.synthesize else {
-            return Result(text: result.text, sources: result.sources)
+            return Result(text: packet.promptBlock, sources: packet.sources)
         }
-
-        let block = WebURLNormalizer.numberedSourcesBlock(result.sources)
         let messages = [
-            LLMChatMessage(
-                role: .user,
-                content: "Question: \(request.query)\n\nSources:\n\(block)\n\nExtraits:\n\(result.text)"
-            ),
+            LLMChatMessage(role: .user, content: packet.promptBlock),
         ]
         onEvent?(.synthesizing)
         let text: String
@@ -630,7 +583,7 @@ enum WebSearchWorkflow {
                 maxTokens: profile.outputTokens(for: .webSynthesize)
             )
         }
-        return Result(text: text, sources: result.sources)
+        return Result(text: text, sources: packet.sources)
     }
 }
 

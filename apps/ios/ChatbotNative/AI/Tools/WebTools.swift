@@ -351,7 +351,7 @@ struct WebFetchTool: AITool {
             ?? String(data: data, encoding: .isoLatin1)
             ?? ""
         let text = Self.stripHTML(html)
-        let clip = String(text.prefix(profile.maxWebSnippetChars * 4))
+        let clip = String(text.prefix(max(200, profile.maxChunkChars)))
         guard !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return AIToolResult(action: name, ok: true, text: "Page sans texte exploitable.", truncated: false)
         }
@@ -407,11 +407,13 @@ enum WebGroundingPrompt {
     static func system() -> String {
         """
         Tu rédiges une réponse en français, en Markdown.
-        Tu n’as PAS d’accès Internet : utilise UNIQUEMENT les sources numérotées [web_N].
-        Après chaque affirmation factuelle (prix, perf, date, disponibilité), cite (web_N).
-        Si une info n’est pas dans les sources, dis clairement que les résultats ne permettent pas de la déterminer.
-        N’invente jamais d’URL, de prix, de benchmark ni de nom de magasin absent des sources.
-        Si les sources se contredisent, signale-le.
+        L’application a déjà exécuté WebSearchTool avec succès. Tu n’as pas d’accès Internet DIRECT, mais tu DOIS utiliser UNIQUEMENT les extraits [web_N] fournis.
+        Ne dis JAMAIS que tu n’as pas accès à Internet, que tu ne peux pas rechercher, ni que tu n’as pas de sources.
+        Ne parle pas de tests, de PC, de LM Studio, ni d’outils internes.
+        Après chaque affirmation factuelle (prix, recette, date, disponibilité), cite (web_N).
+        Si une info n’est pas dans les extraits, dis clairement que les résultats ne permettent pas de la déterminer.
+        N’invente jamais d’URL, de prix, de benchmark ni de nom de magasin absent des extraits.
+        Si les extraits se contredisent, signale-le.
         """
     }
 }

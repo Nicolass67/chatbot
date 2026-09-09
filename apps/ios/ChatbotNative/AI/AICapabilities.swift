@@ -59,6 +59,8 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var maxWorkflowSteps: Int
     var maxToolCalls: Int
     var maxWebResults: Int
+    var maxFetchedPages: Int
+    var maxEvidencePerSource: Int
     var maxWebSnippetChars: Int
     var maxMailMessages: Int
     var maxMailBodyChars: Int
@@ -109,13 +111,15 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         topP: 0.9,
         maxWorkflowSteps: 4,
         maxToolCalls: 4,
-        maxWebResults: 5,
-        maxWebSnippetChars: 400,
+        maxWebResults: 4,
+        maxFetchedPages: 2,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 280,
         maxMailMessages: 4,
         maxMailBodyChars: 3_500,
         maxDocumentChunks: 4,
-        maxChunkChars: 1_200,
-        toolResultCharBudget: 1_800,
+        maxChunkChars: 700,
+        toolResultCharBudget: 1_400,
         generationTimeoutSeconds: 90,
         performanceClass: .compact,
         inference: {
@@ -138,7 +142,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         maxWorkflowSteps: 6,
         maxToolCalls: 6,
         maxWebResults: 5,
-        maxWebSnippetChars: 600,
+        maxFetchedPages: 2,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 360,
         maxMailMessages: 6,
         maxMailBodyChars: 5_000,
         maxDocumentChunks: 6,
@@ -166,7 +172,9 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         maxWorkflowSteps: 8,
         maxToolCalls: 8,
         maxWebResults: 6,
-        maxWebSnippetChars: 800,
+        maxFetchedPages: 3,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 420,
         maxMailMessages: 8,
         maxMailBodyChars: 6_000,
         maxDocumentChunks: 8,

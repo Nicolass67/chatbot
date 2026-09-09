@@ -9,6 +9,7 @@ enum LocalInferenceError: Error, LocalizedError, Sendable {
     case outOfMemory
     case cancelled
     case generatingFailed(String)
+    case contextTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,8 @@ enum LocalInferenceError: Error, LocalizedError, Sendable {
             return "Génération annulée."
         case .generatingFailed(let detail):
             return "Échec de génération : \(detail)"
+        case .contextTooLarge:
+            return "Le contexte de cette recherche est trop volumineux. Je réduis automatiquement les résultats."
         }
     }
 }
@@ -227,6 +230,17 @@ actor LocalInferenceEngine {
         try await runGeneration(prompt: prompt, maxTokens: maxTokens, onToken: onToken)
     }
 
+    /// Nombre de tokens llama du prompt (nil si moteur non chargé).
+    func countTokens(_ text: String) -> Int? {
+#if canImport(llama)
+        guard isLoaded, let llama else { return nil }
+        return llama.countTokens(text)
+#else
+        _ = text
+        return nil
+#endif
+    }
+
     private func runGeneration(
         prompt: String,
         maxTokens: Int,
@@ -259,12 +273,29 @@ actor LocalInferenceEngine {
             }
         } catch LlamaError.cancelled {
             throw LocalInferenceError.cancelled
+        } catch let error as LlamaError {
+            if case .promptExceedsContext = error {
+                throw LocalInferenceError.contextTooLarge
+            }
+            if case .couldNotInitializeContext(let detail) = error {
+                if detail.localizedCaseInsensitiveContains("llama_decode")
+                    || detail.localizedCaseInsensitiveContains("prefill") {
+                    throw LocalInferenceError.contextTooLarge
+                }
+                throw LocalInferenceError.generatingFailed(detail)
+            }
+            throw LocalInferenceError.generatingFailed(error.localizedDescription)
         } catch let error as LocalInferenceError {
             throw error
         } catch is CancellationError {
             throw LocalInferenceError.cancelled
         } catch {
-            throw LocalInferenceError.generatingFailed(error.localizedDescription)
+            let detail = error.localizedDescription
+            if detail.localizedCaseInsensitiveContains("llama_decode")
+                || detail.localizedCaseInsensitiveContains("prefill") {
+                throw LocalInferenceError.contextTooLarge
+            }
+            throw LocalInferenceError.generatingFailed(detail)
         }
 
         let tokenCount = counter.count

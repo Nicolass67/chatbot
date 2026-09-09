@@ -270,7 +270,9 @@ struct FilesBrowserView: View {
                     nav.qaIntent = nil
                 case .filesDocuments:
                     if let root = roots.first(where: {
-                        ($0.label ?? "").localizedCaseInsensitiveContains("document")
+                        $0.id == LocalFilesStore.documentsRootId
+                            || ($0.label ?? "").localizedCaseInsensitiveContains("document")
+                            || ($0.label ?? "").localizedCaseInsensitiveContains("fichiers de l")
                             || ($0.absolutePath ?? "").localizedCaseInsensitiveContains("Documents")
                     }) ?? roots.first {
                         path.append(FilesDestination.folder(rootId: root.id, path: "", title: root.label ?? "Documents"))
@@ -697,6 +699,33 @@ struct FilesBrowserView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    if usesOnDeviceFiles {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sur cet iPhone, Chatbot ne voit pas tout le stockage. Importez un fichier ou ajoutez un dossier via l’app Fichiers.")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                            HStack(spacing: 10) {
+                                Button("Importer un fichier") {
+                                    // L’import fichier se fait depuis un dossier (sandbox).
+                                    path.append(
+                                        FilesDestination.folder(
+                                            rootId: LocalFilesStore.documentsRootId,
+                                            path: "",
+                                            title: "Fichiers de l’app"
+                                        )
+                                    )
+                                }
+                                .buttonStyle(.bordered)
+                                Button("Ajouter un dossier") {
+                                    showLocalFolderImporter = true
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(AppTheme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                    }
                     ForEach(roots.filter { $0.enabled != false }) { root in
                         NavigationLink(
                             value: FilesDestination.folder(
@@ -1049,12 +1078,24 @@ struct FileFolderView: View {
                 } else if displayedEntries.isEmpty {
                     SoftEmptyState(
                         systemImage: "folder",
-                        title: "Dossier vide",
+                        title: LocalFilesStore.isLocalRoot(root.id) && typeFilter == .all
+                            ? "Aucun fichier importé"
+                            : "Dossier vide",
                         message: typeFilter == .all
-                            ? "Aucun élément ici. Tu peux créer un dossier ou importer."
+                            ? (LocalFilesStore.isLocalRoot(root.id)
+                                ? "Ce n’est pas le stockage complet de l’iPhone. Chatbot ne voit que les fichiers importés dans l’app. Importez un fichier ou ajoutez un dossier."
+                                : "Aucun élément ici. Tu peux créer un dossier ou importer.")
                             : "Aucun résultat pour ce filtre.",
-                        actionTitle: "Nouveau dossier"
-                    ) { showMkdir = true }
+                        actionTitle: LocalFilesStore.isLocalRoot(root.id) && typeFilter == .all
+                            ? "Importer"
+                            : "Nouveau dossier"
+                    ) {
+                        if LocalFilesStore.isLocalRoot(root.id) && typeFilter == .all {
+                            showImporter = true
+                        } else {
+                            showMkdir = true
+                        }
+                    }
                 } else if viewMode == .grid {
                     grid
                 } else if viewMode == .details {

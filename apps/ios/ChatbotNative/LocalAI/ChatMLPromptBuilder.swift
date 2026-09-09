@@ -193,7 +193,15 @@ enum LocalChatTemplate {
                 content += suffix
             }
             let cost = content.count + 40
-            if used + cost > charBudget, !selected.isEmpty { break }
+            if used + cost > charBudget {
+                if selected.isEmpty {
+                    let remain = max(80, charBudget - used - 40)
+                    content = String(content.prefix(remain))
+                    selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
+                    used += content.count + 40
+                }
+                break
+            }
             selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
             used += cost
         }
@@ -218,8 +226,15 @@ enum LocalChatTemplate {
         var selected: [LLMChatMessage] = []
         var used = system.count + 32
         for message in messages.reversed() {
-            let cost = message.content.count + 40
-            if used + cost > charBudget, !selected.isEmpty { break }
+            var content = message.content
+            let cost = content.count + 40
+            if used + cost > charBudget {
+                if selected.isEmpty {
+                    content = String(content.prefix(max(80, charBudget - used - 40)))
+                    selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
+                }
+                break
+            }
             selected.insert(message, at: 0)
             used += cost
         }
@@ -243,8 +258,15 @@ enum LocalChatTemplate {
         var selected: [LLMChatMessage] = []
         var used = system.count + 32
         for message in messages.reversed() {
-            let cost = message.content.count + 48
-            if used + cost > charBudget, !selected.isEmpty { break }
+            var content = message.content
+            let cost = content.count + 48
+            if used + cost > charBudget {
+                if selected.isEmpty {
+                    content = String(content.prefix(max(80, charBudget - used - 48)))
+                    selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
+                }
+                break
+            }
             selected.insert(message, at: 0)
             used += cost
         }
@@ -268,8 +290,15 @@ enum LocalChatTemplate {
         var selected: [LLMChatMessage] = []
         var used = system.count + 32
         for message in messages.reversed() {
-            let cost = message.content.count + 32
-            if used + cost > charBudget, !selected.isEmpty { break }
+            var content = message.content
+            let cost = content.count + 32
+            if used + cost > charBudget {
+                if selected.isEmpty {
+                    content = String(content.prefix(max(80, charBudget - used - 32)))
+                    selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
+                }
+                break
+            }
             selected.insert(message, at: 0)
             used += cost
         }

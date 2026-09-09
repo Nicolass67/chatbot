@@ -6,12 +6,15 @@ import llama
 
 enum LlamaError: Error, LocalizedError {
     case couldNotInitializeContext(String)
+    case promptExceedsContext(promptTokens: Int, nCtx: Int)
     case cancelled
 
     var errorDescription: String? {
         switch self {
         case .couldNotInitializeContext(let detail):
             return detail
+        case .promptExceedsContext:
+            return "Le contexte de cette recherche est trop volumineux. Je réduis automatiquement les résultats."
         case .cancelled:
             return "Génération annulée."
         }
@@ -782,9 +785,27 @@ final class LlamaContext: @unchecked Sendable {
         guard !promptTokens.isEmpty else {
             throw LlamaError.couldNotInitializeContext("tokenization vide")
         }
-        n_len = Int32(promptTokens.count) + max(1, maxTokens)
+        let nCtx = Int(llama_n_ctx(context))
+        if promptTokens.count >= nCtx {
+            WorkflowTrace.log("llama", [
+                "n_ctx": "\(nCtx)",
+                "prompt_tokens": "\(promptTokens.count)",
+                "n_batch": "\(inferenceConfig.nBatch)",
+                "n_ubatch": "\(inferenceConfig.nUbatch)",
+            ])
+            throw LlamaError.promptExceedsContext(promptTokens: promptTokens.count, nCtx: nCtx)
+        }
+        let maxGen = min(Int(max(1, maxTokens)), max(1, nCtx - promptTokens.count - 1))
+        n_len = Int32(promptTokens.count + maxGen)
         tokens_list = promptTokens
         promptTokenCount = tokens_list.count
+        WorkflowTrace.log("llama", [
+            "n_ctx": "\(nCtx)",
+            "n_batch": "\(inferenceConfig.nBatch)",
+            "n_ubatch": "\(inferenceConfig.nUbatch)",
+            "prompt_tokens": "\(promptTokens.count)",
+            "reserved_output": "\(maxGen)",
+        ])
 
         let promptStarted = Date()
         let batchLimit = Int(max(inferenceConfig.nBatch, 1))
@@ -839,9 +860,13 @@ final class LlamaContext: @unchecked Sendable {
             guard !retryTokens.isEmpty else {
                 throw LlamaError.couldNotInitializeContext("génération vide (EOG immédiat)")
             }
+            if retryTokens.count >= nCtx {
+                throw LlamaError.promptExceedsContext(promptTokens: retryTokens.count, nCtx: nCtx)
+            }
             tokens_list = retryTokens
             promptTokenCount = tokens_list.count
-            n_len = Int32(retryTokens.count) + max(1, maxTokens)
+            let retryGen = min(Int(max(1, maxTokens)), max(1, nCtx - retryTokens.count - 1))
+            n_len = Int32(retryTokens.count + retryGen)
             var j = 0
             while j < tokens_list.count {
                 if cancelRequested { throw LlamaError.cancelled }
@@ -875,6 +900,10 @@ final class LlamaContext: @unchecked Sendable {
         n_cur = 0
         n_decode = 0
         llama_memory_clear(llama_get_memory(context), true)
+    }
+
+    func countTokens(_ text: String) -> Int {
+        tokenize(text: text, add_bos: false).count
     }
 
     private func tokenize(text: String, add_bos: Bool) -> [llama_token] {
@@ -924,6 +953,7 @@ final class LlamaContext: @unchecked Sendable {
 /// Stub quand le module `llama` n’est pas lié — les appels réels passent par `LocalInferenceEngine`.
 enum LlamaError: Error, LocalizedError {
     case couldNotInitializeContext(String)
+    case promptExceedsContext(promptTokens: Int, nCtx: Int)
     case cancelled
     case notAvailable
 
@@ -931,6 +961,8 @@ enum LlamaError: Error, LocalizedError {
         switch self {
         case .couldNotInitializeContext(let detail):
             return detail
+        case .promptExceedsContext:
+            return "Le contexte de cette recherche est trop volumineux. Je réduis automatiquement les résultats."
         case .cancelled:
             return "Génération annulée."
         case .notAvailable:

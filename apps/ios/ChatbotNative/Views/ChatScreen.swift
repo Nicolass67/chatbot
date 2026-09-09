@@ -69,6 +69,7 @@ struct ChatScreen: View {
     @State private var modelSwitching = false
 
     @State private var streamSources: [SearchSourceDTO] = []
+    @State private var activeGeneration = GenerationRunState.start()
     @State private var streamMailHandoff: MailHandoffDTO?
     @State private var streamFilesHandoff: FilesHandoffDTO?
     @State private var streamFilesFound: [FilesFoundFileDTO] = []
@@ -2822,6 +2823,7 @@ private var sendBlockedHint: String {
         let gen = sendGeneration
         error = nil
         canRetrySend = false
+        beginLocalGenerationRun()
 
         if options?.regenerate != true {
             draft = ""
@@ -2927,9 +2929,12 @@ private var sendBlockedHint: String {
                 let history: [LLMChatMessage] = messages.compactMap { msg in
                     guard msg.role == "user" || msg.role == "assistant" else { return nil }
                     let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
-                    return LLMChatMessage(role: role, content: msg.content)
+                    var content = msg.content
+                    if role == .assistant, content.count > 1_200 {
+                        content = String(content.prefix(800)) + "…"
+                    }
+                    return LLMChatMessage(role: role, content: content)
                 }
-                applyLocalAgentEvent(.started)
                 let agentResult = try await AgentWorkflow.run(
                     .init(
                         userText: effectiveText,
@@ -2974,8 +2979,11 @@ private var sendBlockedHint: String {
                     )
                 }
                 streamingAssistantId = asstId
+                activeGeneration.messageId = asstId
+                streamSources = agentResult.sources
                 attachLocalChrome(sources: agentResult.sources, mailThreadId: agentResult.mailThreadId)
                 applyLocalAgentEvent(.completed)
+                streamSources = []
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
@@ -2989,7 +2997,16 @@ private var sendBlockedHint: String {
             }
 
             if (toolChannel == .web || webSearchEnabled), forcedScope == nil {
-                thinkingKind = .searching
+                thinkingKind = nil
+                applyLocalAgentEvent(.started)
+                applyLocalAgentEvent(.plan(steps: [
+                    AgentPlanStep(id: "understand", title: "Analyser ce que tu demandes", status: "pending"),
+                    AgentPlanStep(id: "act", title: "Rechercher sur le web", status: "pending"),
+                    AgentPlanStep(id: "answer", title: "Rédiger la réponse", status: "pending"),
+                ]))
+                applyLocalAgentEvent(.stepStarted(id: "understand", title: "Analyser ce que tu demandes"))
+                applyLocalAgentEvent(.stepCompleted(id: "understand"))
+                applyLocalAgentEvent(.stepStarted(id: "act", title: "Rechercher sur le web"))
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let web = try await WebSearchWorkflow.run(
@@ -2997,62 +3014,51 @@ private var sendBlockedHint: String {
                     runtime: runtime,
                     tools: tools,
                     onEvent: { event in
-                        switch event {
-                        case .webSearch(let q):
-                            self.thinkingKind = .custom("Recherche · \(q)")
-                        case .sources(let sources):
-                            self.streamSources = sources
-                            if let first = sources.first {
-                                self.thinkingKind = .custom(
-                                    "Lecture · \(self.shortWebSourceLabel(domain: first.domain, title: first.title, url: first.url))"
-                                )
-                            }
-                        case .sourceOpened(let source, let index, let total):
-                            self.thinkingKind = .custom(
-                                self.liveSourceStatusLine(
-                                    phase: "fetching",
-                                    domain: source.domain,
-                                    title: source.title,
-                                    url: source.url,
-                                    index: index,
-                                    total: total
-                                )
-                            )
-                        case .synthesizing:
-                            self.thinkingKind = .preparing
-                        default:
-                            break
-                        }
+                        applyLocalAgentEvent(event)
                     },
                     onToken: { token in
-                        if self.thinkingKind != nil { self.thinkingKind = nil }
-                        self.streamAccum.text += token
-                        self.streamingText = self.streamAccum.text
+                        self.appendLocalStreamToken(token)
                     }
                 )
                 guard gen == sendGeneration, !Task.isCancelled else {
+                    applyLocalAgentEvent(.cancelled)
                     thinkingKind = nil
                     isSending = false
                     return
                 }
+                applyLocalAgentEvent(.stepCompleted(id: "act"))
+                applyLocalAgentEvent(.stepStarted(id: "answer", title: "Rédiger la réponse"))
                 let content = web.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty { throw AIRuntimeError.emptyGeneration }
                 thinkingKind = nil
-                streamSources = web.sources
-                streamingText = ""
-                streamAccum.text = ""
-                let asstId = "asst-\(UUID().uuidString)"
-                messages.append(
-                    MessageDTO(
+                let asstId = streamingAssistantId ?? "asst-\(UUID().uuidString)"
+                if let idx = messages.firstIndex(where: { $0.id == asstId }) {
+                    messages[idx] = MessageDTO(
                         id: asstId,
                         role: "assistant",
                         content: content,
-                        createdAt: nil
+                        createdAt: messages[idx].createdAt
                     )
-                )
+                } else {
+                    messages.append(
+                        MessageDTO(
+                            id: asstId,
+                            role: "assistant",
+                            content: content,
+                            createdAt: nil
+                        )
+                    )
+                }
                 streamingAssistantId = asstId
+                activeGeneration.messageId = asstId
+                streamSources = web.sources
                 attachLocalChrome(sources: web.sources, mailThreadId: nil)
+                applyLocalAgentEvent(.stepCompleted(id: "answer"))
+                applyLocalAgentEvent(.completed)
                 streamingAssistantId = nil
+                streamingText = ""
+                streamAccum.text = ""
+                streamSources = []
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
@@ -3060,6 +3066,7 @@ private var sendBlockedHint: String {
                 )
                 isSending = false
                 sendTask = nil
+                agentActivity.visible = false
                 return
             }
 
@@ -3258,7 +3265,11 @@ private var sendBlockedHint: String {
         var history: [LLMChatMessage] = messages.compactMap { msg in
             guard msg.role == "user" || msg.role == "assistant" else { return nil }
             let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
-            return LLMChatMessage(role: role, content: msg.content)
+            var content = msg.content
+            if role == .assistant, content.count > 1_200 {
+                content = String(content.prefix(800)) + "…"
+            }
+            return LLMChatMessage(role: role, content: content)
         }
         // messages includes the just-appended user turn; ensure last is userText if empty history edge.
         if history.last?.role != .user {
@@ -3985,8 +3996,10 @@ private var sendBlockedHint: String {
             agentActivity.planSteps = []
             agentActivity.webQuery = nil
             agentActivity.webPhase = .idle
+            agentActivity.runId = activeGeneration.id
             streamSources = []
             _ = ensureAgentRunAnchorMessage(forceNew: true)
+            activeGeneration.messageId = streamingAssistantId
         case .plan(let steps):
             agentActivity.visible = true
             agentActivity.planSteps = steps
@@ -4052,7 +4065,11 @@ private var sendBlockedHint: String {
             thinkingKind = agentActivity.visible ? nil : .searching
             syncAgentChromeToStreamingMessage()
         case .sources(let sources):
-            streamSources = sources
+            if agentActivity.runId == activeGeneration.id {
+                streamSources = sources
+                activeGeneration.sources = sources
+                attachLocalChrome(sources: sources, mailThreadId: nil)
+            }
             agentActivity.webPhase = .analyzing
             let names = sources.compactMap { $0.domain ?? URL(string: $0.url)?.host }.prefix(6)
             if !names.isEmpty {
@@ -4118,9 +4135,28 @@ private var sendBlockedHint: String {
         )
     }
 
+    private func beginLocalGenerationRun() {
+        activeGeneration = GenerationRunState.start()
+        streamSources = []
+        streamMailHandoff = nil
+        streamFilesHandoff = nil
+        lastSources = []
+        streamingText = ""
+        streamAccum.text = ""
+        agentActivity = AgentActivityState()
+        agentActivity.runId = activeGeneration.id
+    }
+
     private func attachLocalChrome(sources: [SearchSourceDTO], mailThreadId: String?) {
-        let id = streamingAssistantId ?? messages.last(where: { $0.role == "assistant" })?.id
+        let id = streamingAssistantId ?? activeGeneration.messageId
         guard let id else { return }
+        activeGeneration.messageId = id
+        if !sources.isEmpty {
+            activeGeneration.sources = sources
+        }
+        if let mailThreadId {
+            activeGeneration.mailThreadId = mailThreadId
+        }
         var chrome = chromeById[id] ?? MessageChromeMeta()
         if !sources.isEmpty {
             chrome.sources = sources

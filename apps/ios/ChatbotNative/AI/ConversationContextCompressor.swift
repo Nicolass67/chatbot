@@ -74,8 +74,15 @@ enum ConversationContextCompressor {
         var selected: [LLMChatMessage] = []
         var used = 0
         for msg in messages.reversed() {
-            let cost = msg.content.count + 24
-            if used + cost > budget, !selected.isEmpty { break }
+            var content = msg.content
+            var cost = content.count + 24
+            if used + cost > budget {
+                if selected.isEmpty {
+                    content = GenerationContextBudget.clip(content, maxChars: max(80, budget - 24))
+                    selected.insert(LLMChatMessage(role: msg.role, content: content), at: 0)
+                }
+                break
+            }
             selected.insert(msg, at: 0)
             used += cost
         }

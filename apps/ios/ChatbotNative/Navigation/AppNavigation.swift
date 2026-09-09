@@ -93,8 +93,12 @@ final class AppNavigation {
     var qaIntent: QaNavIntent?
 
     func openMail(threadId: String? = nil, query: String? = nil, label: String? = nil) {
+        dismissAssistantSheets()
         mailDeepLink = MailDeepLink(threadId: threadId, query: query, label: label)
-        selectedTab = .mail
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            selectedTab = .mail
+        }
     }
 
     func openFiles(rootId: String? = nil, query: String? = nil) {

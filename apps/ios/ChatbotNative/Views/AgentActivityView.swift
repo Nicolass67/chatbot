@@ -51,6 +51,7 @@ struct AgentActivityState: Equatable {
     /// Durée figée à la fin (sinon calcul live depuis startedAt).
     var lockedThoughtSeconds: Int?
     var activitySummary: String?
+    var runId: String? = nil
 
     func snapshot() -> AgentRunSnapshot {
         let secs: Int? = {

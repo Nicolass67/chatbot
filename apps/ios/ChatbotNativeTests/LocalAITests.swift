@@ -933,6 +933,85 @@ final class LocalParityWorkflowTests: XCTestCase {
         XCTAssertEqual(signed.components(separatedBy: "Nicolas").count - 1, 1)
         let twice = MailSignature.appendOnce(signed, name: "Nicolas")
         XCTAssertEqual(twice.components(separatedBy: "Nicolas").count - 1, 1)
+        let alreadyClosed = MailSignature.appendOnce("Merci pour le retour.\n\nCordialement", name: "Nicolas")
+        XCTAssertEqual(alreadyClosed.components(separatedBy: "Cordialement").count - 1, 1)
+        XCTAssertEqual(alreadyClosed.components(separatedBy: "Nicolas").count - 1, 1)
+    }
+
+    func testPromptBudgetReservesOutput() {
+        let profile = LocalModelExecutionProfile.compact
+        let budget = GenerationContextBudget.make(
+            profile: profile,
+            requestedOutput: profile.outputTokens(for: .webSynthesize)
+        )
+        XCTAssertEqual(budget.nCtx, Int(profile.inference.nCtx))
+        XCTAssertEqual(budget.promptBudget + budget.reservedOutputTokens + budget.safetyTokens, budget.nCtx)
+        XCTAssertGreaterThan(budget.promptBudget, 300)
+        let huge = String(repeating: "lasagne vegan ", count: 400)
+        XCTAssertGreaterThan(GenerationContextBudget.estimateTokens(huge), budget.promptBudget)
+        let clipped = GenerationContextBudget.clip(huge, maxChars: 400)
+        XCTAssertEqual(clipped.count, 400)
+    }
+
+    func testWebEvidenceIsBoundedAndRanked() {
+        let profile = LocalModelExecutionProfile.compact
+        let sources = [
+            SearchSourceDTO(id: "web_1", title: "Unrelated", url: "https://a.example", domain: "a.example", snippet: "hello"),
+            SearchSourceDTO(id: "web_2", title: "Lasagne vegan recette", url: "https://planetvegan.example/lasagne", domain: "planetvegan.example", snippet: "pâtes tofu béchamel"),
+            SearchSourceDTO(id: "web_3", title: "GPU news", url: "https://gpu.example", domain: "gpu.example", snippet: "rtx"),
+        ]
+        let pages = [
+            "web_2": String(repeating: "lasagne vegan tofu ricotta\n\n", count: 80) + "étape 1 cuire",
+        ]
+        let packet = WebEvidenceBuilder.build(
+            query: "recette lasagne vegan",
+            sources: sources,
+            pageTexts: pages,
+            profile: profile
+        )
+        XCTAssertLessThanOrEqual(packet.promptBlock.count, profile.toolResultCharBudget)
+        XCTAssertTrue(packet.promptBlock.contains("WebSearchTool"))
+        XCTAssertTrue(packet.sources.contains(where: { $0.domain == "planetvegan.example" }))
+        XCTAssertEqual(packet.sources.first?.domain, "planetvegan.example")
+        XCTAssertEqual(packet.sources.first?.id, "web_1")
+        XCTAssertLessThanOrEqual(packet.sources.count, profile.maxWebResults)
+        XCTAssertFalse(packet.promptBlock.contains("Je n'ai pas accès à Internet"))
+    }
+
+    func testShrinkMessagesDropsOldest() {
+        let msgs = (0..<6).map { LLMChatMessage(role: .user, content: "m\($0) " + String(repeating: "x", count: 200)) }
+        let shrunk = GenerationContextBudget.shrinkMessages(msgs, attempt: 2, toolResultCharBudget: 300)
+        XCTAssertEqual(shrunk.count, 1)
+        XCTAssertLessThanOrEqual(shrunk[0].content.count, 300)
+    }
+
+    func testGroundingPromptForbidsNoInternetDenial() {
+        let sys = WebGroundingPrompt.system()
+        XCTAssertTrue(sys.contains("WebSearchTool"))
+        XCTAssertTrue(sys.contains("JAMAIS"))
+        XCTAssertTrue(sys.contains("web_N"))
+    }
+
+    func testAgentEventsCarryPlanNotStepText() {
+        let started = AgentOrchestrationEvent.started
+        let plan = AgentOrchestrationEvent.plan(steps: [
+            AgentPlanStep(id: "act", title: "Rechercher sur le web", status: "pending"),
+        ])
+        XCTAssertEqual(started, .started)
+        if case .plan(let steps) = plan {
+            XCTAssertEqual(steps.first?.title, "Rechercher sur le web")
+        } else {
+            XCTFail("plan")
+        }
+    }
+
+    func testLocalFilesRootIsAppSandboxNotIPhoneStorage() {
+        let root = LocalFilesStore.root()
+        XCTAssertEqual(root.id, LocalFilesStore.documentsRootId)
+        XCTAssertFalse((root.label ?? "").localizedCaseInsensitiveContains("iphone") && (root.label ?? "").count < 8)
+        XCTAssertFalse((root.absolutePath ?? "").hasPrefix("/var/mobile"))
+        XCTAssertTrue((root.absolutePath ?? "").localizedCaseInsensitiveContains("sandbox")
+            || (root.absolutePath ?? "").localizedCaseInsensitiveContains("app"))
     }
 
     func testDuckDuckGoRedirectUnwrap() {
@@ -966,6 +1045,8 @@ final class LocalParityWorkflowTests: XCTestCase {
     func testGroundingPromptForbidsHallucination() {
         XCTAssertTrue(WebGroundingPrompt.system().contains("UNIQUEMENT"))
         XCTAssertTrue(WebGroundingPrompt.system().contains("web_N"))
+        XCTAssertTrue(WebGroundingPrompt.system().contains("WebSearchTool"))
+        XCTAssertTrue(WebGroundingPrompt.system().contains("JAMAIS"))
     }
 
     func testGraniteAndPhiTemplatesAreModelSpecific() {
@@ -999,6 +1080,18 @@ final class LocalParityWorkflowTests: XCTestCase {
         let parsed = LocalFilesStore.parseFileId(id)
         XCTAssertEqual(parsed?.rootId, "iphone-documents")
         XCTAssertEqual(parsed?.relative, "Notes/a.txt")
+    }
+
+    func testChatMLClipsOversizedLastMessage() {
+        let huge = String(repeating: "page fetch ", count: 800)
+        let prompt = LocalChatTemplate.buildPrompt(
+            system: "sys",
+            messages: [LLMChatMessage(role: .user, content: huge)],
+            charBudget: 600,
+            profile: .chatmlQwen
+        )
+        XCTAssertLessThan(prompt.count, huge.count)
+        XCTAssertTrue(prompt.contains("<|im_start|>user"))
     }
 
     func testHtmlResultParserExtractsHref() {

@@ -36,6 +36,7 @@ enum AIRuntimeError: Error, LocalizedError, Sendable {
     case toolFailed(String)
     case timeout
     case inference(String)
+    case contextOverflow
 
     var errorDescription: String? {
         switch self {
@@ -55,6 +56,8 @@ enum AIRuntimeError: Error, LocalizedError, Sendable {
             return "Délai d’exécution dépassé."
         case .inference(let detail):
             return detail
+        case .contextOverflow:
+            return "Le contexte de cette recherche est trop volumineux. Je réduis automatiquement les résultats."
         }
     }
 }
@@ -112,54 +115,95 @@ final class LocalAIRuntime: AIRuntime {
 
         let profile = executionProfile
         let template = chatTemplateProfile
-        let budget = profile.contextCharBudget
-        let tokens = maxTokens ?? profile.maxOutputTokens
+        let requested = maxTokens ?? profile.maxOutputTokens
+        let budget = GenerationContextBudget.make(profile: profile, requestedOutput: requested)
+        var working = messages
+        var lastError: Error?
 
-        let prompt = LocalChatTemplate.buildPrompt(
-            system: system,
-            messages: messages,
-            charBudget: budget,
-            profile: template
-        )
-
-        let accumulator = RuntimeStringAccumulator()
-        let engineRef = engine
-        let emitted = StreamEmitCounter()
-        do {
-            try await engineRef.generate(prompt: prompt, maxTokens: tokens) { piece in
-                accumulator.append(piece)
-                let step = LocalChatTemplate.streamingSafeEmit(
-                    accumulated: accumulator.value,
-                    alreadyEmittedCount: emitted.count,
-                    profile: template
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            if attempt > 0 {
+                working = GenerationContextBudget.shrinkMessages(
+                    working,
+                    attempt: attempt,
+                    toolResultCharBudget: profile.toolResultCharBudget
                 )
-                emitted.count = step.newEmittedCount
-                if !step.emit.isEmpty {
-                    await onToken(step.emit)
-                }
-                if step.hitStop {
-                    accumulator.replace(with: step.displayText)
-                    await engineRef.cancel()
-                }
             }
-        } catch let error as LocalInferenceError {
-            if case .cancelled = error {
-                let partial = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template).text
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !partial.isEmpty { return partial }
+            let charBudget = max(400, budget.promptBudget * 3)
+            let prompt = LocalChatTemplate.buildPrompt(
+                system: system,
+                messages: working,
+                charBudget: charBudget,
+                profile: template
+            )
+            let promptTokens = engine.countTokens(prompt) ?? GenerationContextBudget.estimateTokens(prompt)
+            let output = min(requested, max(32, budget.nCtx - promptTokens - budget.safetyTokens))
+            WorkflowTrace.log("context", [
+                "attempt": "\(attempt)",
+                "prompt_tokens": "\(promptTokens)",
+                "reserved_output": "\(output)",
+                "context_budget": "\(budget.nCtx)",
+                "prompt_budget": "\(budget.promptBudget)",
+                "web_chars": "\(working.last?.content.count ?? 0)",
+            ])
+            WorkflowTrace.log("llama", [
+                "n_ctx": "\(profile.inference.nCtx)",
+                "n_batch": "\(profile.inference.nBatch)",
+                "n_ubatch": "\(profile.inference.nUbatch)",
+                "ngl": "\(profile.inference.nGpuLayers)",
+                "backend": profile.inference.preferMetal ? "metal" : "cpu",
+            ])
+
+            if promptTokens > budget.promptBudget {
+                lastError = AIRuntimeError.contextOverflow
+                continue
+            }
+
+            let accumulator = RuntimeStringAccumulator()
+            let engineRef = engine
+            let emitted = StreamEmitCounter()
+            do {
+                try await engineRef.generate(prompt: prompt, maxTokens: output) { piece in
+                    accumulator.append(piece)
+                    let step = LocalChatTemplate.streamingSafeEmit(
+                        accumulated: accumulator.value,
+                        alreadyEmittedCount: emitted.count,
+                        profile: template
+                    )
+                    emitted.count = step.newEmittedCount
+                    if !step.emit.isEmpty {
+                        await onToken(step.emit)
+                    }
+                    if step.hitStop {
+                        accumulator.replace(with: step.displayText)
+                        await engineRef.cancel()
+                    }
+                }
+            } catch let error as LocalInferenceError {
+                if case .cancelled = error {
+                    let partial = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template).text
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !partial.isEmpty { return partial }
+                    throw AIRuntimeError.cancelled
+                }
+                if case .contextTooLarge = error {
+                    lastError = AIRuntimeError.contextOverflow
+                    continue
+                }
+                throw AIRuntimeError.inference(error.localizedDescription)
+            } catch is CancellationError {
                 throw AIRuntimeError.cancelled
+            } catch {
+                throw AIRuntimeError.inference(error.localizedDescription)
             }
-            throw AIRuntimeError.inference(error.localizedDescription)
-        } catch is CancellationError {
-            throw AIRuntimeError.cancelled
-        } catch {
-            throw AIRuntimeError.inference(error.localizedDescription)
+
+            let text = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template).text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw AIRuntimeError.emptyGeneration }
+            return text
         }
 
-        let text = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template).text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw AIRuntimeError.emptyGeneration }
-        return text
+        throw lastError ?? AIRuntimeError.contextOverflow
     }
 
     func cancel() async {

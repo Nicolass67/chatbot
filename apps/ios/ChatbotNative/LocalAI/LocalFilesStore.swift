@@ -35,12 +35,20 @@ enum LocalFilesStore {
             || id.hasPrefix("local:") || id.hasPrefix(bookmarksRootPrefix)
     }
 
+    static func itemCount(rootId: String) -> Int {
+        (try? list(relativePath: "", rootId: rootId))?.entries.count ?? 0
+    }
+
     static func roots() -> [FileRootDTO] {
+        let docCount = itemCount(rootId: documentsRootId)
+        let docSubtitle = docCount == 0
+            ? "Sandbox de l’app (vide) — pas le stockage complet de l’iPhone"
+            : "Sandbox de l’app · \(docCount) élément\(docCount > 1 ? "s" : "")"
         var list: [FileRootDTO] = [
             FileRootDTO(
                 id: documentsRootId,
-                label: "Documents",
-                absolutePath: "Sur cet iPhone",
+                label: "Fichiers de l’app",
+                absolutePath: docSubtitle,
                 enabled: true
             ),
         ]
@@ -58,6 +66,9 @@ enum LocalFilesStore {
             )
         }
         list.append(contentsOf: LocalFileBookmarkStore.shared.roots())
+        #if DEBUG
+        logAccessibleRoots(list)
+        #endif
         return list
     }
 
@@ -191,6 +202,32 @@ enum LocalFilesStore {
     }
 
     // MARK: - Paths
+
+    #if DEBUG
+    private static func logAccessibleRoots(_ roots: [FileRootDTO]) {
+        let fm = FileManager.default
+        let docs = documentsDirectory
+        let lib = fm.urls(for: .libraryDirectory, in: .userDomainMask).first
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first
+        let tmp = fm.temporaryDirectory
+        let group = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.fr.nicolazer.chatbot.native")
+        func describe(_ url: URL?) -> String {
+            guard let url else { return "nil" }
+            var isDir: ObjCBool = false
+            let exists = fm.fileExists(atPath: url.path, isDirectory: &isDir)
+            let count = (try? fm.contentsOfDirectory(atPath: url.path).filter { !$0.hasPrefix(".") }.count) ?? -1
+            return "path=\(url.lastPathComponent) exists=\(exists) dir=\(isDir.boolValue) readable=\(fm.isReadableFile(atPath: url.path)) items=\(count)"
+        }
+        WorkflowTrace.log("files", [
+            "documents": describe(docs),
+            "library": describe(lib),
+            "caches": describe(caches),
+            "tmp": describe(tmp),
+            "app_group": describe(group),
+            "roots": "\(roots.count)",
+        ])
+    }
+    #endif
 
     static func baseURL(for rootId: String) throws -> URL {
         switch rootId {
