@@ -1618,12 +1618,12 @@ struct MailThreadView: View {
                         onRemoveAttachment: { chip in
                             removeReplyAttachment(chip)
                         },
-                        onCommitHeaders: {
-                            Task { await commitReplyDraftHeaders() }
-                        },
                         onDismiss: {
                             replyCollapsed = true
                             persistInboxDraft()
+                        },
+                        onCommitHeaders: {
+                            Task { await commitReplyDraftHeaders() }
                         }
                     )
                 }
