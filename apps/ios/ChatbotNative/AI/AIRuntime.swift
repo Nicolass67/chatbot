@@ -136,7 +136,7 @@ final class LocalAIRuntime: AIRuntime {
                 charBudget: charBudget,
                 profile: template
             )
-            let promptTokens = engine.countTokens(prompt) ?? GenerationContextBudget.estimateTokens(prompt)
+            let promptTokens = await engine.countTokens(prompt) ?? GenerationContextBudget.estimateTokens(prompt)
             let output = min(requested, max(32, budget.nCtx - promptTokens - budget.safetyTokens))
             WorkflowTrace.log("context", [
                 "attempt": "\(attempt)",
