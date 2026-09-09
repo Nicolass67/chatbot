@@ -268,7 +268,7 @@ final class LlamaContext: @unchecked Sendable {
             ? "before llama (Library/ChatbotModels sans espace)"
             : "before llama (Application Support)"
         LlamaLogCapture.shared.recordFileDiagnostic(LlamaFileDiagnostics.report(path: path, phase: phase))
-        path.withCString { cPath in
+        return path.withCString { cPath in
             llama_model_load_from_file(cPath, params)
         }
     }
