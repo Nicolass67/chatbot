@@ -328,6 +328,11 @@ final class GmailOAuthSession: NSObject, ObservableObject {
             return nil
         }
         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let name = obj?["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try? GmailKeychainStore.saveDisplayName(name)
+        } else if let given = obj?["given_name"] as? String, !given.isEmpty {
+            try? GmailKeychainStore.saveDisplayName(given)
+        }
         return obj?["email"] as? String
     }
 

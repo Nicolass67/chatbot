@@ -2919,10 +2919,9 @@ private var sendBlockedHint: String {
                 throw LocalMailAssistantError.modelNotReady
             }
 
-            // Agent mode : même AgentWorkflow, ExecutionProfile du modèle actif.
+            // Agent mode : mêmes événements / même AgentActivityView que le PC.
             let effectiveMode = options?.mode ?? chatMode
             if effectiveMode == "agent" {
-                thinkingKind = .preparing
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let history: [LLMChatMessage] = messages.compactMap { msg in
@@ -2930,6 +2929,7 @@ private var sendBlockedHint: String {
                     let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
                     return LLMChatMessage(role: role, content: msg.content)
                 }
+                applyLocalAgentEvent(.started)
                 let agentResult = try await AgentWorkflow.run(
                     .init(
                         userText: effectiveText,
@@ -2939,16 +2939,15 @@ private var sendBlockedHint: String {
                     ),
                     runtime: runtime,
                     tools: tools,
-                    onStep: { step in
-                        thinkingKind = .custom(step.label)
+                    onEvent: { event in
+                        applyLocalAgentEvent(event)
                     },
                     onFinalToken: { token in
-                        if self.thinkingKind != nil { self.thinkingKind = nil }
-                        self.streamAccum.text += token
-                        self.streamingText = self.streamAccum.text
+                        self.appendLocalStreamToken(token)
                     }
                 )
                 guard gen == sendGeneration, !Task.isCancelled else {
+                    applyLocalAgentEvent(.cancelled)
                     thinkingKind = nil
                     isSending = false
                     return
@@ -2958,16 +2957,25 @@ private var sendBlockedHint: String {
                 if content.isEmpty {
                     throw AIRuntimeError.emptyGeneration
                 }
+                streamSources = agentResult.sources
                 streamingText = ""
                 streamAccum.text = ""
-                messages.append(
-                    MessageDTO(
-                        id: "asst-\(UUID().uuidString)",
+                let asstId = streamingAssistantId ?? "asst-\(UUID().uuidString)"
+                if let idx = messages.firstIndex(where: { $0.id == asstId }) {
+                    messages[idx] = MessageDTO(
+                        id: asstId,
                         role: "assistant",
                         content: content,
                         createdAt: nil
                     )
-                )
+                } else {
+                    messages.append(
+                        MessageDTO(id: asstId, role: "assistant", content: content, createdAt: nil)
+                    )
+                }
+                streamingAssistantId = asstId
+                attachLocalChrome(sources: agentResult.sources, mailThreadId: agentResult.mailThreadId)
+                applyLocalAgentEvent(.completed)
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
@@ -2975,17 +2983,47 @@ private var sendBlockedHint: String {
                 )
                 isSending = false
                 sendTask = nil
+                streamingAssistantId = nil
+                agentActivity = AgentActivityState()
                 return
             }
 
             if (toolChannel == .web || webSearchEnabled), forcedScope == nil {
-                thinkingKind = .custom("Recherche web…")
+                thinkingKind = .searching
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
-                let answer = try await WebSearchWorkflow.run(
+                let web = try await WebSearchWorkflow.run(
                     .init(query: effectiveText, synthesize: true),
                     runtime: runtime,
                     tools: tools,
+                    onEvent: { event in
+                        switch event {
+                        case .webSearch(let q):
+                            self.thinkingKind = .custom("Recherche · \(q)")
+                        case .sources(let sources):
+                            self.streamSources = sources
+                            if let first = sources.first {
+                                self.thinkingKind = .custom(
+                                    "Lecture · \(self.shortWebSourceLabel(domain: first.domain, title: first.title, url: first.url))"
+                                )
+                            }
+                        case .sourceOpened(let source, let index, let total):
+                            self.thinkingKind = .custom(
+                                self.liveSourceStatusLine(
+                                    phase: "fetching",
+                                    domain: source.domain,
+                                    title: source.title,
+                                    url: source.url,
+                                    index: index,
+                                    total: total
+                                )
+                            )
+                        case .synthesizing:
+                            self.thinkingKind = .preparing
+                        default:
+                            break
+                        }
+                    },
                     onToken: { token in
                         if self.thinkingKind != nil { self.thinkingKind = nil }
                         self.streamAccum.text += token
@@ -2997,19 +3035,24 @@ private var sendBlockedHint: String {
                     isSending = false
                     return
                 }
-                let content = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                let content = web.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty { throw AIRuntimeError.emptyGeneration }
                 thinkingKind = nil
+                streamSources = web.sources
                 streamingText = ""
                 streamAccum.text = ""
+                let asstId = "asst-\(UUID().uuidString)"
                 messages.append(
                     MessageDTO(
-                        id: "asst-\(UUID().uuidString)",
+                        id: asstId,
                         role: "assistant",
                         content: content,
                         createdAt: nil
                     )
                 )
+                streamingAssistantId = asstId
+                attachLocalChrome(sources: web.sources, mailThreadId: nil)
+                streamingAssistantId = nil
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
@@ -3020,17 +3063,26 @@ private var sendBlockedHint: String {
                 return
             }
 
-            // Mail scope + Gmail direct : intents search / résumé / réponse.
+            // Mail : fil ouvert OU boîte (liste) — Gmail device, jamais « pas d’accès ».
             if forcedScope == .mail, GmailOAuthSession.shared.isConnected {
                 let assistant = LocalMailAssistant()
-                let lower = effectiveText.lowercased()
                 let threadId = forcedActiveContext?.mailThreadId
+                let intent = MailIntentDetector.detect(
+                    effectiveText,
+                    hasOpenThread: !(threadId ?? "").isEmpty
+                )
                 let answer: String
-                if let threadId, !threadId.isEmpty, isMailReplyIntent(effectiveText) {
+                var mailThreadHandoff: String?
+                if intent == .threadReply, let threadId, !threadId.isEmpty {
                     thinkingKind = .custom("Préparation de la réponse…")
                     let confirmation = try await assistant.draftReply(
                         threadId: threadId,
-                        instruction: effectiveText
+                        instruction: effectiveText,
+                        onToken: { token in
+                            if self.thinkingKind != nil { self.thinkingKind = nil }
+                            self.streamAccum.text += token
+                            self.streamingText = self.streamAccum.text
+                        }
                     )
                     answer =
                         """
@@ -3040,21 +3092,35 @@ private var sendBlockedHint: String {
 
                         L’envoi réel nécessite une confirmation explicite.
                         """
-                } else if let threadId, !threadId.isEmpty,
-                          lower.contains("résum") || lower.contains("resum") {
+                    mailThreadHandoff = threadId
+                } else if intent == .threadSummary, let threadId, !threadId.isEmpty {
                     thinkingKind = .custom("Analyse du message…")
-                    answer = try await assistant.summarizeThread(threadId: threadId)
-                } else if lower.contains("cherche") || lower.contains("recherche")
-                            || lower.contains("trouve") || lower.contains("mails")
-                            || lower.contains("e-mail") || lower.contains("email") {
-                    thinkingKind = .custom("Recherche mail…")
-                    answer = try await assistant.searchAndAnswer(effectiveText)
-                } else {
-                    answer = try await streamLocalChatReply(
-                        userText: effectiveText,
-                        promptKind: .mailExtract,
-                        generation: gen
+                    answer = try await assistant.summarizeThread(
+                        threadId: threadId,
+                        onToken: { token in
+                            if self.thinkingKind != nil { self.thinkingKind = nil }
+                            self.streamAccum.text += token
+                            self.streamingText = self.streamAccum.text
+                        }
                     )
+                    mailThreadHandoff = threadId
+                } else if intent.needsGmailSearch || threadId == nil || threadId?.isEmpty == true {
+                    thinkingKind = .custom("Consultation Gmail…")
+                    let mailbox = try await MailMailboxWorkflow.run(
+                        .init(userText: effectiveText, context: threadId == nil ? .mailbox : .thread(threadId: threadId ?? "")),
+                        runtime: LocalAIRuntime.shared,
+                        tools: AIToolRegistry.makeLocalDefault(),
+                        onToken: { token in
+                            if self.thinkingKind != nil { self.thinkingKind = nil }
+                            self.streamAccum.text += token
+                            self.streamingText = self.streamAccum.text
+                        }
+                    )
+                    answer = mailbox.text
+                    mailThreadHandoff = mailbox.mailThreadId
+                } else {
+                    thinkingKind = .custom("Consultation Gmail…")
+                    answer = try await assistant.searchAndAnswer(effectiveText)
                 }
 
                 guard gen == sendGeneration, !Task.isCancelled else {
@@ -3066,14 +3132,18 @@ private var sendBlockedHint: String {
                 thinkingKind = nil
                 streamingText = ""
                 streamAccum.text = ""
+                let asstId = "asst-\(UUID().uuidString)"
                 messages.append(
                     MessageDTO(
-                        id: "asst-\(UUID().uuidString)",
+                        id: asstId,
                         role: "assistant",
                         content: answer,
                         createdAt: nil
                     )
                 )
+                streamingAssistantId = asstId
+                attachLocalChrome(sources: [], mailThreadId: mailThreadHandoff)
+                streamingAssistantId = nil
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
@@ -3082,6 +3152,46 @@ private var sendBlockedHint: String {
                 isSending = false
                 sendTask = nil
                 return
+            }
+
+            if forcedScope != .files, GmailOAuthSession.shared.isConnected {
+                let intent = MailIntentDetector.detect(effectiveText, hasOpenThread: false)
+                if intent.needsGmailSearch {
+                    thinkingKind = .custom("Consultation Gmail…")
+                    let mailbox = try await MailMailboxWorkflow.run(
+                        .init(userText: effectiveText, context: .mailbox),
+                        runtime: LocalAIRuntime.shared,
+                        tools: AIToolRegistry.makeLocalDefault(),
+                        onToken: { token in
+                            if self.thinkingKind != nil { self.thinkingKind = nil }
+                            self.streamAccum.text += token
+                            self.streamingText = self.streamAccum.text
+                        }
+                    )
+                    guard gen == sendGeneration, !Task.isCancelled else {
+                        thinkingKind = nil
+                        isSending = false
+                        return
+                    }
+                    thinkingKind = nil
+                    streamingText = ""
+                    streamAccum.text = ""
+                    let asstId = "asst-\(UUID().uuidString)"
+                    messages.append(
+                        MessageDTO(id: asstId, role: "assistant", content: mailbox.text, createdAt: nil)
+                    )
+                    streamingAssistantId = asstId
+                    attachLocalChrome(sources: [], mailThreadId: mailbox.mailThreadId)
+                    streamingAssistantId = nil
+                    _ = LocalChatStore.shared.appendMessage(
+                        conversationId: conversation.id,
+                        role: .assistant,
+                        content: mailbox.text
+                    )
+                    isSending = false
+                    sendTask = nil
+                    return
+                }
             }
 
             let promptKind: LocalPromptKind =
@@ -3858,6 +3968,177 @@ private var sendBlockedHint: String {
             conversationId: conversation.id,
             messageId: id
         )
+    }
+
+    /// Runtime local → même `AgentActivityState` que le SSE PC.
+    private func applyLocalAgentEvent(_ event: AgentOrchestrationEvent) {
+        switch event {
+        case .started:
+            thinkingKind = nil
+            agentActivity.visible = true
+            agentActivity.completed = false
+            agentActivity.lastError = nil
+            agentActivity.phase = "planning"
+            agentActivity.startedAt = Date()
+            agentActivity.lockedThoughtSeconds = nil
+            agentActivity.activitySummary = nil
+            agentActivity.planSteps = []
+            agentActivity.webQuery = nil
+            agentActivity.webPhase = .idle
+            streamSources = []
+            _ = ensureAgentRunAnchorMessage(forceNew: true)
+        case .plan(let steps):
+            agentActivity.visible = true
+            agentActivity.planSteps = steps
+            agentActivity.totalSteps = steps.count
+            if let first = steps.first {
+                agentActivity.currentStepTitle = first.title
+            }
+            syncAgentChromeToStreamingMessage()
+        case .stepStarted(let id, let title):
+            agentActivity.visible = true
+            agentActivity.phase = "executing"
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == id }) {
+                agentActivity.planSteps[i].status = "running"
+                agentActivity.planSteps[i].title = AgentToolLabels.friendlyStepTitle(title)
+                agentActivity.currentStepTitle = agentActivity.planSteps[i].title
+                agentActivity.stepIndex = i
+            } else {
+                agentActivity.currentStepTitle = AgentToolLabels.friendlyStepTitle(title)
+            }
+            syncAgentChromeToStreamingMessage()
+        case .stepCompleted(let id):
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == id }) {
+                agentActivity.planSteps[i].status = "done"
+            }
+            syncAgentChromeToStreamingMessage()
+        case .stepFailed(let id, let message):
+            if let i = agentActivity.planSteps.firstIndex(where: { $0.id == id }) {
+                agentActivity.planSteps[i].status = "error"
+            }
+            agentActivity.lastError = AgentToolLabels.friendlyError(message)
+            syncAgentChromeToStreamingMessage()
+        case .toolStarted(let tool, let query):
+            agentActivity.visible = true
+            let label = AgentToolLabels.humanize(tool)
+            agentActivity.currentStepTitle = label
+            if tool.lowercased().contains("web") || tool.lowercased().contains("search") {
+                agentActivity.webPhase = .searching
+                if let query, !query.isEmpty { agentActivity.webQuery = query }
+            }
+            var parts = (agentActivity.activitySummary ?? "")
+                .split(separator: "·")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            if !parts.contains(label) {
+                parts.append(label)
+                agentActivity.activitySummary = parts.filter { !$0.isEmpty }.joined(separator: " · ")
+            }
+            syncAgentChromeToStreamingMessage()
+        case .toolCompleted(_, let sourceCount):
+            if sourceCount > 0 {
+                let bit = "\(sourceCount) source\(sourceCount > 1 ? "s" : "")"
+                if let q = agentActivity.webQuery, !q.isEmpty {
+                    agentActivity.activitySummary = "Recherche · \(q) · \(bit)"
+                } else {
+                    agentActivity.activitySummary = bit
+                }
+                agentActivity.webPhase = .analyzing
+            }
+            syncAgentChromeToStreamingMessage()
+        case .webSearch(let query):
+            agentActivity.visible = true
+            agentActivity.webQuery = query
+            agentActivity.webPhase = .searching
+            thinkingKind = agentActivity.visible ? nil : .searching
+            syncAgentChromeToStreamingMessage()
+        case .sources(let sources):
+            streamSources = sources
+            agentActivity.webPhase = .analyzing
+            let names = sources.compactMap { $0.domain ?? URL(string: $0.url)?.host }.prefix(6)
+            if !names.isEmpty {
+                agentActivity.activitySummary = "Recherche de : " + names.joined(separator: " · ")
+            }
+            if let first = sources.first {
+                agentActivity.currentStepTitle = "Lecture · \(shortWebSourceLabel(domain: first.domain, title: first.title, url: first.url))"
+            }
+            syncAgentChromeToStreamingMessage()
+        case .sourceOpened(let source, let index, let total):
+            agentActivity.webPhase = .analyzing
+            agentActivity.currentStepTitle = liveSourceStatusLine(
+                phase: "fetching",
+                domain: source.domain,
+                title: source.title,
+                url: source.url,
+                index: index,
+                total: total
+            )
+            syncAgentChromeToStreamingMessage()
+        case .synthesizing:
+            agentActivity.phase = "synthesis"
+            activateAgentPlanStep(at: max(0, agentActivity.planSteps.count - 1))
+            syncAgentChromeToStreamingMessage()
+        case .completed:
+            if let start = agentActivity.startedAt {
+                agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+            }
+            for i in agentActivity.planSteps.indices
+            where agentActivity.planSteps[i].status == "running" || agentActivity.planSteps[i].status == "pending" {
+                agentActivity.planSteps[i].status = "done"
+            }
+            agentActivity.completed = true
+            agentActivity.phase = "synthesis"
+            syncAgentChromeToStreamingMessage(completed: true)
+        case .cancelled:
+            if let start = agentActivity.startedAt {
+                agentActivity.lockedThoughtSeconds = max(1, Int(Date().timeIntervalSince(start)))
+            }
+            agentActivity.completed = true
+            syncAgentChromeToStreamingMessage(completed: true)
+        case .failed(let message):
+            agentActivity.lastError = AgentToolLabels.friendlyError(message)
+            agentActivity.completed = true
+            syncAgentChromeToStreamingMessage(completed: true)
+        }
+    }
+
+    private func appendLocalStreamToken(_ token: String) {
+        if thinkingKind != nil { thinkingKind = nil }
+        streamAccum.text += token
+        streamingText = streamAccum.text
+        guard let id = streamingAssistantId,
+              let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        let prev = messages[idx]
+        messages[idx] = MessageDTO(
+            id: id,
+            role: "assistant",
+            content: streamAccum.text,
+            createdAt: prev.createdAt,
+            attachments: prev.attachments,
+            sources: prev.sources
+        )
+    }
+
+    private func attachLocalChrome(sources: [SearchSourceDTO], mailThreadId: String?) {
+        let id = streamingAssistantId ?? messages.last(where: { $0.role == "assistant" })?.id
+        guard let id else { return }
+        var chrome = chromeById[id] ?? MessageChromeMeta()
+        if !sources.isEmpty {
+            chrome.sources = sources
+        }
+        if let mailThreadId, !mailThreadId.isEmpty {
+            chrome.mailHandoff = MailHandoffDTO(
+                intent: "open",
+                reason: nil,
+                query: nil,
+                threadId: mailThreadId,
+                label: nil
+            )
+        }
+        if agentActivity.visible || !agentActivity.planSteps.isEmpty {
+            chrome.agentRun = agentActivity.snapshot()
+        }
+        chromeById[id] = chrome
+        ConversationSessionStore.setChrome(chrome, conversationId: conversation.id, messageId: id)
     }
 
     /// Active l’étape `index` sans inventer de « done » sur les précédentes.

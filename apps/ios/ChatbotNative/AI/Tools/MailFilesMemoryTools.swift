@@ -9,28 +9,68 @@ struct MailSearchTool: AITool {
         arguments: [String: String],
         profile: LocalModelExecutionProfile
     ) async throws -> AIToolResult {
-        let query = (arguments["query"] ?? arguments["q"] ?? "")
+        let userQuery = (arguments["query"] ?? arguments["q"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
+        let intent = MailIntentDetector.detect(userQuery, hasOpenThread: false)
+        let gmailQ = (arguments["gmailQuery"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = gmailQ.isEmpty
+            ? MailIntentDetector.gmailQuery(for: intent == .none ? .genericMailbox : intent, userText: userQuery)
+            : gmailQ
+        guard !q.isEmpty else {
             throw AIRuntimeError.toolInvalidArguments("query requis")
         }
         guard GmailOAuthSession.shared.isConnected else {
             throw AIRuntimeError.toolFailed("Gmail non connecté sur cet iPhone.")
         }
+        try Task.checkCancellation()
         let client = DirectGmailClient(oauth: .shared)
-        let max = max(1, min(profile.maxMailMessages, 12))
-        let page = try await client.listMessages(query: query, pageToken: nil, maxResults: max)
+        let max = MailIntentDetector.resultLimit(
+            for: intent == .none ? .genericMailbox : intent,
+            profile: profile
+        )
+        let page = try await client.listMessages(query: q, pageToken: nil, maxResults: max)
         if page.messages.isEmpty {
-            return AIToolResult(action: name, ok: true, text: "Aucun mail pour « \(query) ».", truncated: false)
+            return AIToolResult(
+                action: name,
+                ok: true,
+                text: "Aucun mail Gmail pour cette recherche (q=\(q)).",
+                truncated: false
+            )
         }
-        let body = page.messages.prefix(max).enumerated().map { idx, m in
-            """
-            [\(idx + 1)] id=\(m.id)
-            De: \(m.from ?? "—") | Objet: \(m.subject ?? "—")
-            \(String((m.snippet ?? "").prefix(profile.maxWebSnippetChars)))
-            """
-        }.joined(separator: "\n\n")
-        return AIToolResult(action: name, ok: true, text: body, truncated: false)
+        let fetchBodies = (arguments["fetchBodies"] ?? "true").lowercased() != "false"
+        var blocks: [String] = []
+        var firstThread: String?
+        for (idx, m) in page.messages.prefix(max).enumerated() {
+            try Task.checkCancellation()
+            if firstThread == nil { firstThread = m.threadId ?? m.id }
+            var bodySnippet = m.snippet ?? ""
+            if fetchBodies {
+                if let full = try? await client.getMessage(id: m.id) {
+                    let raw = MailThreadPromptBuilder.preferredBody(full)
+                    bodySnippet = MailThreadPromptBuilder.clipBody(
+                        MailThreadPromptBuilder.sanitize(raw),
+                        maxChars: profile.maxMailBodyChars / max(max, 1)
+                    )
+                }
+            }
+            blocks.append(
+                """
+                [\(idx + 1)] messageId=\(m.id) threadId=\(m.threadId ?? m.id)
+                De: \(m.from ?? "—")
+                Objet: \(m.subject ?? "—")
+                Date: \(m.date ?? "—")
+                \(bodySnippet)
+                """
+            )
+        }
+        return AIToolResult(
+            action: name,
+            ok: true,
+            text: blocks.joined(separator: "\n\n"),
+            truncated: false,
+            mailThreadId: firstThread
+        )
     }
 }
 

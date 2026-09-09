@@ -79,7 +79,7 @@ struct ReasoningCapabilitiesDTO: Codable, Hashable {
     let defaultModeId: String?
 }
 
-struct SearchSourceDTO: Identifiable, Codable, Hashable {
+struct SearchSourceDTO: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let title: String
     let url: String

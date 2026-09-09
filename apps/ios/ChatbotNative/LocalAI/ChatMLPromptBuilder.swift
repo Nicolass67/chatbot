@@ -5,6 +5,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
     enum ChatTemplateKind: String, Sendable, Hashable {
         case chatml
         case gemma
+        case granite
+        case phi
         case generic
     }
 
@@ -63,6 +65,62 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultTemperature: 0.7
     )
 
+    static let chatmlInstruct = LocalModelRuntimeProfile(
+        templateKind: .chatml,
+        controlTokens: [
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|endoftext|>",
+        ],
+        stopSequences: [
+            "<|im_end|>",
+            "<|im_start|>",
+            "<|endoftext|>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+
+    static let granite = LocalModelRuntimeProfile(
+        templateKind: .granite,
+        controlTokens: [
+            "<|start_of_role|>",
+            "<|end_of_role|>",
+            "<|end_of_text|>",
+        ],
+        stopSequences: [
+            "<|end_of_text|>",
+            "<|start_of_role|>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+
+    static let phi = LocalModelRuntimeProfile(
+        templateKind: .phi,
+        controlTokens: [
+            "<|user|>",
+            "<|assistant|>",
+            "<|system|>",
+            "<|end|>",
+        ],
+        stopSequences: [
+            "<|end|>",
+            "<|user|>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+
     static let generic = LocalModelRuntimeProfile(
         templateKind: .generic,
         controlTokens: ["<|im_start|>", "<|im_end|>", "<|endoftext|>"],
@@ -89,6 +147,10 @@ enum LocalChatTemplate {
             return buildChatML(system: system, messages: messages, charBudget: charBudget, profile: profile)
         case .gemma:
             return buildGemma(system: system, messages: messages, charBudget: charBudget)
+        case .granite:
+            return buildGranite(system: system, messages: messages, charBudget: charBudget)
+        case .phi:
+            return buildPhi(system: system, messages: messages, charBudget: charBudget)
         }
     }
 
@@ -166,6 +228,59 @@ enum LocalChatTemplate {
             parts.append("<start_of_turn>\(role)\n\(message.content)<end_of_turn>")
         }
         parts.append("<start_of_turn>model\n")
+        return parts.joined(separator: "\n")
+    }
+
+    private static func buildGranite(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int
+    ) -> String {
+        var parts: [String] = []
+        if !system.isEmpty {
+            parts.append("<|start_of_role|>system<|end_of_role|>\n\(system)<|end_of_text|>")
+        }
+        var selected: [LLMChatMessage] = []
+        var used = system.count + 32
+        for message in messages.reversed() {
+            let cost = message.content.count + 48
+            if used + cost > charBudget, !selected.isEmpty { break }
+            selected.insert(message, at: 0)
+            used += cost
+        }
+        for message in selected {
+            let role = message.role == .assistant ? "assistant" : "user"
+            parts.append("<|start_of_role|>\(role)<|end_of_role|>\n\(message.content)<|end_of_text|>")
+        }
+        parts.append("<|start_of_role|>assistant<|end_of_role|>\n")
+        return parts.joined(separator: "\n")
+    }
+
+    private static func buildPhi(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int
+    ) -> String {
+        var parts: [String] = []
+        if !system.isEmpty {
+            parts.append("<|system|>\n\(system)<|end|>")
+        }
+        var selected: [LLMChatMessage] = []
+        var used = system.count + 32
+        for message in messages.reversed() {
+            let cost = message.content.count + 32
+            if used + cost > charBudget, !selected.isEmpty { break }
+            selected.insert(message, at: 0)
+            used += cost
+        }
+        for message in selected {
+            if message.role == .assistant {
+                parts.append("<|assistant|>\n\(message.content)<|end|>")
+            } else {
+                parts.append("<|user|>\n\(message.content)<|end|>")
+            }
+        }
+        parts.append("<|assistant|>\n")
         return parts.joined(separator: "\n")
     }
 

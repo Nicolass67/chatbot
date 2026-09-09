@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct AgentPlanStep: Identifiable, Equatable {
+struct AgentPlanStep: Identifiable, Equatable, Sendable {
     let id: String
     var title: String
     var status: String // pending | running | done | error | skipped

@@ -111,6 +111,7 @@ struct FilesBrowserView: View {
     @State private var mutatingSelection = false
     @State private var selectionError: String?
     @State private var organizerScope: OrganizationScope?
+    @State private var showLocalFolderImporter = false
 
     private var client: APIClient {
         APIClient(baseURL: session.baseURL, token: session.token)
@@ -205,12 +206,20 @@ struct FilesBrowserView: View {
                             } label: {
                                 Label("Sélectionner", systemImage: "checkmark.circle")
                             }
-                            Button {
-                                Task { await reindexAllRoots() }
-                            } label: {
-                                Label("Réindexer tous les disques", systemImage: "arrow.triangle.2.circlepath")
+                            if usesOnDeviceFiles {
+                                Button {
+                                    showLocalFolderImporter = true
+                                } label: {
+                                    Label("Ajouter un dossier", systemImage: "folder.badge.plus")
+                                }
+                            } else {
+                                Button {
+                                    Task { await reindexAllRoots() }
+                                } label: {
+                                    Label("Réindexer tous les disques", systemImage: "arrow.triangle.2.circlepath")
+                                }
+                                .disabled(indexStatus.isIndexing || roots.isEmpty)
                             }
-                            .disabled(indexStatus.isIndexing || roots.isEmpty)
                             Button {
                                 nav.openSettings()
                             } label: {
@@ -282,13 +291,34 @@ struct FilesBrowserView: View {
                 }
             }
             .refreshable { await loadRoots() }
-            .task {
-                if roots.isEmpty, let cached = TabMemoryCache.fileRoots, !cached.isEmpty {
-                    roots = cached
-                    rootsById = Dictionary(cached.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            .fileImporter(
+                isPresented: $showLocalFolderImporter,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false
+            ) { result in
+                Task {
+                    do {
+                        guard let url = try result.get().first else { return }
+                        try LocalFileBookmarkStore.shared.addFolder(url: url)
+                        await loadRoots()
+                        AppHaptics.success()
+                    } catch {
+                        self.error = error.localizedDescription
+                    }
                 }
-                if roots.isEmpty {
+            }
+            .task {
+                if usesOnDeviceFiles {
                     await loadRoots()
+                } else {
+                    if roots.isEmpty, let cached = TabMemoryCache.fileRoots, !cached.isEmpty,
+                       cached.allSatisfy({ !LocalFilesStore.isLocalRoot($0.id) }) {
+                        roots = cached
+                        rootsById = Dictionary(cached.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+                    }
+                    if roots.isEmpty {
+                        await loadRoots()
+                    }
                 }
                 // Restaure l’emplacement (dossier ouvert) après un remount TabView Mail ↔ Files.
                 if path.isEmpty, let saved = TabMemoryCache.filesPath, !saved.isEmpty {
@@ -619,7 +649,7 @@ struct FilesBrowserView: View {
                         let parent = Self.parentFolderPath(of: entry.relativePath)
                         navigateToFolder(rootId: root.id, folderPath: parent)
                     },
-                    onReindex: {
+                    onReindex: LocalFilesStore.isLocalRoot(root.id) ? nil : {
                         Task { await reindexRoot(root) }
                     },
                     isReindexing: indexStatus.isIndexing
@@ -682,7 +712,7 @@ struct FilesBrowserView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(root.label?.isEmpty == false ? root.label! : "Racine")
                                         .foregroundStyle(AppTheme.foreground)
-                                    if let path = root.absolutePath {
+                                    if let path = root.absolutePath, !path.hasPrefix("/") {
                                         Text(path)
                                             .font(.caption2)
                                             .foregroundStyle(AppTheme.mutedForeground)
@@ -769,6 +799,11 @@ struct FilesBrowserView: View {
 
     private func reindexRoot(_ root: FileRootDTO) async {
         let label = root.label?.isEmpty == false ? root.label! : "Racine"
+        if LocalFilesStore.isLocalRoot(root.id) {
+            indexStatus = .done(indexed: 0, skipped: 0, rootLabel: label)
+            await loadRoots()
+            return
+        }
         indexStatus = .indexing(rootLabel: label)
         do {
             let result = try await client.indexFileRoot(rootId: root.id)
@@ -854,9 +889,9 @@ struct FilesBrowserView: View {
         defer { loading = false }
         do {
             if usesOnDeviceFiles {
-                let local = LocalFilesStore.root()
-                roots = [local]
-                rootsById = [local.id: local]
+                let local = LocalFilesStore.roots()
+                roots = local
+                rootsById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
                 error = nil
                 consumePendingFilesDeepLink()
                 return
@@ -1723,7 +1758,7 @@ struct FileFolderView: View {
         do {
             let list: FileListDTO
             if LocalFilesStore.isLocalRoot(root.id) {
-                list = try LocalFilesStore.list(relativePath: path)
+                list = try LocalFilesStore.list(relativePath: path, rootId: root.id)
             } else {
                 list = try await client.listFiles(rootId: root.id, path: path, cursor: nil)
             }
@@ -1827,6 +1862,12 @@ struct FileFolderView: View {
         mkdirName = ""
         let dest = path.isEmpty ? name : "\(path)/\(name)"
         do {
+            if LocalFilesStore.isLocalRoot(root.id) {
+                try LocalFilesStore.createDirectory(relativePath: dest, rootId: root.id)
+                AppHaptics.success()
+                await load(reset: true)
+                return
+            }
             let proposal = try await client.proposeCreateDirectory(rootId: root.id, destRelativePath: dest)
             AppHaptics.light()
             // Attendre la fermeture de l’alert « Nouveau dossier » puis sheet de confirmation
@@ -1885,6 +1926,16 @@ struct FileFolderView: View {
         renameTarget = nil
         guard !name.isEmpty else { return }
         do {
+            if LocalFilesStore.isLocalRoot(root.id) {
+                try LocalFilesStore.renameEntry(
+                    relativePath: target.relativePath,
+                    newName: name,
+                    rootId: root.id
+                )
+                AppHaptics.success()
+                await load(reset: true)
+                return
+            }
             pendingPropose = try await client.proposeRenameFile(sourceFileId: fileId, newName: name)
             AppHaptics.light()
         } catch {
@@ -1898,6 +1949,13 @@ struct FileFolderView: View {
         deletingSingle = true
         defer { deletingSingle = false }
         do {
+            if LocalFilesStore.isLocalRoot(root.id) {
+                try LocalFilesStore.deleteEntry(relativePath: target.relativePath, rootId: root.id)
+                applyRemovedFileIds([fileId])
+                selection.remove(fileIds: [fileId])
+                AppHaptics.success()
+                return
+            }
             let proposal = try await client.proposeDeleteFile(sourceFileId: fileId)
             try await client.confirmFilesAction(
                 actionId: proposal.actionId,
@@ -1943,6 +2001,16 @@ struct FileFolderView: View {
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
             uploading = true
             defer { uploading = false }
+            if LocalFilesStore.isLocalRoot(root.id) {
+                _ = try LocalFilesStore.importFile(
+                    from: url,
+                    relativeFolder: path,
+                    rootId: root.id
+                )
+                AppHaptics.success()
+                await load(reset: true)
+                return
+            }
             try await client.uploadFiles(
                 rootId: root.id,
                 destRelativePath: path,
@@ -2322,8 +2390,10 @@ struct FilePreviewView: View {
         loading = true
         defer { loading = false }
         if fileId.hasPrefix("local:") {
-            let rel = String(fileId.dropFirst("local:".count))
-            if let text = LocalFilesStore.readText(relativePath: rel, maxChars: 12_000) {
+            let parsed = LocalFilesStore.parseFileId(fileId)
+            let rootId = parsed?.rootId ?? LocalFilesStore.documentsRootId
+            let rel = parsed?.relative ?? String(fileId.dropFirst("local:".count))
+            if let text = LocalFilesStore.readText(relativePath: rel, maxChars: 12_000, rootId: rootId) {
                 content = FileContentDTO(
                     kind: "text",
                     text: text,

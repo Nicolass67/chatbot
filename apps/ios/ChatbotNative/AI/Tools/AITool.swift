@@ -12,6 +12,26 @@ struct AIToolResult: Equatable, Sendable {
     var ok: Bool
     var text: String
     var truncated: Bool
+    /// Provenance structurée (Web) — jamais un simple dump anonyme.
+    var sources: [SearchSourceDTO]
+    /// Fil mail principal si l’outil en a identifié un.
+    var mailThreadId: String?
+
+    init(
+        action: String,
+        ok: Bool,
+        text: String,
+        truncated: Bool,
+        sources: [SearchSourceDTO] = [],
+        mailThreadId: String? = nil
+    ) {
+        self.action = action
+        self.ok = ok
+        self.text = text
+        self.truncated = truncated
+        self.sources = sources
+        self.mailThreadId = mailThreadId
+    }
 
     static func failure(action: String, message: String) -> AIToolResult {
         AIToolResult(action: action, ok: false, text: message, truncated: false)
@@ -146,7 +166,14 @@ final class AIToolRegistry {
             return result
         }
         let clipped = String(result.text.prefix(budget)) + "\n…[tronqué]"
-        return AIToolResult(action: result.action, ok: result.ok, text: clipped, truncated: true)
+        return AIToolResult(
+            action: result.action,
+            ok: result.ok,
+            text: clipped,
+            truncated: true,
+            sources: result.sources,
+            mailThreadId: result.mailThreadId
+        )
     }
 
     /// Registry par défaut pour le runtime local (mêmes noms d’outils côté PC conceptuellement).

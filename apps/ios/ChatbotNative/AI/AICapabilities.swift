@@ -104,12 +104,12 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     static let compact = LocalModelExecutionProfile(
         contextCharBudget: 3_500,
         historyMessageBudget: 8,
-        maxOutputTokens: 384,
+        maxOutputTokens: 768,
         temperature: 0.7,
         topP: 0.9,
         maxWorkflowSteps: 4,
         maxToolCalls: 4,
-        maxWebResults: 3,
+        maxWebResults: 5,
         maxWebSnippetChars: 400,
         maxMailMessages: 4,
         maxMailBodyChars: 3_500,
@@ -189,6 +189,7 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     enum GenerationTask: String, Sendable {
         case short
         case explanation
+        case detailed
         case mailSummary
         case mailReply
         case agentStep
@@ -203,33 +204,36 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             switch task {
             case .short: return 256
             case .explanation: return 768
+            case .detailed: return 1024
             case .mailSummary: return 448
             case .mailReply: return 512
             case .agentStep: return 320
-            case .agentFinal: return 640
-            case .webSynthesize: return 640
+            case .agentFinal: return 768
+            case .webSynthesize: return 768
             case .files: return 512
             }
         case .balanced:
             switch task {
             case .short: return 320
             case .explanation: return 896
+            case .detailed: return 1152
             case .mailSummary: return 512
             case .mailReply: return 640
             case .agentStep: return 384
-            case .agentFinal: return 768
-            case .webSynthesize: return 768
+            case .agentFinal: return 896
+            case .webSynthesize: return 896
             case .files: return 640
             }
         case .ample:
             switch task {
             case .short: return 384
             case .explanation: return 1024
+            case .detailed: return 1280
             case .mailSummary: return 640
             case .mailReply: return 768
             case .agentStep: return 448
-            case .agentFinal: return 896
-            case .webSynthesize: return 896
+            case .agentFinal: return 1024
+            case .webSynthesize: return 1024
             case .files: return 768
             }
         }

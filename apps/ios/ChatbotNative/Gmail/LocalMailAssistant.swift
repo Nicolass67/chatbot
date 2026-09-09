@@ -97,34 +97,56 @@ final class LocalMailAssistant: ObservableObject {
         guard !query.isEmpty else { throw LocalMailAssistantError.emptyQuery }
         try ensureGmailConnected()
         try await ensureModelReady()
+        try Task.checkCancellation()
 
         isBusy = true
         lastError = nil
         defer { isBusy = false }
 
-        let page = try await gmail.listMessages(query: query, pageToken: nil, maxResults: maxMailMessages)
+        let intent = MailIntentDetector.detect(query, hasOpenThread: false)
+        let gmailQ = MailIntentDetector.gmailQuery(
+            for: intent == .none ? .genericMailbox : intent,
+            userText: query
+        )
+        let limit = MailIntentDetector.resultLimit(
+            for: intent == .none ? .genericMailbox : intent,
+            profile: executionProfile
+        )
+
+        let page = try await gmail.listMessages(query: gmailQ, pageToken: nil, maxResults: limit)
         guard !page.messages.isEmpty else { throw LocalMailAssistantError.noResults }
 
-        let context = page.messages.prefix(maxMailMessages).enumerated().map { idx, m in
-            """
-            [\(idx + 1)] id=\(m.id)
-            De: \(m.from ?? "—")
-            Objet: \(m.subject ?? "—")
-            Date: \(m.date ?? "—")
-            Extrait: \(m.snippet ?? "—")
-            """
-        }.joined(separator: "\n\n")
+        var contextBlocks: [String] = []
+        for (idx, m) in page.messages.prefix(limit).enumerated() {
+            try Task.checkCancellation()
+            var body = m.snippet ?? ""
+            if let full = try? await gmail.getMessage(id: m.id) {
+                body = MailThreadPromptBuilder.clipBody(
+                    MailThreadPromptBuilder.sanitize(MailThreadPromptBuilder.preferredBody(full)),
+                    maxChars: executionProfile.maxMailBodyChars / max(limit, 1)
+                )
+            }
+            contextBlocks.append(
+                """
+                [\(idx + 1)] threadId=\(m.threadId ?? m.id)
+                De: \(m.from ?? "—")
+                Objet: \(m.subject ?? "—")
+                Date: \(m.date ?? "—")
+                \(body)
+                """
+            )
+        }
 
         return try await generateMessages(
-            system: LocalPrompts.mailExtract,
+            system: LocalPrompts.mailMailbox,
             user: """
             Question de l’utilisateur :
             \(query)
 
-            Résultats Gmail (ne rien inventer hors de cette liste) :
-            \(context)
+            Mails Gmail (ne rien inventer hors de cette liste ; tu as accès à ces mails via l’application) :
+            \(contextBlocks.joined(separator: "\n\n"))
             """,
-            maxTokens: executionProfile.outputTokens(for: .short)
+            maxTokens: executionProfile.outputTokens(for: .mailSummary)
         )
     }
 
@@ -191,12 +213,14 @@ final class LocalMailAssistant: ObservableObject {
             profile: executionProfile,
             kind: .reply(instruction: instructionTrimmed)
         )
-        let proposed = try await generateMessages(
-            system: LocalPrompts.mailReplyDraft,
-            user: user,
-            maxTokens: executionProfile.outputTokens(for: .mailReply),
-            onToken: onToken
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let proposed = MailSignature.appendOnce(
+            try await generateMessages(
+                system: LocalPrompts.mailReplyDraft,
+                user: user,
+                maxTokens: executionProfile.outputTokens(for: .mailReply),
+                onToken: onToken
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
 
         var draftId: String?
         if !to.isEmpty {

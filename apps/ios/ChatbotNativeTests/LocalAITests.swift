@@ -882,11 +882,133 @@ final class LlamaInferencePerfTests: XCTestCase {
     func testConversationPromptAllowsMarkdownAndExplanations() {
         XCTAssertTrue(LocalPrompts.conversation.contains("Markdown"))
         XCTAssertEqual(LocalPrompts.conversationTask(for: "Explique-moi la théorie des cordes"), .explanation)
+        XCTAssertEqual(
+            LocalPrompts.conversationTask(for: "Explique-moi la théorie des cordes en détail."),
+            .detailed
+        )
         XCTAssertEqual(LocalPrompts.conversationTask(for: "ok"), .short)
+        XCTAssertFalse(LocalPrompts.mailSummary.contains("Qui / quoi / quand"))
     }
 
     func testLocalFilesRootIdStable() {
         XCTAssertTrue(LocalFilesStore.isLocalRoot(LocalFilesStore.rootId))
+        XCTAssertTrue(LocalFilesStore.isLocalRoot(LocalFilesStore.documentsRootId))
         XCTAssertEqual(LocalFilesStore.root().enabled, true)
+        XCTAssertFalse((LocalFilesStore.root().absolutePath ?? "").hasPrefix("/var/mobile"))
+        XCTAssertTrue(LocalFilesStore.roots().contains(where: { $0.id == LocalFilesStore.documentsRootId }))
+    }
+}
+
+final class LocalParityWorkflowTests: XCTestCase {
+    func testMailIntentLatestFromInboxQuestion() {
+        let intent = MailIntentDetector.detect("Tu peux me donner mon dernier mail ?", hasOpenThread: false)
+        XCTAssertEqual(intent, .latest(count: 1))
+        XCTAssertTrue(intent.needsGmailSearch)
+        XCTAssertEqual(MailIntentDetector.gmailQuery(for: intent, userText: "x"), "in:inbox")
+        XCTAssertEqual(
+            MailIntentDetector.detect("Explique la théorie des cordes", hasOpenThread: false),
+            .none
+        )
+    }
+
+    func testMailIntentUnreadAndFrom() {
+        XCTAssertEqual(
+            MailIntentDetector.detect("Quels sont mes mails non lus ?", hasOpenThread: false),
+            .unread(count: 8)
+        )
+        if case .fromContact(let name) = MailIntentDetector.detect(
+            "Est-ce que j'ai reçu un mail de Pierre ?",
+            hasOpenThread: false
+        ) {
+            XCTAssertTrue(name.lowercased().contains("pierre"))
+        } else {
+            XCTFail("expected fromContact")
+        }
+    }
+
+    func testMailSignatureAppendedOnce() {
+        let body = "Bonjour,\n\nMerci pour votre retour."
+        let signed = MailSignature.appendOnce(body, name: "Nicolas")
+        XCTAssertTrue(signed.contains("Cordialement"))
+        XCTAssertEqual(signed.components(separatedBy: "Nicolas").count - 1, 1)
+        let twice = MailSignature.appendOnce(signed, name: "Nicolas")
+        XCTAssertEqual(twice.components(separatedBy: "Nicolas").count - 1, 1)
+    }
+
+    func testDuckDuckGoRedirectUnwrap() {
+        let href = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.ldlc.com%2Ffiche%2FPB123&rut=abc"
+        let url = WebURLNormalizer.unwrapDuckDuckGoRedirect(href)
+        XCTAssertEqual(url, "https://www.ldlc.com/fiche/PB123")
+        XCTAssertEqual(WebURLNormalizer.domain(from: url), "ldlc.com")
+    }
+
+    func testNumberedSourcesUseWebIndex() {
+        let sources = [
+            SearchSourceDTO(id: "web_1", title: "A", url: "https://a.example/x", domain: "a.example", snippet: "un"),
+            SearchSourceDTO(id: "web_2", title: "B", url: "https://b.example/y", domain: "b.example", snippet: "deux"),
+        ]
+        let block = WebURLNormalizer.numberedSourcesBlock(sources)
+        XCTAssertTrue(block.contains("[web_1]"))
+        XCTAssertTrue(block.contains("[web_2]"))
+        XCTAssertTrue(block.contains("https://a.example/x"))
+        XCTAssertFalse(block.contains("invented.example"))
+    }
+
+    func testCitationParserResolvesWebIndex() {
+        let sources = [
+            SearchSourceDTO(id: "web_1", title: "Tech", url: "https://techpowerup.example", domain: "techpowerup.example", snippet: nil),
+        ]
+        XCTAssertTrue(CitationParser.containsMarker("La carte est chère [web_1]."))
+        let segs = CitationParser.segments(in: "La carte est chère [web_1].", sources: sources)
+        XCTAssertFalse(segs.isEmpty)
+    }
+
+    func testGroundingPromptForbidsHallucination() {
+        XCTAssertTrue(WebGroundingPrompt.system().contains("UNIQUEMENT"))
+        XCTAssertTrue(WebGroundingPrompt.system().contains("web_N"))
+    }
+
+    func testGraniteAndPhiTemplatesAreModelSpecific() {
+        let granite = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Hi")],
+            charBudget: 2000,
+            profile: .granite
+        )
+        XCTAssertTrue(granite.contains("<|start_of_role|>user"))
+        XCTAssertFalse(granite.contains("<|im_start|>"))
+        let phi = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Hi")],
+            charBudget: 2000,
+            profile: .phi
+        )
+        XCTAssertTrue(phi.contains("<|user|>"))
+        XCTAssertTrue(LocalModelDescriptor.descriptor(id: "granite4-micro-q4_k_m")?.runtimeProfile.templateKind == .granite)
+        XCTAssertTrue(LocalModelDescriptor.descriptor(id: "phi4-mini-3.8b")?.runtimeProfile.templateKind == .phi)
+    }
+
+    func testDetailedBudgetLargerThanExplanation() {
+        let p = LocalModelExecutionProfile.compact
+        XCTAssertGreaterThan(p.outputTokens(for: .detailed), p.outputTokens(for: .explanation))
+        XCTAssertGreaterThan(p.outputTokens(for: .explanation), p.outputTokens(for: .short))
+    }
+
+    func testParseLocalFileId() {
+        let id = LocalFilesStore.fileId(rootId: "iphone-documents", relative: "Notes/a.txt")
+        let parsed = LocalFilesStore.parseFileId(id)
+        XCTAssertEqual(parsed?.rootId, "iphone-documents")
+        XCTAssertEqual(parsed?.relative, "Notes/a.txt")
+    }
+
+    func testHtmlResultParserExtractsHref() {
+        let html = """
+        <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.tomshardware.com%2Fgpu">Tom's Hardware GPU</a>
+        <a class="result__snippet">Benchmarks 1440p</a>
+        """
+        let hits = WebSearchTool.parseDuckDuckGoHTML(html, limit: 5, snippetBudget: 200)
+        XCTAssertFalse(hits.isEmpty)
+        XCTAssertTrue(hits[0].url.contains("tomshardware.com"))
+        XCTAssertEqual(hits[0].id, "web_1")
     }
 }

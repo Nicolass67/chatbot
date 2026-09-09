@@ -51,6 +51,12 @@
 			</array>
 		</dict>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Joindre des images aux messages du chat.</string>
 	<key>NSFaceIDUsageDescription</key>
