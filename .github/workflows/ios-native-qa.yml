@@ -72,7 +72,8 @@ jobs:
         env:
           INPUT_BASE_URL: ${{ github.event.inputs.base_url || '' }}
           VAR_BASE_URL: ${{ vars.CHATBOT_PUBLIC_BASE_URL }}
-          OAUTH_IOS_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_IOS_CLIENT_ID }}
+          OAUTH_IOS_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_IOS_CLIENT_ID }}
+          OAUTH_IOS_CLIENT_ID_VAR: ${{ vars.GOOGLE_OAUTH_IOS_CLIENT_ID }}
         run: |
           set -euo pipefail
           SHA_SHORT="${GITHUB_SHA:0:7}"
@@ -91,16 +92,15 @@ jobs:
           QA_HOST=$(echo "$URL" | sed -E 's#https://([^/]+).*#\1#')
           XC_URL=$(echo "$URL" | sed -E 's#https://#https:/$()/#')
           EXTRA_URL_LINE="CHATBOT_PUBLIC_BASE_URL = ${XC_URL}"
-          OAUTH_ID="${OAUTH_IOS_CLIENT_ID:-}"
-          OAUTH_LINES=""
+          OAUTH_ID="${OAUTH_IOS_CLIENT_ID:-${OAUTH_IOS_CLIENT_ID_VAR:-}}"
           if [ -n "$OAUTH_ID" ]; then
             PREFIX="${OAUTH_ID%.apps.googleusercontent.com}"
             if [ "$PREFIX" != "$OAUTH_ID" ] && [ -n "$PREFIX" ]; then
               OAUTH_SCHEME="com.googleusercontent.apps.${PREFIX}"
-              OAUTH_LINES=$(printf 'GOOGLE_OAUTH_IOS_CLIENT_ID = %s\nGOOGLE_OAUTH_IOS_URL_SCHEME = %s\n' "$OAUTH_ID" "$OAUTH_SCHEME")
+              # Pas dans QA.xcconfig (xcodebuild dump). Inject post-build.
               echo "QA_OAUTH_IOS_CLIENT_ID=$OAUTH_ID" >> "$GITHUB_ENV"
               echo "QA_OAUTH_IOS_URL_SCHEME=$OAUTH_SCHEME" >> "$GITHUB_ENV"
-              echo "OAuth iOS client: configured" >> "$GITHUB_STEP_SUMMARY"
+              echo "OAuth iOS client: configured (post-build inject)" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
           echo "QA base host: ${QA_HOST}" >> "$GITHUB_STEP_SUMMARY"
@@ -109,7 +109,6 @@ jobs:
           CURRENT_PROJECT_VERSION = ${QA_BUILD}
           QA_GIT_SHA = ${SHA_SHORT}
           ${EXTRA_URL_LINE}
-          ${OAUTH_LINES}
           GCC_PREPROCESSOR_DEFINITIONS = \$(inherited) QA_BUILD=1
           SWIFT_ACTIVE_COMPILATION_CONDITIONS = \$(inherited) QA_BUILD
           EOF
@@ -118,7 +117,7 @@ jobs:
           echo "QA_BASE_URL=${URL}" >> "$GITHUB_ENV"
           echo "QA_HOST=${QA_HOST}" >> "$GITHUB_ENV"
           echo "QA build=${QA_BUILD} sha=${SHA_SHORT}" >> "$GITHUB_STEP_SUMMARY"
-          sed -E 's/(GOOGLE_OAUTH_IOS_CLIENT_ID = ).*/\1<redacted>/' QA.xcconfig
+          cat QA.xcconfig
 
       - name: Generate Xcode project
         working-directory: apps/ios
@@ -172,6 +171,20 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :QAGitSHA string ${QA_GIT_SHA_SHORT}" "$APP_PATH/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Set :QAGitSHA ${QA_GIT_SHA_SHORT}" "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${QA_BUILD}" "$APP_PATH/Info.plist" || true
+          if [ -n "${QA_OAUTH_IOS_CLIENT_ID:-}" ]; then
+            /usr/libexec/PlistBuddy -c "Add :GoogleOAuthIosClientID string ${QA_OAUTH_IOS_CLIENT_ID}" "$APP_PATH/Info.plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :GoogleOAuthIosClientID ${QA_OAUTH_IOS_CLIENT_ID}" "$APP_PATH/Info.plist"
+            /usr/libexec/PlistBuddy -c "Add :GoogleOAuthIosURLScheme string ${QA_OAUTH_IOS_URL_SCHEME}" "$APP_PATH/Info.plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :GoogleOAuthIosURLScheme ${QA_OAUTH_IOS_URL_SCHEME}" "$APP_PATH/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:1:CFBundleURLSchemes:0 ${QA_OAUTH_IOS_URL_SCHEME}" "$APP_PATH/Info.plist" 2>/dev/null \
+              || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1 dict" "$APP_PATH/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLName string google-oauth-ios" "$APP_PATH/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLSchemes array" "$APP_PATH/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLSchemes:0 string ${QA_OAUTH_IOS_URL_SCHEME}" "$APP_PATH/Info.plist" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:1:CFBundleURLSchemes:0 ${QA_OAUTH_IOS_URL_SCHEME}" "$APP_PATH/Info.plist"
+            echo "Info.plist GoogleOAuthIosClientID: present"
+          fi
           rm -rf Payload ChatbotNative-unsigned.ipa
           mkdir Payload
           cp -R "$APP_PATH" Payload/

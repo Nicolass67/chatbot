@@ -99,16 +99,16 @@ jobs:
       - name: Generate Flash xcconfig
         working-directory: apps/ios
         env:
-          OAUTH_IOS_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_IOS_CLIENT_ID }}
+          # Secret (masqué dans les logs) — fallback var pour migration.
+          OAUTH_IOS_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_IOS_CLIENT_ID }}
+          OAUTH_IOS_CLIENT_ID_VAR: ${{ vars.GOOGLE_OAUTH_IOS_CLIENT_ID }}
         run: |
           set -euo pipefail
           SHA_SHORT="${GITHUB_SHA:0:7}"
           BASE_BUILD=$(grep -E 'CURRENT_PROJECT_VERSION:' project.yml | head -1 | sed -E 's/.*: *"([^"]+)".*/\1/')
           FLASH_BUILD="${BASE_BUILD}.${GITHUB_RUN_NUMBER}"
           XC_URL=$(echo "$FLASH_URL" | sed -E 's#https://#https:/$()/#')
-          OAUTH_ID="${OAUTH_IOS_CLIENT_ID:-}"
-          OAUTH_SCHEME=""
-          OAUTH_LINES=""
+          OAUTH_ID="${OAUTH_IOS_CLIENT_ID:-${OAUTH_IOS_CLIENT_ID_VAR:-}}"
           if [ -n "$OAUTH_ID" ]; then
             PREFIX="${OAUTH_ID%.apps.googleusercontent.com}"
             if [ "$PREFIX" = "$OAUTH_ID" ] || [ -z "$PREFIX" ]; then
@@ -116,10 +116,11 @@ jobs:
               exit 1
             fi
             OAUTH_SCHEME="com.googleusercontent.apps.${PREFIX}"
-            OAUTH_LINES=$(printf 'GOOGLE_OAUTH_IOS_CLIENT_ID = %s\nGOOGLE_OAUTH_IOS_URL_SCHEME = %s\n' "$OAUTH_ID" "$OAUTH_SCHEME")
+            # Ne PAS mettre le Client ID dans Flash.xcconfig : xcodebuild le dump en clair.
+            # Injection uniquement post-build via PlistBuddy (étape Package).
             echo "FLASH_OAUTH_IOS_CLIENT_ID=$OAUTH_ID" >> "$GITHUB_ENV"
             echo "FLASH_OAUTH_IOS_URL_SCHEME=$OAUTH_SCHEME" >> "$GITHUB_ENV"
-            echo "OAuth iOS client: configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "OAuth iOS client: configured (post-build inject)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "OAuth iOS client: missing (Gmail direct désactivé)" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -128,15 +129,13 @@ jobs:
           CURRENT_PROJECT_VERSION = ${FLASH_BUILD}
           QA_GIT_SHA = ${SHA_SHORT}
           CHATBOT_PUBLIC_BASE_URL = ${XC_URL}
-          ${OAUTH_LINES}
           GCC_PREPROCESSOR_DEFINITIONS = \$(inherited) QA_BUILD=1
           SWIFT_ACTIVE_COMPILATION_CONDITIONS = \$(inherited) QA_BUILD
           EOF
           echo "FLASH_BUILD=${FLASH_BUILD}" >> "$GITHUB_ENV"
           echo "QA_GIT_SHA_SHORT=${SHA_SHORT}" >> "$GITHUB_ENV"
           echo "Flash build=\`${FLASH_BUILD}\` sha=\`${SHA_SHORT}\` host=\`${FLASH_HOST}\`" >> "$GITHUB_STEP_SUMMARY"
-          # Ne jamais dumper le Client ID dans les logs CI.
-          sed -E 's/(GOOGLE_OAUTH_IOS_CLIENT_ID = ).*/\1<redacted>/' Flash.xcconfig
+          cat Flash.xcconfig
 
       - name: Cache llama XCFramework
         uses: actions/cache@v4

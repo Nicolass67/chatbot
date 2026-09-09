@@ -73,12 +73,9 @@ struct MailInboxView: View {
         APIClient(baseURL: session.baseURL, token: session.token)
     }
 
-    /// PC offline / mode local → Gmail API directe depuis l’iPhone.
+    /// Gmail direct dès qu’une session OAuth locale existe ; sinon PC / offline.
     private var useDirectGmail: Bool {
-        session.localOnlyMode
-            || executionMode.shouldUseLocalLLM
-            || executionMode.preference == .forceLocal
-            || infra.isPcConfirmedOffline
+        MailDataSource.prefersDirect(session: session, execution: executionMode, infra: infra)
     }
 
     private var rangeLabel: String {
@@ -411,7 +408,7 @@ struct MailInboxView: View {
     private func handleDirectGmailConnectionChange(_ connected: Bool) {
         Task {
             await loadOAuth()
-            if connected, useDirectGmail, messages.isEmpty {
+            if connected {
                 scheduleLoad(resetPagination: true)
             }
         }
@@ -419,7 +416,7 @@ struct MailInboxView: View {
 
     private var mailStack: some View {
         VStack(spacing: 0) {
-            if let banner = ServiceStatusBanner.backendContext(
+            if !useDirectGmail, let banner = ServiceStatusBanner.backendContext(
                 infra: infra,
                 surface: "Mail",
                 onRepair: { id in Task { await infra.repairService(id: id) } },
@@ -630,16 +627,20 @@ struct MailInboxView: View {
 
     private func loadOAuth() async {
         defer { oauthCheckCompleted = true }
-        if useDirectGmail {
-            gmailOAuth.restoreFromKeychain()
-            oauthConfigured = GmailOAuthConfig.isConfigured
-            if let email = gmailOAuth.email, gmailOAuth.isConnected {
+        gmailOAuth.restoreFromKeychain()
+        // Session Gmail directe (Settings) prime sur l’OAuth serveur PC.
+        if gmailOAuth.isConnected {
+            oauthConfigured = true
+            if let email = gmailOAuth.email, !email.isEmpty {
                 oauthEmails = [email]
-            } else if gmailOAuth.isConnected {
-                oauthEmails = ["Gmail connecté"]
             } else {
-                oauthEmails = []
+                oauthEmails = ["Gmail connecté"]
             }
+            return
+        }
+        if useDirectGmail {
+            oauthConfigured = GmailOAuthConfig.isConfigured
+            oauthEmails = []
             return
         }
         if let res = try? await client.oauthAccounts() {
@@ -1205,10 +1206,7 @@ struct MailThreadView: View {
     }
 
     private var useDirectGmail: Bool {
-        session.localOnlyMode
-            || executionMode.shouldUseLocalLLM
-            || executionMode.preference == .forceLocal
-            || infra.isPcConfirmedOffline
+        MailDataSource.prefersDirect(session: session, execution: executionMode, infra: infra)
     }
 
     private var threadId: String {
