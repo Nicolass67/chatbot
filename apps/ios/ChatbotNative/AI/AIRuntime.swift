@@ -200,12 +200,16 @@ final class LocalAIRuntime: AIRuntime {
         guard models.isReady else { throw AIRuntimeError.notReady }
 
         let profile = executionProfile
-        var template = chatTemplateProfile
         // Réflexion décidée par tour : elle change le préremplissage de l'en-tête
         // assistant (`<think>\n` au lieu d'un bloc think vide).
-        if let thinking = options.enableThinking {
-            template.enableThinking = thinking
-        }
+        // `let` obligatoire : le template est capturé par la closure de streaming.
+        let template: LocalModelRuntimeProfile = {
+            var base = chatTemplateProfile
+            if let thinking = options.enableThinking {
+                base.enableThinking = thinking
+            }
+            return base
+        }()
         let requested = max(32, maxTokens ?? profile.maxOutputTokens)
         var working = messages
         let visionImages = Array(images.prefix(LocalVision.maxImagesPerTurn))
