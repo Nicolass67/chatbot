@@ -125,16 +125,19 @@ enum LocalModelBenchmarkRunner {
             profile: profile
         )
         var output = ""
+        let accumulator = BenchmarkStringAccumulator()
         do {
             try await LocalInferenceEngine.shared.generate(prompt: chatPrompt, maxTokens: maxTokens) { piece in
-                output += piece
-                let cut = LocalChatTemplate.truncateAssistantOutput(output, profile: profile)
-                output = cut.text
+                accumulator.append(piece)
+                let cut = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: profile)
+                accumulator.replace(with: cut.text)
                 if cut.hitStop {
                     await LocalInferenceEngine.shared.cancel()
                 }
             }
+            output = accumulator.value
         } catch {
+            output = accumulator.value
             let metrics = await LocalInferenceEngine.shared.lastMetrics
             let diag = await LocalInferenceEngine.shared.lastLoadDiagnostics
             return base(
@@ -156,5 +159,26 @@ enum LocalModelBenchmarkRunner {
             metrics: metrics,
             diag: diag
         )
+    }
+}
+
+/// Accumulateur Sendable pour callbacks d’inférence concurrentes.
+private final class BenchmarkStringAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+
+    var value: String {
+        lock.lock(); defer { lock.unlock() }
+        return buffer
+    }
+
+    func append(_ piece: String) {
+        lock.lock(); defer { lock.unlock() }
+        buffer += piece
+    }
+
+    func replace(with text: String) {
+        lock.lock(); defer { lock.unlock() }
+        buffer = text
     }
 }
