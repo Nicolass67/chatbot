@@ -1,75 +1,203 @@
 import Foundation
 
-/// Construction ChatML (Qwen / ChatML) partagée Chat + Mail Assistant.
-/// Ne dépend pas du backend PC.
-enum ChatMLPromptBuilder {
-    static let imStart = "<|im_start|>"
-    static let imEnd = "<|im_end|>"
+/// Template / stop / sanitisation de sortie — **par profil de modèle**, pas hardcodé Qwen-only.
+struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
+    enum ChatTemplateKind: String, Sendable, Hashable {
+        case chatml
+        case gemma
+        case generic
+    }
 
-    /// Prompt multi-tours + amorce `assistant` (génération).
+    var templateKind: ChatTemplateKind
+    /// Tokens de contrôle à ne jamais afficher (ChatML, etc.).
+    var controlTokens: [String]
+    /// Séquences qui terminent la génération assistant.
+    var stopSequences: [String]
+    /// Suffixe optionnel pour désactiver le « thinking » (ex. Qwen3 `/no_think`).
+    var disableThinkingSuffix: String?
+    var defaultContextLength: Int
+    var defaultMaxOutputTokens: Int
+    var defaultTemperature: Double
+
+    static let chatmlQwen = LocalModelRuntimeProfile(
+        templateKind: .chatml,
+        controlTokens: [
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|endoftext|>",
+            "<think>",
+            "</think>",
+        ],
+        stopSequences: [
+            "<|im_end|>",
+            "<|im_start|>",
+            "<|endoftext|>",
+        ],
+        disableThinkingSuffix: " /no_think",
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+
+    static let gemma = LocalModelRuntimeProfile(
+        templateKind: .gemma,
+        controlTokens: [
+            "<start_of_turn>",
+            "<end_of_turn>",
+            "<|turn>",
+            "<turn|>",
+            "<eos>",
+        ],
+        stopSequences: [
+            "<end_of_turn>",
+            "<turn|>",
+            "<start_of_turn>",
+        ],
+        disableThinkingSuffix: nil,
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+
+    static let generic = LocalModelRuntimeProfile(
+        templateKind: .generic,
+        controlTokens: ["<|im_start|>", "<|im_end|>", "<|endoftext|>"],
+        stopSequences: ["<|im_end|>", "<|im_start|>", "\nUser:", "\nAssistant:"],
+        disableThinkingSuffix: nil,
+        defaultContextLength: 2048,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.7
+    )
+}
+
+/// Construction de prompt + troncature / sanitisation de sortie assistant.
+enum LocalChatTemplate {
+    /// Prompt multi-tours selon le profil runtime.
     static func buildPrompt(
         system: String,
         messages: [LLMChatMessage],
-        charBudget: Int
+        charBudget: Int,
+        profile: LocalModelRuntimeProfile
     ) -> String {
+        switch profile.templateKind {
+        case .chatml, .generic:
+            return buildChatML(system: system, messages: messages, charBudget: charBudget, profile: profile)
+        case .gemma:
+            return buildGemma(system: system, messages: messages, charBudget: charBudget)
+        }
+    }
+
+    static func buildPrompt(
+        system: String,
+        user: String,
+        profile: LocalModelRuntimeProfile
+    ) -> String {
+        var userText = user
+        if let suffix = profile.disableThinkingSuffix, !userText.contains(suffix) {
+            userText += suffix
+        }
+        return buildPrompt(
+            system: system,
+            messages: [LLMChatMessage(role: .user, content: userText)],
+            charBudget: Int.max,
+            profile: profile
+        )
+    }
+
+    // MARK: - ChatML
+
+    private static func buildChatML(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int,
+        profile: LocalModelRuntimeProfile
+    ) -> String {
+        let imStart = "<|im_start|>"
+        let imEnd = "<|im_end|>"
         var blocks: [String] = []
-        blocks.append(block(role: "system", content: system))
+        blocks.append("\(imStart)system\n\(system)\n\(imEnd)")
 
         var selected: [LLMChatMessage] = []
         var used = system.count + 32
         for message in messages.reversed() {
-            let cost = message.content.count + 40
-            if used + cost > charBudget, !selected.isEmpty {
-                break
+            var content = message.content
+            if message.role == .user, let suffix = profile.disableThinkingSuffix,
+               !content.contains("/no_think") {
+                content += suffix
             }
-            selected.insert(message, at: 0)
+            let cost = content.count + 40
+            if used + cost > charBudget, !selected.isEmpty { break }
+            selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
             used += cost
         }
 
         for message in selected {
-            // Les messages `system` additionnels restent dans le fil (rare).
-            blocks.append(block(role: message.role.rawValue, content: message.content))
+            blocks.append("\(imStart)\(message.role.rawValue)\n\(message.content)\n\(imEnd)")
         }
-        // Generation prompt — le modèle complète à partir d’ici.
         blocks.append("\(imStart)assistant\n")
         return blocks.joined(separator: "\n")
     }
 
-    /// Variante 1 tour user (Mail Assistant).
-    static func buildPrompt(system: String, user: String) -> String {
-        buildPrompt(
-            system: system,
-            messages: [LLMChatMessage(role: .user, content: user)],
-            charBudget: Int.max
-        )
+    private static func buildGemma(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int
+    ) -> String {
+        // Format Gemma 2/3 style (Gemma 4 peut différer — profil dédié plus tard).
+        var parts: [String] = []
+        if !system.isEmpty {
+            parts.append("<start_of_turn>user\n\(system)<end_of_turn>")
+        }
+        var selected: [LLMChatMessage] = []
+        var used = system.count + 32
+        for message in messages.reversed() {
+            let cost = message.content.count + 40
+            if used + cost > charBudget, !selected.isEmpty { break }
+            selected.insert(message, at: 0)
+            used += cost
+        }
+        for message in selected {
+            let role = message.role == .assistant ? "model" : "user"
+            parts.append("<start_of_turn>\(role)\n\(message.content)<end_of_turn>")
+        }
+        parts.append("<start_of_turn>model\n")
+        return parts.joined(separator: "\n")
     }
 
-    private static func block(role: String, content: String) -> String {
-        "\(imStart)\(role)\n\(content)\n\(imEnd)"
-    }
-
-    // MARK: - Stop / troncature sortie assistant
+    // MARK: - Sanitisation / stop
 
     struct TruncationResult: Equatable, Sendable {
         var text: String
         var hitStop: Bool
     }
 
-    /// Coupe la sortie assistant avant un nouveau tour (ChatML ou transcript legacy).
-    /// Ne coupe pas un simple mot « User: » au milieu d’une phrase : uniquement
-    /// séparateurs de tour en début de ligne / marqueurs ChatML.
-    static func truncateAssistantOutput(_ raw: String) -> TruncationResult {
+    /// Retire **tous** les tokens de contrôle connus + motifs `<|...|>`.
+    static func stripControlTokens(_ raw: String, profile: LocalModelRuntimeProfile) -> String {
+        var text = raw
+        for token in profile.controlTokens {
+            text = text.replacingOccurrences(of: token, with: "")
+        }
+        // Défense générique : balises <|...|> restantes.
+        if let regex = try? NSRegularExpression(pattern: #"<\|[^|>]*\|>"#, options: []) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        }
+        return text
+    }
+
+    /// Coupe avant stop + strip contrôle. Ne laisse jamais un token spécial visible.
+    static func truncateAssistantOutput(
+        _ raw: String,
+        profile: LocalModelRuntimeProfile = .chatmlQwen
+    ) -> TruncationResult {
         var text = raw
         var hit = false
 
-        if let range = text.range(of: imEnd) {
-            text = String(text[..<range.lowerBound])
-            hit = true
-        }
-
-        if let range = text.range(of: imStart) {
-            text = String(text[..<range.lowerBound])
-            hit = true
+        for stop in profile.stopSequences {
+            if let range = text.range(of: stop) {
+                text = String(text[..<range.lowerBound])
+                hit = true
+            }
         }
 
         if let idx = firstLegacyTurnBoundary(in: text) {
@@ -77,22 +205,93 @@ enum ChatMLPromptBuilder {
             hit = true
         }
 
-        // Nettoyage espaces / newlines trainants après coupe.
-        while text.hasSuffix("\n") || text.hasSuffix(" ") {
-            text.removeLast()
+        let stripped = stripControlTokens(text, profile: profile)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Si on a stripé des contrôles absents des stopSequences exacts.
+        if stripped.count < text.trimmingCharacters(in: .whitespacesAndNewlines).count {
+            hit = true
         }
 
-        return TruncationResult(text: text, hitStop: hit)
+        return TruncationResult(text: stripped, hitStop: hit)
     }
 
-    /// Index du premier `\nUser:` / `\nAssistant:` / `\nSystem:` en début de ligne
-    /// (après le début du buffer — un faux tour suivant).
+    /// Préfixe d’un token de contrôle / stop → ne pas encore émettre (évite `<|im_end|>` pièce par pièce).
+    static func isPartialControlPrefix(_ suffix: String, profile: LocalModelRuntimeProfile) -> Bool {
+        guard !suffix.isEmpty else { return false }
+        let candidates = profile.controlTokens + profile.stopSequences + ["<|", "<start_of_turn", "<end_of_turn"]
+        for candidate in candidates {
+            if candidate.hasPrefix(suffix), suffix.count < candidate.count {
+                return true
+            }
+            // Suffixe qui continue un candidat (ex. "<|im_en").
+            if candidate.count > 1 {
+                for len in 1..<min(suffix.count, candidate.count) {
+                    let end = suffix.suffix(len)
+                    if candidate.hasPrefix(String(end)), end.count < candidate.count {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// Streaming sûr : n’émet que du texte « gelé » (sans préfixe de token spécial).
+    static func streamingSafeEmit(
+        accumulated: String,
+        alreadyEmittedCount: Int,
+        profile: LocalModelRuntimeProfile
+    ) -> (emit: String, newEmittedCount: Int, hitStop: Bool, displayText: String) {
+        let cut = truncateAssistantOutput(accumulated, profile: profile)
+        if cut.hitStop {
+            let emit: String
+            if cut.text.count > alreadyEmittedCount {
+                let start = cut.text.index(cut.text.startIndex, offsetBy: alreadyEmittedCount)
+                emit = String(cut.text[start...])
+            } else {
+                emit = ""
+            }
+            return (emit, cut.text.count, true, cut.text)
+        }
+
+        // Retenir un suffixe qui pourrait être un token spécial en cours.
+        var frozen = cut.text
+        let maxHold = 24
+        if frozen.count > maxHold {
+            let holdStart = frozen.index(frozen.endIndex, offsetBy: -maxHold)
+            let suffix = String(frozen[holdStart...])
+            if isPartialControlPrefix(suffix, profile: profile) {
+                frozen = String(frozen[..<holdStart])
+            } else {
+                // Affiner : retenir le plus long suffixe qui est préfixe d’un contrôle.
+                for len in (1...min(maxHold, frozen.count)).reversed() {
+                    let idx = frozen.index(frozen.endIndex, offsetBy: -len)
+                    let suf = String(frozen[idx...])
+                    if isPartialControlPrefix(suf, profile: profile) {
+                        frozen = String(frozen[..<idx])
+                        break
+                    }
+                }
+            }
+        } else if isPartialControlPrefix(frozen, profile: profile) {
+            frozen = ""
+        }
+
+        let emit: String
+        if frozen.count > alreadyEmittedCount {
+            let start = frozen.index(frozen.startIndex, offsetBy: alreadyEmittedCount)
+            emit = String(frozen[start...])
+        } else {
+            emit = ""
+        }
+        return (emit, frozen.count, false, frozen)
+    }
+
     private static func firstLegacyTurnBoundary(in text: String) -> String.Index? {
         let markers = ["\nUser:", "\nAssistant:", "\nSystem:"]
         var earliest: String.Index?
         for marker in markers {
             if let range = text.range(of: marker) {
-                // Exiger que ce soit bien un rôle de tour : "User:" suivi d’espace ou fin.
                 let after = range.upperBound
                 let okSuffix: Bool
                 if after == text.endIndex {
@@ -108,5 +307,36 @@ enum ChatMLPromptBuilder {
             }
         }
         return earliest
+    }
+}
+
+/// Compat : ancien nom utilisé par les appels existants.
+enum ChatMLPromptBuilder {
+    static let imStart = "<|im_start|>"
+    static let imEnd = "<|im_end|>"
+
+    static func buildPrompt(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int
+    ) -> String {
+        LocalChatTemplate.buildPrompt(
+            system: system,
+            messages: messages,
+            charBudget: charBudget,
+            profile: .chatmlQwen
+        )
+    }
+
+    static func buildPrompt(system: String, user: String) -> String {
+        LocalChatTemplate.buildPrompt(system: system, user: user, profile: .chatmlQwen)
+    }
+
+    static func truncateAssistantOutput(_ raw: String) -> LocalChatTemplate.TruncationResult {
+        LocalChatTemplate.truncateAssistantOutput(raw, profile: .chatmlQwen)
+    }
+
+    static func stripControlTokens(_ raw: String) -> String {
+        LocalChatTemplate.stripControlTokens(raw, profile: .chatmlQwen)
     }
 }

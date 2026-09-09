@@ -35,6 +35,8 @@ enum LocalMailAssistantError: Error, LocalizedError, Sendable {
     case noResults
     case noPendingConfirmation
     case confirmationMismatch
+    case cancelled
+    case emptyMailContent
     case inference(String)
 
     var errorDescription: String? {
@@ -51,6 +53,10 @@ enum LocalMailAssistantError: Error, LocalizedError, Sendable {
             return "Aucune proposition d’envoi en attente."
         case .confirmationMismatch:
             return "La confirmation ne correspond plus à la proposition en cours."
+        case .cancelled:
+            return "Génération annulée."
+        case .emptyMailContent:
+            return "Ce mail n’a pas de contenu texte exploitable pour l’IA locale."
         case .inference(let detail):
             return detail
         }
@@ -58,9 +64,6 @@ enum LocalMailAssistantError: Error, LocalizedError, Sendable {
 }
 
 /// Assistant mail **100 % local** : Gmail API device + `LocalInferenceEngine` (pas de PC).
-///
-/// Règle d’or : `draftReply` propose un texte ; seul `confirmSend` appelle
-/// `sendDraft` / `sendMessage` après action utilisateur explicite.
 @MainActor
 final class LocalMailAssistant: ObservableObject {
     @Published private(set) var pendingConfirmation: MailSendConfirmation?
@@ -70,11 +73,6 @@ final class LocalMailAssistant: ObservableObject {
     private let gmail: DirectGmailClient
     private let oauth: GmailOAuthSession
     private let inference: LocalInferenceEngine
-
-    /// Budget contexte Qwen3 1.7B — tronquer le corps mail.
-    private let maxMailChars = 6_000
-    private let maxAnswerTokens = 512
-    private let maxDraftTokens = 400
 
     init(
         oauth: GmailOAuthSession = .shared,
@@ -86,9 +84,21 @@ final class LocalMailAssistant: ObservableObject {
         self.inference = inference
     }
 
+    private var runtimeProfile: LocalModelRuntimeProfile {
+        LocalModelManager.shared.activeRuntimeProfile
+    }
+
+    private var executionProfile: LocalModelExecutionProfile {
+        LocalModelManager.shared.activeDescriptor.executionProfile
+    }
+
+    private var maxMailChars: Int { executionProfile.maxMailBodyChars }
+    private var maxAnswerTokens: Int { executionProfile.maxOutputTokens }
+    private var maxDraftTokens: Int { min(320, executionProfile.maxOutputTokens) }
+    private var maxMailMessages: Int { executionProfile.maxMailMessages }
+
     // MARK: - Search + answer
 
-    /// Recherche Gmail puis réponse locale (faits issus des résultats uniquement).
     func searchAndAnswer(_ userQuery: String) async throws -> String {
         let query = userQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { throw LocalMailAssistantError.emptyQuery }
@@ -99,10 +109,10 @@ final class LocalMailAssistant: ObservableObject {
         lastError = nil
         defer { isBusy = false }
 
-        let page = try await gmail.listMessages(query: query, pageToken: nil, maxResults: 8)
+        let page = try await gmail.listMessages(query: query, pageToken: nil, maxResults: maxMailMessages)
         guard !page.messages.isEmpty else { throw LocalMailAssistantError.noResults }
 
-        let context = page.messages.prefix(8).enumerated().map { idx, m in
+        let context = page.messages.prefix(maxMailMessages).enumerated().map { idx, m in
             """
             [\(idx + 1)] id=\(m.id)
             De: \(m.from ?? "—")
@@ -112,7 +122,7 @@ final class LocalMailAssistant: ObservableObject {
             """
         }.joined(separator: "\n\n")
 
-        let prompt = Self.buildPrompt(
+        let prompt = buildPrompt(
             system: LocalPrompts.mailExtract,
             user: """
             Question de l’utilisateur :
@@ -132,14 +142,37 @@ final class LocalMailAssistant: ObservableObject {
         guard !id.isEmpty else { throw LocalMailAssistantError.emptyQuery }
         try ensureGmailConnected()
         try await ensureModelReady()
+        try Task.checkCancellation()
 
         isBusy = true
         lastError = nil
         defer { isBusy = false }
 
         let thread = try await gmail.getThread(id: id)
-        let body = truncatedMailBody(thread.bodyPlain ?? thread.messages.compactMap(\.bodyPlain).joined(separator: "\n\n"))
-        let prompt = Self.buildPrompt(
+        try Task.checkCancellation()
+
+        let joinedBodies = thread.messages
+            .compactMap(\.bodyPlain)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+        let rawBody: String = {
+            if let plain = thread.bodyPlain,
+               !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return plain
+            }
+            return joinedBodies
+        }()
+        let body = truncatedMailBody(sanitizeMailText(rawBody))
+        let snippetFallback = thread.messages.compactMap(\.snippet).joined(separator: " · ")
+        let content: String = {
+            if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return body
+            }
+            if !snippetFallback.isEmpty { return snippetFallback }
+            return "(Contenu texte indisponible — résume à partir des métadonnées uniquement.)"
+        }()
+
+        let prompt = buildPrompt(
             system: LocalPrompts.mailSummary,
             user: """
             Fil Gmail à résumer.
@@ -148,7 +181,7 @@ final class LocalMailAssistant: ObservableObject {
             Date: \(thread.date ?? "—")
 
             Contenu :
-            \(body)
+            \(content)
             """
         )
         return try await generateText(prompt: prompt, maxTokens: maxAnswerTokens)
@@ -156,7 +189,6 @@ final class LocalMailAssistant: ObservableObject {
 
     // MARK: - Draft reply (NO send)
 
-    /// Propose un texte de réponse. **N’envoie pas** le mail.
     @discardableResult
     func draftReply(threadId: String, instruction: String) async throws -> MailSendConfirmation {
         let id = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -164,13 +196,27 @@ final class LocalMailAssistant: ObservableObject {
         guard !id.isEmpty else { throw LocalMailAssistantError.emptyQuery }
         try ensureGmailConnected()
         try await ensureModelReady()
+        try Task.checkCancellation()
 
         isBusy = true
         lastError = nil
         defer { isBusy = false }
 
         let thread = try await gmail.getThread(id: id)
-        let body = truncatedMailBody(thread.bodyPlain ?? "")
+        try Task.checkCancellation()
+
+        let joinedBodies = thread.messages
+            .compactMap(\.bodyPlain)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+        let rawBody: String = {
+            if let plain = thread.bodyPlain,
+               !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return plain
+            }
+            return joinedBodies
+        }()
+        let body = truncatedMailBody(sanitizeMailText(rawBody))
         let to = Self.extractReplyAddress(from: thread.from) ?? ""
         let subject: String = {
             let s = thread.subject ?? ""
@@ -178,7 +224,7 @@ final class LocalMailAssistant: ObservableObject {
             return s.isEmpty ? "Re:" : "Re: \(s)"
         }()
 
-        let prompt = Self.buildPrompt(
+        let prompt = buildPrompt(
             system: LocalPrompts.mailReplyDraft,
             user: """
             Instruction utilisateur (rédaction uniquement, pas d’envoi) :
@@ -189,7 +235,7 @@ final class LocalMailAssistant: ObservableObject {
             De: \(thread.from ?? "—")
 
             Contenu :
-            \(body)
+            \(body.isEmpty ? "(corps vide)" : body)
 
             Réponds uniquement avec le corps du mail proposé (texte brut).
             """
@@ -197,16 +243,21 @@ final class LocalMailAssistant: ObservableObject {
         let proposed = try await generateText(prompt: prompt, maxTokens: maxDraftTokens)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Brouillon Gmail optionnel (compose) — toujours avant confirmation d’envoi.
+        // Brouillon Gmail optionnel — échec réseau ≠ crash ; on garde quand même la proposition.
         var draftId: String?
         if !to.isEmpty {
-            let draft = try await gmail.createDraft(
-                to: to,
-                subject: subject,
-                body: proposed,
-                threadId: thread.threadId ?? thread.id
-            )
-            draftId = draft.id
+            do {
+                let draft = try await gmail.createDraft(
+                    to: to,
+                    subject: subject,
+                    body: proposed,
+                    threadId: thread.threadId ?? thread.id
+                )
+                draftId = draft.id
+            } catch {
+                // Non fatal : l’utilisateur peut copier / confirmer plus tard.
+                lastError = "Proposition prête (brouillon Gmail non créé : \(error.localizedDescription))"
+            }
         }
 
         let confirmation = MailSendConfirmation(
@@ -222,7 +273,6 @@ final class LocalMailAssistant: ObservableObject {
 
     // MARK: - Confirmation gate
 
-    /// Seul point d’entrée autorisé pour un envoi Gmail depuis l’assistant local.
     func confirmSend(_ confirmation: MailSendConfirmation? = nil) async throws {
         guard let pending = confirmation ?? pendingConfirmation else {
             throw LocalMailAssistantError.noPendingConfirmation
@@ -256,6 +306,10 @@ final class LocalMailAssistant: ObservableObject {
         pendingConfirmation = nil
     }
 
+    func cancelGeneration() async {
+        await inference.cancel()
+    }
+
     // MARK: - Helpers
 
     private func ensureGmailConnected() throws {
@@ -275,32 +329,66 @@ final class LocalMailAssistant: ObservableObject {
     }
 
     private func generateText(prompt: String, maxTokens: Int) async throws -> String {
+        let profile = runtimeProfile
         let accumulator = StringAccumulator()
         do {
-            try await inference.generate(prompt: prompt, maxTokens: maxTokens) { piece in
+            try await inference.generate(prompt: prompt, maxTokens: maxTokens) { [inference] piece in
                 accumulator.append(piece)
+                let cut = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: profile)
+                if cut.hitStop {
+                    accumulator.replace(with: cut.text)
+                    await inference.cancel()
+                }
             }
         } catch let error as LocalInferenceError {
+            // Cancel après stop volontaire → cancelled ; on accepte le texte déjà tronqué.
+            if case .cancelled = error {
+                let truncated = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: profile).text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !truncated.isEmpty { return truncated }
+                throw LocalMailAssistantError.cancelled
+            }
             let message = error.localizedDescription
             lastError = message
             throw LocalMailAssistantError.inference(message)
+        } catch is CancellationError {
+            let truncated = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: profile).text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !truncated.isEmpty { return truncated }
+            throw LocalMailAssistantError.cancelled
         } catch {
             let message = error.localizedDescription
             lastError = message
             throw LocalMailAssistantError.inference(message)
         }
-        let truncated = ChatMLPromptBuilder.truncateAssistantOutput(accumulator.value).text
+
+        let truncated = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: profile).text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !truncated.isEmpty else {
-            throw LocalMailAssistantError.inference("Réponse vide du modèle local.")
+            throw LocalMailAssistantError.inference(
+                "Le modèle n’a produit aucune réponse exploitable. Réessaie ou vérifie que le modèle est chargé."
+            )
         }
         return truncated
+    }
+
+    private func buildPrompt(system: String, user: String) -> String {
+        LocalChatTemplate.buildPrompt(system: system, user: user, profile: runtimeProfile)
     }
 
     private func truncatedMailBody(_ text: String) -> String {
         if text.count <= maxMailChars { return text }
         let idx = text.index(text.startIndex, offsetBy: maxMailChars)
         return String(text[..<idx]) + "\n…[tronqué]"
+    }
+
+    /// Retire null bytes / contrôles qui peuvent faire planter le tokenizer.
+    private func sanitizeMailText(_ text: String) -> String {
+        let filtered = text.unicodeScalars.filter { scalar in
+            scalar.value == 9 || scalar.value == 10 || scalar.value == 13
+                || (scalar.value >= 32 && scalar.value != 127)
+        }
+        return String(String.UnicodeScalarView(filtered))
     }
 
     private static func extractReplyAddress(from fromHeader: String?) -> String? {
@@ -314,12 +402,6 @@ final class LocalMailAssistant: ObservableObject {
         let trimmed = fromHeader.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.contains("@") ? trimmed : nil
     }
-
-    private static func buildPrompt(system: String, user: String) -> String {
-        // ChatML Qwen — builder partagé avec le Chat local (`ChatMLPromptBuilder`).
-        ChatMLPromptBuilder.buildPrompt(system: system, user: user)
-    }
-
 }
 
 /// Accumulateur thread-safe pour callbacks `@Sendable` de génération.
@@ -337,5 +419,11 @@ private final class StringAccumulator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         buffer += piece
+    }
+
+    func replace(with text: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer = text
     }
 }

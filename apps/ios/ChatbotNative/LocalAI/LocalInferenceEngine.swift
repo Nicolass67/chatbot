@@ -30,11 +30,36 @@ enum LocalInferenceError: Error, LocalizedError, Sendable {
     }
 }
 
-struct LocalInferenceMetrics: Sendable, Equatable {
+struct LocalInferenceMetrics: Sendable, Equatable, Codable {
     var loadDuration: TimeInterval?
+    var promptEvalSeconds: TimeInterval?
     var timeToFirstToken: TimeInterval?
-    var tokensPerSecond: Double?
+    var generationSeconds: TimeInterval?
+    var totalSeconds: TimeInterval?
+    var promptTokens: Int
     var generatedTokens: Int
+    var promptTokensPerSecond: Double?
+    var tokensPerSecond: Double?
+    var cancellationLatencyMs: Double?
+    var peakMemoryBytesHint: UInt64?
+    var backendEffective: String?
+    var nGpuLayersConfigured: Int32?
+
+    static let empty = LocalInferenceMetrics(
+        loadDuration: nil,
+        promptEvalSeconds: nil,
+        timeToFirstToken: nil,
+        generationSeconds: nil,
+        totalSeconds: nil,
+        promptTokens: 0,
+        generatedTokens: 0,
+        promptTokensPerSecond: nil,
+        tokensPerSecond: nil,
+        cancellationLatencyMs: nil,
+        peakMemoryBytesHint: nil,
+        backendEffective: nil,
+        nGpuLayersConfigured: nil
+    )
 }
 
 /// Moteur d’inférence locale — encapsule `LlamaContext` derrière `#if canImport(llama)`.
@@ -50,12 +75,8 @@ actor LocalInferenceEngine {
     private var llama: LlamaContext?
 #endif
 
-    private(set) var lastMetrics = LocalInferenceMetrics(
-        loadDuration: nil,
-        timeToFirstToken: nil,
-        tokensPerSecond: nil,
-        generatedTokens: 0
-    )
+    private(set) var lastMetrics = LocalInferenceMetrics.empty
+    private(set) var lastLoadDiagnostics: LlamaLoadDiagnostics?
 
     var isModelLoaded: Bool { isLoaded }
     var modelPath: String? { loadedPath }
@@ -68,7 +89,12 @@ actor LocalInferenceEngine {
 #endif
     }
 
-    func load(path: String) async throws {
+    func load(
+        path: String,
+        config: LlamaInferenceConfig = .a15Default,
+        modelId: String? = nil,
+        quant: String? = nil
+    ) async throws {
         LocalModelFileAudit.snapshotFS(point: "E-engine-load-start", finalPath: path)
         guard FileManager.default.fileExists(atPath: path) else {
             LocalModelFileAudit.snapshotFS(point: "E-engine-load-missing", finalPath: path)
@@ -102,22 +128,34 @@ actor LocalInferenceEngine {
         let started = Date()
         do {
             LocalModelFileAudit.snapshotFS(point: "E-before-create_context-call", finalPath: path)
-            let ctx = try LlamaContext.create_context(path: path)
+            let ctx = try LlamaContext.create_context(
+                path: path,
+                config: config,
+                modelId: modelId,
+                quant: quant
+            )
             LocalModelFileAudit.snapshotFS(point: "E-after-create_context-ok", finalPath: path)
             llama = ctx
             isLoaded = true
             loadedPath = path
-            lastMetrics.loadDuration = Date().timeIntervalSince(started)
+            lastLoadDiagnostics = LlamaContext.lastDiagnostics
+            var metrics = lastMetrics
+            metrics.loadDuration = Date().timeIntervalSince(started)
+            metrics.backendEffective = lastLoadDiagnostics?.backendEffective
+            metrics.nGpuLayersConfigured = lastLoadDiagnostics?.nGpuLayersConfigured
+            lastMetrics = metrics
         } catch let LlamaError.couldNotInitializeContext(detail) {
             isLoaded = false
             loadedPath = nil
             llama = nil
+            lastLoadDiagnostics = LlamaContext.lastDiagnostics
             LocalModelFileAudit.snapshotFS(point: "E-after-create_context-fail", finalPath: path)
             throw LocalInferenceError.loadFailed(detail)
         } catch {
             isLoaded = false
             loadedPath = nil
             llama = nil
+            lastLoadDiagnostics = LlamaContext.lastDiagnostics
             LocalModelFileAudit.snapshotFS(point: "E-after-create_context-error", finalPath: path)
             let ns = error as NSError
             if ns.domain == NSPOSIXErrorDomain && ns.code == ENOMEM {
@@ -127,6 +165,9 @@ actor LocalInferenceEngine {
         }
 #else
         _ = path
+        _ = config
+        _ = modelId
+        _ = quant
         throw LocalInferenceError.notAvailable
 #endif
     }
@@ -227,20 +268,49 @@ actor LocalInferenceEngine {
         }
 
         let tokenCount = counter.count
-        var metrics = LocalInferenceMetrics(
-            loadDuration: lastMetrics.loadDuration,
-            timeToFirstToken: nil,
-            tokensPerSecond: nil,
-            generatedTokens: tokenCount
-        )
+        let totalSec = Date().timeIntervalSince(started)
+        let promptSec = llama.lastPromptEvalSeconds
+        let promptTok = llama.promptTokenCount
+        var metrics = LocalInferenceMetrics.empty
+        metrics.loadDuration = lastMetrics.loadDuration
+        metrics.backendEffective = lastLoadDiagnostics?.backendEffective ?? lastMetrics.backendEffective
+        metrics.nGpuLayersConfigured = lastLoadDiagnostics?.nGpuLayersConfigured ?? lastMetrics.nGpuLayersConfigured
+        metrics.promptEvalSeconds = promptSec
+        metrics.promptTokens = promptTok
+        metrics.generatedTokens = tokenCount
+        metrics.totalSeconds = totalSec
+        if promptSec > 0, promptTok > 0 {
+            metrics.promptTokensPerSecond = Double(promptTok) / promptSec
+        }
         if let first = counter.firstTokenDate {
             metrics.timeToFirstToken = first.timeIntervalSince(started)
-        }
-        let totalSec = Date().timeIntervalSince(started)
-        if totalSec > 0, tokenCount > 0 {
+            let genSec = Date().timeIntervalSince(first)
+            metrics.generationSeconds = genSec
+            if genSec > 0, tokenCount > 0 {
+                // tok/s génération (hors prefill) — plus honnête que total.
+                metrics.tokensPerSecond = Double(tokenCount) / genSec
+            }
+        } else if totalSec > 0, tokenCount > 0 {
             metrics.tokensPerSecond = Double(tokenCount) / totalSec
         }
+        if cancelGeneration || Task.isCancelled {
+            metrics.cancellationLatencyMs = Date().timeIntervalSince(started) * 1000
+        }
         lastMetrics = metrics
+        print(
+            String(
+                format: "[local-ai:perf] backend=%@ gpuLayers=%d prompt=%d tok (%.0fms, %.1f t/s) gen=%d tok TTFT=%.0fms gen=%.1f t/s total=%.0fms",
+                metrics.backendEffective ?? "?",
+                metrics.nGpuLayersConfigured ?? -999,
+                metrics.promptTokens,
+                (metrics.promptEvalSeconds ?? 0) * 1000,
+                metrics.promptTokensPerSecond ?? 0,
+                metrics.generatedTokens,
+                (metrics.timeToFirstToken ?? 0) * 1000,
+                metrics.tokensPerSecond ?? 0,
+                totalSec * 1000
+            )
+        )
 #else
         _ = prompt
         _ = maxTokens
@@ -257,6 +327,7 @@ actor LocalInferenceEngine {
         loadedPath = nil
         cancelGeneration = false
         generationInFlight = false
+        lastLoadDiagnostics = nil
     }
 #endif
 }

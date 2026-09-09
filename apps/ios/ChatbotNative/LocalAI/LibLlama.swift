@@ -159,8 +159,9 @@ func llama_batch_add(
     batch.n_tokens += 1
 }
 
-/// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 2048` (KV cache iPhone).
-/// Backend **CPU forcé** (Metal via `devices=NULL` fait échouer le load sur iPhone).
+/// Contexte llama.cpp — paramètres via `LlamaInferenceConfig` (ExecutionProfile).
+/// Historique : CPU était **forcé** (`n_gpu_layers=0`) car Metal+devices NULL échouait.
+/// Désormais : tentative Metal + GPU layers, fallback CPU automatique (pas de régression load).
 /// Classe `@unchecked Sendable` (pointeurs C) : accès sérialisé via `LocalInferenceEngine` (actor).
 final class LlamaContext: @unchecked Sendable {
     private var model: OpaquePointer
@@ -171,22 +172,39 @@ final class LlamaContext: @unchecked Sendable {
     private var tokens_list: [llama_token]
     private var temporary_invalid_cchars: [CChar]
     private var cancelRequested = false
+    private let inferenceConfig: LlamaInferenceConfig
+
+    /// Dernier diagnostic de load (thread-safe via lock).
+    private static let diagLock = NSLock()
+    private static var _lastDiagnostics: LlamaLoadDiagnostics?
+    static var lastDiagnostics: LlamaLoadDiagnostics? {
+        diagLock.lock(); defer { diagLock.unlock() }
+        return _lastDiagnostics
+    }
 
     var is_done: Bool = false
     /// Longueur max de génération (tokens prompt + completion).
     var n_len: Int32 = 1024
     var n_cur: Int32 = 0
     var n_decode: Int32 = 0
+    /// Tokens du prompt après `completion_init`.
+    private(set) var promptTokenCount: Int = 0
+    /// Secondes d’évaluation prompt (préfill).
+    private(set) var lastPromptEvalSeconds: TimeInterval = 0
 
-    init(model: OpaquePointer, context: OpaquePointer) {
+    init(model: OpaquePointer, context: OpaquePointer, config: LlamaInferenceConfig) {
         self.model = model
         self.context = context
+        self.inferenceConfig = config
         self.tokens_list = []
-        self.batch = llama_batch_init(512, 0, 1)
+        let batchCap = Int(max(config.nBatch, 64))
+        self.batch = llama_batch_init(Int32(batchCap), 0, 1)
         self.temporary_invalid_cchars = []
         let sparams = llama_sampler_chain_default_params()
         self.sampling = llama_sampler_chain_init(sparams)
-        llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
+        llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(config.temperature))
+        // top-p si disponible dans la chaîne (meilleure qualité sans coût mesurable).
+        llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(config.topP, 1))
         llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
         vocab = llama_model_get_vocab(model)
     }
@@ -199,7 +217,51 @@ final class LlamaContext: @unchecked Sendable {
         // Ne pas appeler llama_backend_free() ici — une seule fois pour le process.
     }
 
-    static func create_context(path: String) throws -> LlamaContext {
+    static func probeBackends() -> LlamaBackendProbe {
+        ggml_backend_load_all()
+        var metalName: String?
+        var cpuName: String?
+        var summaries: [String] = []
+        let count = Int(ggml_backend_dev_count())
+        for i in 0..<count {
+            guard let dev = ggml_backend_dev_get(UInt32(i)) else { continue }
+            let type = ggml_backend_dev_type(dev)
+            let name = String(cString: ggml_backend_dev_name(dev))
+            let typeLabel: String
+            switch type {
+            case GGML_BACKEND_DEVICE_TYPE_CPU: typeLabel = "CPU"; cpuName = name
+            case GGML_BACKEND_DEVICE_TYPE_GPU: typeLabel = "GPU"; if metalName == nil { metalName = name }
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL: typeLabel = "ACCEL"
+            default: typeLabel = "OTHER"
+            }
+            // Metal apparaît typiquement comme GPU nommé « Metal ».
+            if name.localizedCaseInsensitiveContains("metal") {
+                metalName = name
+            }
+            summaries.append("\(typeLabel):\(name)")
+        }
+        if metalName == nil, let gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) {
+            metalName = String(cString: ggml_backend_dev_name(gpu))
+        }
+        if cpuName == nil, let cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) {
+            cpuName = String(cString: ggml_backend_dev_name(cpu))
+        }
+        return LlamaBackendProbe(
+            metalAvailable: metalName != nil,
+            metalName: metalName,
+            cpuAvailable: cpuName != nil,
+            cpuName: cpuName,
+            deviceCount: count,
+            deviceSummaries: summaries
+        )
+    }
+
+    static func create_context(
+        path: String,
+        config: LlamaInferenceConfig = .a15Default,
+        modelId: String? = nil,
+        quant: String? = nil
+    ) throws -> LlamaContext {
         // F — juste avant create_context (entrée)
         LocalModelFileAudit.snapshotFS(point: "F-before-create_context", finalPath: path)
         let fm = FileManager.default
@@ -216,98 +278,210 @@ final class LlamaContext: @unchecked Sendable {
         LlamaLogCapture.shared.clear()
         llamaInstallLogCapture()
 
-        // Charge les backends dynamiques (CPU / Metal) puis force CPU pour le modèle.
+        let loadStarted = Date()
         ggml_backend_load_all()
         llama_backend_init()
+        let probe = probeBackends()
+        print("[local-ai:backends] \(probe.deviceSummaries.joined(separator: ", "))")
 
+#if targetEnvironment(simulator)
+        let wantMetal = false
+#else
+        let wantMetal = config.preferMetal && probe.metalAvailable && config.nGpuLayers != 0
+#endif
+
+        var fellBack = false
+        var fallbackReason: String?
+        var effectiveBackend = wantMetal ? "metal" : "cpu"
+        var usedMmap = config.useMmap
+        var configuredGpuLayers: Int32 = wantMetal ? config.nGpuLayers : 0
+
+        // 1) Tentative Metal (si demandé) — échec → CPU (chemin historique stable).
+        var model: OpaquePointer?
+        if wantMetal {
+            do {
+                model = try loadModelPreferring(
+                    path: path,
+                    size: size,
+                    nGpuLayers: config.nGpuLayers,
+                    useMetal: true,
+                    useMmap: config.useMmap,
+                    metalName: probe.metalName
+                )
+                if model == nil {
+                    fellBack = true
+                    fallbackReason = "metal_load_nil"
+                    effectiveBackend = "cpu"
+                    configuredGpuLayers = 0
+                    print("[local-ai:metal] load failed → fallback CPU. \(LlamaLogCapture.shared.summary)")
+                }
+            } catch {
+                fellBack = true
+                fallbackReason = error.localizedDescription
+                effectiveBackend = "cpu"
+                configuredGpuLayers = 0
+                model = nil
+                print("[local-ai:metal] error → fallback CPU: \(error.localizedDescription)")
+            }
+        }
+
+        if model == nil {
+            effectiveBackend = "cpu"
+            configuredGpuLayers = 0
+            model = try loadModelPreferring(
+                path: path,
+                size: size,
+                nGpuLayers: 0,
+                useMetal: false,
+                useMmap: config.useMmap,
+                metalName: nil
+            )
+            // Si mmap échoue côté CPU, loadModelPreferring retente sans mmap.
+            if model == nil {
+                usedMmap = false
+                model = try loadModelPreferring(
+                    path: path,
+                    size: size,
+                    nGpuLayers: 0,
+                    useMetal: false,
+                    useMmap: false,
+                    metalName: nil
+                )
+            }
+        }
+
+        guard let model else {
+            LocalModelFileAudit.snapshotFS(point: "H-after-all-loadModel-fail", finalPath: path)
+            throw LlamaError.couldNotInitializeContext(
+                "chargement GGUF impossible (\(byteLabel(size))).\(LlamaLogCapture.shared.summary)"
+            )
+        }
+
+        let nLayers = llama_model_n_layer(model)
+        let ctx = try finishContext(model: model, config: config)
+        let loadMs = Date().timeIntervalSince(loadStarted) * 1000
+        let threads = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreads)
+        let threadsBatch = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreadsBatch ?? config.nThreads)
+        // Estimation grossière KV f16 : 2 * n_layer * n_ctx * n_embd * 2 bytes — n_embd inconnu → hint ctx*layers.
+        let kvHint = Int64(config.nCtx) * Int64(max(nLayers, 1)) * 256
+
+        let diag = LlamaLoadDiagnostics(
+            modelPath: path,
+            modelId: modelId,
+            quant: quant,
+            fileBytes: size,
+            backendRequested: wantMetal ? "metal" : "cpu",
+            backendEffective: effectiveBackend,
+            metalAvailable: probe.metalAvailable,
+            metalDeviceName: probe.metalName,
+            cpuDeviceName: probe.cpuName,
+            nGpuLayersConfigured: configuredGpuLayers,
+            nLayerModel: nLayers,
+            nCtx: config.nCtx,
+            nBatch: config.nBatch,
+            nUbatch: config.nUbatch,
+            nThreads: threads,
+            nThreadsBatch: threadsBatch,
+            flashAttention: config.flashAttention.rawValue,
+            usedMmap: usedMmap,
+            loadDurationMs: loadMs,
+            fellBackToCPU: fellBack || effectiveBackend == "cpu" && wantMetal,
+            fallbackReason: fallbackReason,
+            llamaLogTail: LlamaLogCapture.shared.summary,
+            estimatedKVBytesHint: kvHint
+        )
+        diagLock.lock()
+        _lastDiagnostics = diag
+        diagLock.unlock()
+        print("[local-ai:load] \(diag.summaryLine)")
+        return ctx
+    }
+
+    /// Charge le GGUF avec backend Metal ou CPU.
+    private static func loadModelPreferring(
+        path: String,
+        size: Int64,
+        nGpuLayers: Int32,
+        useMetal: Bool,
+        useMmap: Bool,
+        metalName: String?
+    ) throws -> OpaquePointer? {
         guard let cpuDev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) else {
             throw LlamaError.couldNotInitializeContext(
                 "backend CPU introuvable.\(LlamaLogCapture.shared.summary)"
             )
         }
 
-        // Liste NULL-terminée exigée par llama_model_params.devices.
-        let deviceSlots = UnsafeMutablePointer<ggml_backend_dev_t?>.allocate(capacity: 2)
+        let deviceSlots = UnsafeMutablePointer<ggml_backend_dev_t?>.allocate(capacity: 3)
         defer { deviceSlots.deallocate() }
-        deviceSlots[0] = cpuDev
-        deviceSlots[1] = nil
 
-        var model_params = llama_model_default_params()
-        model_params.n_gpu_layers = 0
-        model_params.load_mode = LLAMA_LOAD_MODE_MMAP
-        // Importé en Swift comme `UnsafeMutablePointer<ggml_backend_dev_t?>`.
-        model_params.devices = deviceSlots
-
-        let model = loadModel(at: path, params: model_params)
-        guard let model else {
-            // Fallback sans mmap (certains volumes iOS / data-protection).
-            model_params.load_mode = LLAMA_LOAD_MODE_NONE
-            let retry = loadModel(at: path, params: model_params)
-            guard let retry else {
-                // `FileManager` et `FileHandle` ont déjà ouvert le même fichier
-                // avec succès ci-dessus. Certaines builds iOS de llama.cpp échouent
-                // néanmoins à faire `fopen` sur le segment "Application Support".
-                // Ne copions qu'en présence de cet ENOENT précis : un échec mémoire
-                // ou de parsing ne doit pas consommer 1,2 Go supplémentaires.
-                if LlamaLogCapture.shared.reportsMissingGGUF {
-                    LocalModelFileAudit.snapshotFS(point: "before-stageForLlama", finalPath: path)
-                    LocalModelFileAudit.logFSOp(
-                        "stageForLlama",
-                        phase: "enter",
-                        result: "pending",
-                        source: path,
-                        watchedFinalPath: path
-                    )
-                    if let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
-                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama", finalPath: path)
-                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama-staged", finalPath: stagedPath)
-                        LocalModelFileAudit.logFSOp(
-                            "stageForLlama",
-                            phase: "exit",
-                            result: "ok",
-                            source: path,
-                            destination: stagedPath,
-                            watchedFinalPath: path
-                        )
-                        LlamaLogCapture.shared.clear()
-                        let stagedModel = loadModel(at: stagedPath, params: model_params)
-                        if let stagedModel {
-                            return try finishContext(model: stagedModel)
-                        }
-                    } else {
-                        LocalModelFileAudit.snapshotFS(point: "after-stageForLlama-failed", finalPath: path)
-                        LocalModelFileAudit.logFSOp(
-                            "stageForLlama",
-                            phase: "exit",
-                            result: "failed-or-nil",
-                            source: path,
-                            watchedFinalPath: path
-                        )
-                    }
+        if useMetal {
+            // Préférer le device nommé Metal ; sinon premier GPU.
+            var metalDev: ggml_backend_dev_t?
+            let count = Int(ggml_backend_dev_count())
+            for i in 0..<count {
+                guard let dev = ggml_backend_dev_get(UInt32(i)) else { continue }
+                let name = String(cString: ggml_backend_dev_name(dev))
+                if name.localizedCaseInsensitiveContains("metal") {
+                    metalDev = dev
+                    break
                 }
-                LocalModelFileAudit.snapshotFS(point: "H-after-all-loadModel-fail", finalPath: path)
-                throw LlamaError.couldNotInitializeContext(
-                    "chargement GGUF impossible (\(byteLabel(size))).\(LlamaLogCapture.shared.summary)"
-                )
             }
-            return try finishContext(model: retry)
+            if metalDev == nil {
+                metalDev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)
+            }
+            guard let metalDev else {
+                return nil
+            }
+            _ = metalName
+            deviceSlots[0] = metalDev
+            deviceSlots[1] = cpuDev
+            deviceSlots[2] = nil
+        } else {
+            deviceSlots[0] = cpuDev
+            deviceSlots[1] = nil
         }
 
-        return try finishContext(model: model)
+        var model_params = llama_model_default_params()
+        model_params.n_gpu_layers = nGpuLayers
+        model_params.load_mode = useMmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE
+        model_params.devices = deviceSlots
+
+        if let loaded = loadModel(at: path, params: model_params) {
+            return loaded
+        }
+
+        // Fallback mmap → none (déjà géré par l’appelant pour CPU ; ici aussi pour Metal).
+        if useMmap {
+            model_params.load_mode = LLAMA_LOAD_MODE_NONE
+            if let loaded = loadModel(at: path, params: model_params) {
+                return loaded
+            }
+        }
+
+        // Staging path historique (ENOENT Application Support).
+        if LlamaLogCapture.shared.reportsMissingGGUF {
+            LocalModelFileAudit.snapshotFS(point: "before-stageForLlama", finalPath: path)
+            if let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
+                LlamaLogCapture.shared.clear()
+                if let stagedModel = loadModel(at: stagedPath, params: model_params) {
+                    return stagedModel
+                }
+            }
+        }
+        return nil
     }
 
     private static func loadModel(at path: String, params: llama_model_params) -> OpaquePointer? {
         let phase = path.contains("/Library/ChatbotModels/")
             ? "before llama (Library/ChatbotModels sans espace)"
             : "before llama (Application Support)"
-        // G — juste avant llama_model_load
         LocalModelFileAudit.snapshotFS(point: "G-before-llama_model_load", finalPath: path)
         LlamaLogCapture.shared.recordFileDiagnostic(LlamaFileDiagnostics.report(path: path, phase: phase))
         let loaded = path.withCString { cPath in
             llama_model_load_from_file(cPath, params)
         }
         if loaded == nil {
-            // H — juste après échec de llama_model_load
             LocalModelFileAudit.snapshotFS(point: "H-after-llama_model_load-fail", finalPath: path)
         } else {
             LocalModelFileAudit.snapshotFS(point: "H-after-llama_model_load-ok", finalPath: path)
@@ -429,14 +603,28 @@ final class LlamaContext: @unchecked Sendable {
         return stagedPath
     }
 
-    private static func finishContext(model: OpaquePointer) throws -> LlamaContext {
-        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+    private static func finishContext(model: OpaquePointer, config: LlamaInferenceConfig) throws -> LlamaContext {
+        let n_threads = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreads)
+        let n_threads_batch = LlamaInferenceConfig.resolvedThreads(
+            explicit: config.nThreadsBatch ?? config.nThreads
+        )
         var ctx_params = llama_context_default_params()
-        ctx_params.n_ctx = 2048
-        ctx_params.n_batch = 512
-        ctx_params.n_ubatch = 512
-        ctx_params.n_threads = Int32(n_threads)
-        ctx_params.n_threads_batch = Int32(n_threads)
+        ctx_params.n_ctx = config.nCtx
+        ctx_params.n_batch = config.nBatch
+        ctx_params.n_ubatch = min(config.nUbatch, config.nBatch)
+        ctx_params.n_threads = n_threads
+        ctx_params.n_threads_batch = n_threads_batch
+        // Flash Attention : AUTO laisse llama.cpp décider (Metal FA quand supporté).
+        switch config.flashAttention {
+        case .auto:
+            ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO
+        case .enabled:
+            ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
+        case .disabled:
+            ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
+        }
+        // Activer les compteurs perf natifs si exposés.
+        ctx_params.no_perf = false
 
         guard let context = llama_init_from_model(model, ctx_params) else {
             llama_model_free(model)
@@ -444,7 +632,7 @@ final class LlamaContext: @unchecked Sendable {
                 "init contexte impossible (mémoire ?).\(LlamaLogCapture.shared.summary)"
             )
         }
-        return LlamaContext(model: model, context: context)
+        return LlamaContext(model: model, context: context, config: config)
     }
 
     private static func byteLabel(_ bytes: Int64) -> String {
@@ -480,8 +668,10 @@ final class LlamaContext: @unchecked Sendable {
     func completion_init(text: String) {
         cancelRequested = false
         is_done = false
+        let promptStarted = Date()
         tokens_list = tokenize(text: text, add_bos: true)
         temporary_invalid_cchars = []
+        promptTokenCount = tokens_list.count
 
         let n_ctx = llama_n_ctx(context)
         let n_kv_req = tokens_list.count + (Int(n_len) - tokens_list.count)
@@ -489,22 +679,28 @@ final class LlamaContext: @unchecked Sendable {
             // KV trop petit — la génération s’arrêtera tôt ; pas de spam console.
         }
 
-        llama_batch_clear(&batch)
-        for i1 in 0..<tokens_list.count {
-            let i = Int(i1)
-            llama_batch_add(&batch, tokens_list[i], Int32(i), [0], false)
+        // Prefill par chunks ≤ n_batch (évite overflow batch pour prompts longs).
+        let batchLimit = Int(max(inferenceConfig.nBatch, 1))
+        var i = 0
+        while i < tokens_list.count {
+            llama_batch_clear(&batch)
+            let end = min(i + batchLimit, tokens_list.count)
+            for j in i..<end {
+                let isLast = j == tokens_list.count - 1
+                llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
+            }
+            if llama_decode(context, batch) != 0 {
+                is_done = true
+                lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
+                return
+            }
+            i = end
         }
-        if batch.n_tokens > 0 {
-            batch.logits[Int(batch.n_tokens) - 1] = 1
-        }
-
-        if llama_decode(context, batch) != 0 {
-            is_done = true
-        }
-        n_cur = batch.n_tokens
+        n_cur = Int32(tokens_list.count)
+        lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
     }
 
-    func completion_loop() throws -> String {
+    private func completion_loop() throws -> String {
         if cancelRequested {
             is_done = true
             throw LlamaError.cancelled
@@ -513,11 +709,14 @@ final class LlamaContext: @unchecked Sendable {
         var new_token_id: llama_token = 0
         new_token_id = llama_sampler_sample(sampling, context, batch.n_tokens - 1)
 
+        // EOG / EOS : ne jamais décoder le token de contrôle en texte utilisateur.
         if llama_vocab_is_eog(vocab, new_token_id) || n_cur == n_len {
             is_done = true
-            let new_token_str = String(cString: temporary_invalid_cchars + [0])
+            // Flush éventuels octets UTF-8 incomplets (pas le token EOG lui-même).
+            let leftover = String(cString: temporary_invalid_cchars + [0])
             temporary_invalid_cchars.removeAll()
-            return new_token_str
+            // Ne pas renvoyer de balises de contrôle résiduelles.
+            return ChatMLPromptBuilder.stripControlTokens(leftover)
         }
 
         let new_token_cchars = token_to_piece(token: new_token_id)
@@ -562,9 +761,37 @@ final class LlamaContext: @unchecked Sendable {
     ) async throws {
         cancelRequested = false
         is_done = false
-        n_len = Int32(tokenize(text: prompt, add_bos: true).count) + max(1, maxTokens)
+        // Une seule tokenization (évite le double coût de l’ancien chemin).
+        let promptTokens = tokenize(text: prompt, add_bos: true)
+        n_len = Int32(promptTokens.count) + max(1, maxTokens)
         n_decode = 0
-        completion_init(text: prompt)
+        // Réinjecte les tokens déjà calculés pour éviter une 2ᵉ passe.
+        cancelRequested = false
+        is_done = false
+        let promptStarted = Date()
+        tokens_list = promptTokens
+        temporary_invalid_cchars = []
+        promptTokenCount = tokens_list.count
+
+        let batchLimit = Int(max(inferenceConfig.nBatch, 1))
+        var i = 0
+        while i < tokens_list.count {
+            if cancelRequested { throw LlamaError.cancelled }
+            llama_batch_clear(&batch)
+            let end = min(i + batchLimit, tokens_list.count)
+            for j in i..<end {
+                let isLast = j == tokens_list.count - 1
+                llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
+            }
+            if llama_decode(context, batch) != 0 {
+                is_done = true
+                lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
+                return
+            }
+            i = end
+        }
+        n_cur = Int32(tokens_list.count)
+        lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
 
         while !is_done {
             if cancelRequested {

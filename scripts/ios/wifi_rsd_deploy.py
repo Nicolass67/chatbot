@@ -109,8 +109,48 @@ def _tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
         sock.close()
 
 
+def _local_ipv4_adapters() -> list[tuple[str, str]]:
+    """Return (adapter_name, ipv4) for usable LAN adapters (skip loopback / APIPA)."""
+    rows: list[tuple[str, str]] = []
+    try:
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            name = (adapter.nice_name or adapter.name or "").strip()
+            for ip in adapter.ips:
+                addr = ip.ip if isinstance(ip.ip, str) else (ip.ip[0] if isinstance(ip.ip, tuple) else None)
+                if not isinstance(addr, str):
+                    continue
+                if addr.startswith("127.") or addr.startswith("169.254."):
+                    continue
+                if addr.count(".") != 3:
+                    continue
+                rows.append((name, addr))
+    except Exception:
+        pass
+    return rows
+
+
+def _is_wifi_adapter_name(name: str) -> bool:
+    n = name.lower()
+    return any(k in n for k in ("wi-fi", "wifi", "wlan", "wireless"))
+
+
+def _expand_slash24(ipv4: str) -> list[str]:
+    parts = ipv4.split(".")
+    if len(parts) != 4:
+        return []
+    prefix = ".".join(parts[:3])
+    return [f"{prefix}.{i}" for i in range(1, 255)]
+
+
 def _candidate_lan_hosts() -> list[str]:
-    """IPv4 neighbors / same /24 as local Wi-Fi-ish adapters (Bonjour bypass)."""
+    """LAN candidates for RemotePairing TCP probe (Bonjour bypass).
+
+    Dual-NIC (Ethernet + Wi-Fi on different /24, e.g. Freebox): must scan **every**
+    non-APIPA local /24, with Wi-Fi subnets first. ARP-only misses cold neighbors
+    and Ethernet-first discovery hides the phone on the Wi-Fi LAN.
+    """
     import socket
 
     hosts: list[str] = []
@@ -119,12 +159,23 @@ def _candidate_lan_hosts() -> list[str]:
     def add(ip: str) -> None:
         if not ip or ip.startswith("127.") or ip.startswith("169.254."):
             return
+        if ip.endswith(".0") or ip.endswith(".255"):
+            return
         if ip in seen:
             return
         seen.add(ip)
         hosts.append(ip)
 
-    # Prefer ARP neighbors on Windows when available
+    adapters = _local_ipv4_adapters()
+    wifi_first = sorted(
+        adapters,
+        key=lambda row: (0 if _is_wifi_adapter_name(row[0]) else 1, row[0], row[1]),
+    )
+    for name, addr in wifi_first:
+        log(f"[wifi-rsd] LAN adapter {name!r} {addr} — expanding /24")
+        for host in _expand_slash24(addr):
+            add(host)
+
     try:
         import subprocess
 
@@ -136,22 +187,6 @@ def _candidate_lan_hosts() -> list[str]:
     except Exception:
         pass
 
-    # Enumerate local IPv4s and probe .1-.254 is too heavy — only .0/24 gateways + known ARP already added
-    try:
-        import ifaddr
-
-        for adapter in ifaddr.get_adapters():
-            for ip in adapter.ips:
-                if getattr(ip, "is_IPv4", False) or (isinstance(ip.ip, str) and "." in str(ip.ip)):
-                    addr = ip.ip if isinstance(ip.ip, str) else ip.ip[0]
-                    if not isinstance(addr, str) or addr.startswith("127."):
-                        continue
-                    # include self network peers via ARP only; keep local addr for logging
-                    add(addr)
-    except Exception:
-        pass
-
-    # Hostname resolution fallback
     try:
         add(socket.gethostbyname(socket.gethostname()))
     except Exception:
@@ -163,17 +198,7 @@ def _candidate_lan_hosts() -> list[str]:
 async def _probe_remotepairing_port(hosts: list[str], ports: tuple[int, ...] = (49152,)) -> tuple[str, int] | None:
     import concurrent.futures
 
-    local: set[str] = set()
-    try:
-        import ifaddr
-
-        for adapter in ifaddr.get_adapters():
-            for ip in adapter.ips:
-                addr = ip.ip if isinstance(ip.ip, str) else (ip.ip[0] if isinstance(ip.ip, tuple) else None)
-                if isinstance(addr, str):
-                    local.add(addr)
-    except Exception:
-        pass
+    local: set[str] = {addr for _, addr in _local_ipv4_adapters()}
 
     jobs = [
         (h, p)
@@ -181,6 +206,7 @@ async def _probe_remotepairing_port(hosts: list[str], ports: tuple[int, ...] = (
         for p in ports
         if h not in local and not h.endswith(".255") and not h.endswith(".0")
     ]
+    log(f"[wifi-rsd] probing RemotePairing on {len(jobs)} endpoints")
 
     def check(item: tuple[str, int]) -> tuple[str, int] | None:
         host, port = item

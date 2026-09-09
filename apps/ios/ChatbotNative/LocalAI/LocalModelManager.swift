@@ -16,8 +16,11 @@ final class LocalModelManager: ObservableObject {
     @Published private(set) var progress: Double = 0
     @Published private(set) var lastError: String?
     @Published private(set) var isMetalAvailable: Bool = false
+    /// Modèle **sélectionné** par l’utilisateur (persisté). Un seul chargé à la fois.
     @Published private(set) var activeModelId: String = LocalModelDescriptor.primary.id
     @Published private(set) var installedBytes: Int64 = 0
+
+    private static let selectedModelIdKey = "localAI.selectedModelId"
 
     /// Verrou exclusif tenu pour toute la durée d’une mutation (y compris pendant `await`).
     /// `busyAction` UI n’est **pas** une protection suffisante.
@@ -37,6 +40,11 @@ final class LocalModelManager: ObservableObject {
         LocalModelDescriptor.descriptor(id: activeModelId) ?? .primary
     }
 
+    /// Profil chat/stop du modèle sélectionné (pas hardcodé Qwen).
+    var activeRuntimeProfile: LocalModelRuntimeProfile {
+        activeDescriptor.runtimeProfile
+    }
+
     var modelsDirectory: URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("Models", isDirectory: true)
@@ -51,14 +59,43 @@ final class LocalModelManager: ObservableObject {
     }
 
     var modelFileURL: URL {
-        modelsDirectory.appendingPathComponent(activeDescriptor.filename)
+        fileURL(for: activeDescriptor)
     }
 
     /// Chemin filesystem stable (évite les surprises `%20` / encoding).
     var modelFilePath: String { fileSystemPath(modelFileURL) }
 
+    func fileURL(for model: LocalModelDescriptor) -> URL {
+        modelsDirectory.appendingPathComponent(model.filename)
+    }
+
+    func filePath(for model: LocalModelDescriptor) -> String {
+        fileSystemPath(fileURL(for: model))
+    }
+
+    func presence(for model: LocalModelDescriptor) -> LocalModelPresence {
+        LocalModelFileAudit.probe(
+            at: fileURL(for: model),
+            expectedBytes: model.expectedBytes,
+            fileManager: fileManager
+        )
+    }
+
+    func isInstalled(_ model: LocalModelDescriptor) -> Bool {
+        presence(for: model).isFullyInstalled
+    }
+
+    /// Liste des modèles réellement présents sur disque.
+    var installedModels: [LocalModelDescriptor] {
+        LocalModelDescriptor.catalog.filter { isInstalled($0) }
+    }
+
     private var partialDownloadURL: URL {
         modelsDirectory.appendingPathComponent(activeDescriptor.filename + ".download")
+    }
+
+    private func partialDownloadURL(for model: LocalModelDescriptor) -> URL {
+        modelsDirectory.appendingPathComponent(model.filename + ".download")
     }
 
     var actualFileExists: Bool {
@@ -93,6 +130,12 @@ final class LocalModelManager: ObservableObject {
     }
 
     init() {
+        let saved = UserDefaults.standard.string(forKey: Self.selectedModelIdKey)
+        if let saved, LocalModelDescriptor.descriptor(id: saved) != nil {
+            activeModelId = saved
+        } else {
+            activeModelId = LocalModelDescriptor.primary.id
+        }
         refreshMetalAvailability()
         refreshInstalledState()
         LocalModelFileAudit.log("local-ai:lifecycle", [
@@ -100,7 +143,37 @@ final class LocalModelManager: ObservableObject {
             "path": modelFilePath,
             "presence": String(describing: presence),
             "entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+            "selected": activeModelId,
         ])
+    }
+
+    /// Sélection explicite (sans load). Ne change **pas** le modèle chargé tant que `load`/`switch` n’est pas demandé.
+    func selectModel(id: String) {
+        guard LocalModelDescriptor.descriptor(id: id) != nil else { return }
+        activeModelId = id
+        UserDefaults.standard.set(id, forKey: Self.selectedModelIdKey)
+        refreshInstalledState()
+    }
+
+    /// Décharge le modèle courant puis charge `model` (un seul en mémoire).
+    /// Appelé **uniquement** sur action utilisateur explicite.
+    func switchToModel(_ model: LocalModelDescriptor) async {
+        guard isInstalled(model) else {
+            lastError = "« \(model.displayName) » n’est pas installé."
+            return
+        }
+        if activeModelId == model.id, isReady {
+            return
+        }
+        // Unload d’abord si un autre (ou le même non prêt) occupe le runtime.
+        // Annuler toute génération en cours avant libération (pas de Task orpheline).
+        await engine.cancel()
+        let engineLoaded = await engine.isModelLoaded
+        if isReady || engineLoaded {
+            await unload()
+        }
+        selectModel(id: model.id)
+        await loadIntoEngine()
     }
 
     func refreshMetalAvailability() {
@@ -186,6 +259,7 @@ final class LocalModelManager: ObservableObject {
         }
 
         activeModelId = model.id
+        UserDefaults.standard.set(model.id, forKey: Self.selectedModelIdKey)
         let dir = modelsDirectory
         installGeneration &+= 1
         let generation = installGeneration
@@ -320,24 +394,38 @@ final class LocalModelManager: ObservableObject {
     }
 
     func deleteModel() async {
+        await deleteModel(activeDescriptor)
+    }
+
+    func deleteModel(_ model: LocalModelDescriptor) async {
         guard beginExclusive(.delete) else { return }
         defer { endExclusive(.delete) }
         cancelDownload()
-        await performUnload()
-        if fileManager.fileExists(atPath: modelFilePath) {
-            LocalModelFileAudit.logFileDelete(path: modelFilePath, caller: "LocalModelManager.deleteModel")
+        let path = filePath(for: model)
+        let url = fileURL(for: model)
+        let partial = partialDownloadURL(for: model)
+        // Si c’est le modèle chargé → unload d’abord (ne touche pas aux autres GGUF).
+        if activeModelId == model.id {
+            await performUnload()
         }
-        try? fileManager.removeItem(at: modelFileURL)
-        try? fileManager.removeItem(at: partialDownloadURL)
-        installedBytes = 0
-        progress = 0
-        lastError = nil
-        state = .notInstalled
+        if fileManager.fileExists(atPath: path) {
+            LocalModelFileAudit.logFileDelete(path: path, caller: "LocalModelManager.deleteModel")
+        }
+        try? fileManager.removeItem(at: url)
+        try? fileManager.removeItem(at: partial)
+        if activeModelId == model.id {
+            installedBytes = 0
+            progress = 0
+            lastError = nil
+            state = .notInstalled
+        }
         LocalModelFileAudit.log("local-ai:lifecycle", [
             "event": "delete",
-            "path": modelFilePath,
+            "path": path,
+            "model": model.id,
             "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
         ])
+        refreshInstalledState()
     }
 
     // MARK: - Engine
@@ -429,7 +517,12 @@ final class LocalModelManager: ObservableObject {
         do {
             LocalModelFileAudit.snapshotFS(point: "E-before-engine-load", finalPath: path)
             logLoadTrace("before-libllama-load")
-            try await engine.load(path: path)
+            try await engine.load(
+                path: path,
+                config: activeDescriptor.executionProfile.inference,
+                modelId: activeDescriptor.id,
+                quant: activeDescriptor.quant
+            )
             logLoadTrace("after-libllama-load")
             LocalModelFileAudit.snapshotFS(point: "E-after-engine-load", finalPath: path)
             // Re-vérifier après load (TOCTOU / sideload parallèle).

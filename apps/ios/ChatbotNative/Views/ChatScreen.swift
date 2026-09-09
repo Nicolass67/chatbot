@@ -915,17 +915,23 @@ struct ChatScreen: View {
     }
     private func runMailSummarizeProduct(threadId: String) async {
         guard !isSending else { return }
+        let trimmedThread = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedThread.isEmpty else {
+            error = "Aucun fil mail sélectionné pour le résumé."
+            return
+        }
         isSending = true
         error = nil
         thinkingKind = .custom("Analyse du message…")
         let summaryId = "mail-summary-\(UUID().uuidString)"
         messages.append(MessageDTO(id: summaryId, role: "assistant", content: "", createdAt: nil))
+        let assistant = LocalMailAssistant()
         defer {
             isSending = false
             thinkingKind = nil
         }
 
-        // Mode local : Gmail pour le contenu, Qwen pour le résumé — pas de PC.
+        // Mode local : Gmail pour le contenu, modèle local pour le résumé — pas de PC.
         if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
             do {
                 if !LocalModelManager.shared.isReady {
@@ -934,13 +940,20 @@ struct ChatScreen: View {
                 guard LocalModelManager.shared.isReady else {
                     throw LocalMailAssistantError.modelNotReady
                 }
-                let answer = try await LocalMailAssistant().summarizeThread(threadId: threadId)
+                let answer = try await MailSummarizeWorkflow.run(
+                    .init(threadId: trimmedThread),
+                    runtime: LocalAIRuntime.shared
+                )
+                let clean = ChatMLPromptBuilder.truncateAssistantOutput(answer).text
+                guard !clean.isEmpty else {
+                    throw LocalMailAssistantError.inference("Résumé vide.")
+                }
                 if let idx = messages.firstIndex(where: { $0.id == summaryId }) {
                     let prev = messages[idx]
                     messages[idx] = MessageDTO(
                         id: prev.id,
                         role: prev.role,
-                        content: answer,
+                        content: clean,
                         createdAt: prev.createdAt,
                         attachments: prev.attachments
                     )
@@ -948,10 +961,16 @@ struct ChatScreen: View {
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
                     role: .assistant,
-                    content: answer
+                    content: clean
                 )
                 AppHaptics.success()
                 scrollToken += 1
+            } catch is CancellationError {
+                await assistant.cancelGeneration()
+                if let idx = messages.firstIndex(where: { $0.id == summaryId }),
+                   messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    messages.remove(at: idx)
+                }
             } catch {
                 if let idx = messages.firstIndex(where: { $0.id == summaryId }),
                    messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -963,7 +982,7 @@ struct ChatScreen: View {
         }
 
         do {
-            try await client.streamSummarizeMail(threadId: threadId) { token in
+            try await client.streamSummarizeMail(threadId: trimmedThread) { token in
                 Task { @MainActor in
                     if self.thinkingKind != nil { self.thinkingKind = nil }
                     if let idx = self.messages.firstIndex(where: { $0.id == summaryId }) {
@@ -1005,6 +1024,11 @@ struct ChatScreen: View {
 
     private func runMailReplyProduct(threadId: String, instruction: String? = nil) async {
         guard !isSending else { return }
+        let trimmedThread = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedThread.isEmpty else {
+            error = "Aucun fil mail sélectionné pour la réponse."
+            return
+        }
         isSending = true
         error = nil
         thinkingKind = .custom("Préparation de la réponse…")
@@ -1014,6 +1038,7 @@ struct ChatScreen: View {
         draftCardStatus = "Rédaction…"
         draftCardText = ""
         draftCardEditing = false
+        let assistant = LocalMailAssistant()
         defer {
             isSending = false
             thinkingKind = nil
@@ -1021,7 +1046,7 @@ struct ChatScreen: View {
             draftCardStatus = "Brouillon"
         }
 
-        // Mode local : brouillon via LocalMailAssistant (Gmail direct + Qwen).
+        // Mode local : brouillon via LocalMailAssistant (Gmail direct + modèle local).
         if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
             do {
                 if !LocalModelManager.shared.isReady {
@@ -1030,14 +1055,21 @@ struct ChatScreen: View {
                 guard LocalModelManager.shared.isReady else {
                     throw LocalMailAssistantError.modelNotReady
                 }
-                let confirmation = try await LocalMailAssistant().draftReply(
-                    threadId: threadId,
-                    instruction: instruction ?? "Propose une réponse polie et concise."
+                let confirmation = try await MailReplyWorkflow.run(
+                    .init(
+                        threadId: trimmedThread,
+                        instruction: instruction ?? "Propose une réponse polie et concise."
+                    ),
+                    runtime: LocalAIRuntime.shared
                 )
+                let body = ChatMLPromptBuilder.truncateAssistantOutput(confirmation.proposedBody).text
+                guard !body.isEmpty else {
+                    throw LocalMailAssistantError.inference("Réponse vide.")
+                }
                 if let id = confirmation.draftId, !id.isEmpty {
                     draftCardId = id
                 }
-                draftCardText = confirmation.proposedBody
+                draftCardText = body
                 draftCardTo = confirmation.to
                 draftCardSubject = confirmation.subject
                 draftCardSent = false
@@ -1045,15 +1077,18 @@ struct ChatScreen: View {
                 persistDraftCardSnapshot()
                 AppHaptics.success()
                 scrollToken += 1
-            } catch {
+            } catch is CancellationError {
+                await assistant.cancelGeneration()
                 draftInConversation = draftCardId != nil
+            } catch {
+                draftInConversation = draftCardId != nil || !draftCardText.isEmpty
                 self.error = error.localizedDescription
             }
             return
         }
 
         do {
-            let result = try await client.streamSuggestMailReply(threadId: threadId, instruction: instruction) { token in
+            let result = try await client.streamSuggestMailReply(threadId: trimmedThread, instruction: instruction) { token in
                 Task { @MainActor in
                     if self.thinkingKind != nil { self.thinkingKind = nil }
                     self.draftCardText += token
@@ -2757,7 +2792,7 @@ private var sendBlockedHint: String {
             editingMessageId = nil
         }
 
-        // Files nécessite le PC — ne pas faire semblant via le LLM local.
+        // Files : même workflow conceptuel ; échec technique PathGuard si PC absent (pas gating modèle).
         if forcedScope == .files {
             if options?.regenerate != true, !hideUserMessage {
                 let userMsg = MessageDTO(
@@ -2773,8 +2808,28 @@ private var sendBlockedHint: String {
                     content: shownText
                 )
             }
-            let reply =
-                "Files nécessite la connexion au PC. L’IA locale ne peut pas lister ni ouvrir tes fichiers."
+            thinkingKind = .custom("Files…")
+            let runtime = LocalAIRuntime.shared
+            let tools = AIToolRegistry.makeLocalDefault()
+            let reply: String
+            do {
+                if !LocalModelManager.shared.isReady {
+                    await LocalModelManager.shared.loadIntoEngine()
+                }
+                reply = try await FilesWorkflow.run(
+                    .init(path: "", userQuestion: effectiveText),
+                    runtime: runtime,
+                    tools: tools
+                )
+            } catch {
+                reply = error.localizedDescription
+            }
+            guard gen == sendGeneration, !Task.isCancelled else {
+                thinkingKind = nil
+                isSending = false
+                sendTask = nil
+                return
+            }
             messages.append(
                 MessageDTO(
                     id: "asst-\(UUID().uuidString)",
@@ -2826,6 +2881,60 @@ private var sendBlockedHint: String {
             }
             guard LocalModelManager.shared.isReady else {
                 throw LocalMailAssistantError.modelNotReady
+            }
+
+            // Agent mode : même AgentWorkflow, ExecutionProfile du modèle actif.
+            let effectiveMode = options?.mode ?? chatMode
+            if effectiveMode == "agent" {
+                thinkingKind = .preparing
+                let runtime = LocalAIRuntime.shared
+                let tools = AIToolRegistry.makeLocalDefault()
+                let history: [LLMChatMessage] = messages.compactMap { msg in
+                    guard msg.role == "user" || msg.role == "assistant" else { return nil }
+                    let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
+                    return LLMChatMessage(role: role, content: msg.content)
+                }
+                let agentResult = try await AgentWorkflow.run(
+                    .init(
+                        userText: effectiveText,
+                        history: history,
+                        threadId: forcedActiveContext?.mailThreadId,
+                        scopeHint: forcedScope?.rawValue
+                    ),
+                    runtime: runtime,
+                    tools: tools,
+                    onStep: { step in
+                        thinkingKind = .custom(step.label)
+                    }
+                )
+                guard gen == sendGeneration, !Task.isCancelled else {
+                    thinkingKind = nil
+                    isSending = false
+                    return
+                }
+                thinkingKind = nil
+                streamingText = ""
+                streamAccum.text = ""
+                let content = agentResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty {
+                    throw AIRuntimeError.emptyGeneration
+                }
+                messages.append(
+                    MessageDTO(
+                        id: "asst-\(UUID().uuidString)",
+                        role: "assistant",
+                        content: content,
+                        createdAt: nil
+                    )
+                )
+                _ = LocalChatStore.shared.appendMessage(
+                    conversationId: conversation.id,
+                    role: .assistant,
+                    content: content
+                )
+                isSending = false
+                sendTask = nil
+                return
             }
 
             // Mail scope + Gmail direct : intents search / résumé / réponse.
@@ -2910,21 +3019,22 @@ private var sendBlockedHint: String {
             let content = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
             streamingText = ""
             streamAccum.text = ""
-            if !content.isEmpty {
-                messages.append(
-                    MessageDTO(
-                        id: "asst-\(UUID().uuidString)",
-                        role: "assistant",
-                        content: content,
-                        createdAt: nil
-                    )
-                )
-                _ = LocalChatStore.shared.appendMessage(
-                    conversationId: conversation.id,
-                    role: .assistant,
-                    content: content
-                )
+            guard !content.isEmpty else {
+                throw AIRuntimeError.emptyGeneration
             }
+            messages.append(
+                MessageDTO(
+                    id: "asst-\(UUID().uuidString)",
+                    role: "assistant",
+                    content: content,
+                    createdAt: nil
+                )
+            )
+            _ = LocalChatStore.shared.appendMessage(
+                conversationId: conversation.id,
+                role: .assistant,
+                content: content
+            )
         } catch is CancellationError {
             await LocalInferenceEngine.shared.cancel()
             thinkingKind = nil
@@ -2962,24 +3072,31 @@ private var sendBlockedHint: String {
             history.append(LLMChatMessage(role: .user, content: userText))
         }
 
-        let provider = LocalLLMProvider(promptKind: promptKind)
+        let execProfile = LocalModelManager.shared.activeDescriptor.executionProfile
+        let provider = LocalLLMProvider(
+            promptKind: promptKind,
+            historyCharBudget: execProfile.contextCharBudget,
+            runtimeProfile: LocalModelManager.shared.activeRuntimeProfile
+        )
         streamAccum.text = ""
         streamingText = ""
 
         for try await token in provider.stream(
             messages: history,
             systemPrompt: LocalPrompts.systemPrompt(for: promptKind),
-            maxTokens: 512
+            maxTokens: execProfile.maxOutputTokens
         ) {
             guard generation == sendGeneration, !Task.isCancelled else {
                 await LocalInferenceEngine.shared.cancel()
                 throw CancellationError()
             }
-            streamAccum.text += token
+            // Les deltas sont déjà sanitizés par LocalLLMProvider ; défense supplémentaire.
+            let cleaned = ChatMLPromptBuilder.stripControlTokens(token)
+            guard !cleaned.isEmpty else { continue }
+            streamAccum.text += cleaned
             let cut = ChatMLPromptBuilder.truncateAssistantOutput(streamAccum.text)
             streamAccum.text = cut.text
             if thinkingKind != nil { thinkingKind = nil }
-            // Flush léger (pas à chaque token) — réutilise le pattern coalesce.
             if tokenFlushTask == nil {
                 tokenFlushTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 40_000_000)
@@ -2997,7 +3114,11 @@ private var sendBlockedHint: String {
         let final = ChatMLPromptBuilder.truncateAssistantOutput(streamAccum.text).text
         streamAccum.text = final
         streamingText = final
-        return final
+        let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AIRuntimeError.emptyGeneration
+        }
+        return trimmed
     }
 
     private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false, rewriteDraftCard: Bool = false) async {

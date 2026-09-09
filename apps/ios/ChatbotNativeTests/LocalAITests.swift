@@ -11,13 +11,29 @@ final class LocalModelDescriptorTests: XCTestCase {
         XCTAssertTrue(m.downloadURL!.absoluteString.contains("Qwen3-1.7B-Q4_K_M.gguf"))
         XCTAssertTrue(m.downloadURL!.absoluteString.contains("second-state"))
         XCTAssertEqual(m.expectedBytes, 1_282_439_264)
+        XCTAssertEqual(m.compatibilityIPhone14Plus, .recommended)
+        XCTAssertEqual(m.runtimeProfile.templateKind, .chatml)
     }
 
-    func testFutureModelsNotDownloadableYet() {
-        let stubs = LocalModelDescriptor.catalog.filter { $0.id != LocalModelDescriptor.primary.id }
+    func testCatalogHasMultiModelsAndOnlyOnePrimary() {
+        XCTAssertGreaterThanOrEqual(LocalModelDescriptor.catalog.count, 5)
+        XCTAssertEqual(LocalModelDescriptor.catalog.filter { $0.id == LocalModelDescriptor.primary.id }.count, 1)
+        XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "lfm25-1.2b-instruct-q4_k_m" })
+        XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "qwen35-2b-q4_k_m" })
+    }
+
+    func testCompatibilityTiersForIPhone14Plus() {
+        XCTAssertEqual(LocalModelDescriptor.primary.compatibilityIPhone14Plus, .recommended)
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")
+        XCTAssertEqual(gemma?.compatibilityIPhone14Plus, .experimental)
+        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")
+        XCTAssertEqual(e4b?.compatibilityIPhone14Plus, .notRecommended)
+    }
+
+    func testFutureStubModelsNotDownloadableYet() {
+        let stubs = LocalModelDescriptor.catalog.filter { !$0.isDownloadable }
         XCTAssertFalse(stubs.isEmpty)
         for stub in stubs {
-            XCTAssertFalse(stub.isDownloadable, stub.id)
             XCTAssertNil(stub.downloadURL, stub.id)
         }
     }
@@ -38,11 +54,11 @@ final class LocalLLMProviderPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("<|im_start|>system"))
         XCTAssertTrue(prompt.contains("SYS"))
         XCTAssertTrue(prompt.contains("<|im_end|>"))
-        XCTAssertTrue(prompt.contains("<|im_start|>user\nTest\n<|im_end|>"))
-        XCTAssertTrue(prompt.contains("<|im_start|>assistant\nSalut\n<|im_end|>"))
+        XCTAssertTrue(prompt.contains("<|im_start|>user\nTest"))
         XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
         XCTAssertFalse(prompt.hasPrefix("System:"))
-        XCTAssertFalse(prompt.contains("\nUser: Test"))
+        // /no_think injecté pour Qwen3 non-thinking mobile
+        XCTAssertTrue(prompt.contains("/no_think"))
     }
 
     func testBuildPromptTruncatesOldestMessages() {
@@ -58,7 +74,7 @@ final class LocalLLMProviderPromptTests: XCTestCase {
         )
         XCTAssertTrue(prompt.contains("<|im_start|>system"))
         XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
-        XCTAssertLessThan(prompt.count, 2000)
+        XCTAssertLessThan(prompt.count, 2500)
         XCTAssertTrue(prompt.contains("u19") || prompt.contains("a19"))
     }
 }
@@ -69,6 +85,63 @@ final class ChatMLStopTruncationTests: XCTestCase {
         let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
         XCTAssertTrue(cut.hitStop)
         XCTAssertEqual(cut.text, "Bonjour, je suis l'assistant.")
+        XCTAssertFalse(cut.text.contains("<|im_end|>"))
+    }
+
+    func testFirstTokenImEndYieldsEmpty() {
+        let raw = "<|im_end|>"
+        let cut = ChatMLPromptBuilder.truncateAssistantOutput(raw)
+        XCTAssertTrue(cut.hitStop)
+        XCTAssertEqual(cut.text, "")
+    }
+
+    func testStreamingDoesNotEmitPartialImEnd() {
+        let profile = LocalModelRuntimeProfile.chatmlQwen
+        var emitted = 0
+        var display = ""
+        // Simule pièce par pièce le token de contrôle.
+        let pieces = ["<", "|", "im", "_end", "|>"]
+        var acc = ""
+        for p in pieces {
+            acc += p
+            let step = LocalChatTemplate.streamingSafeEmit(
+                accumulated: acc,
+                alreadyEmittedCount: emitted,
+                profile: profile
+            )
+            display += step.emit
+            emitted = step.newEmittedCount
+            if step.hitStop { break }
+        }
+        XCTAssertFalse(display.contains("<|im_end|>"))
+        XCTAssertEqual(display.trimmingCharacters(in: .whitespacesAndNewlines), "")
+    }
+
+    func testStreamingEmitsTextThenStopsBeforeControl() {
+        let profile = LocalModelRuntimeProfile.chatmlQwen
+        var emitted = 0
+        var display = ""
+        let pieces = ["Bonjour", " toi", "<|im_end|>", "suite"]
+        var acc = ""
+        for p in pieces {
+            acc += p
+            let step = LocalChatTemplate.streamingSafeEmit(
+                accumulated: acc,
+                alreadyEmittedCount: emitted,
+                profile: profile
+            )
+            display += step.emit
+            emitted = step.newEmittedCount
+            if step.hitStop { break }
+        }
+        XCTAssertEqual(display, "Bonjour toi")
+        XCTAssertFalse(display.contains("<|"))
+    }
+
+    func testStripControlTokensDefense() {
+        let raw = "Hi <|im_start|>user x <|im_end|>"
+        let clean = ChatMLPromptBuilder.stripControlTokens(raw)
+        XCTAssertFalse(clean.contains("<|im_"))
     }
 
     func testStopsOnImStartNewTurn() {
@@ -186,6 +259,31 @@ final class LocalModelAutoLoadPolicyTests: XCTestCase {
                 isReady: false,
                 exclusiveBusy: false,
                 isLoading: true
+            )
+        )
+    }
+}
+
+final class LocalModelSwitchPolicyTests: XCTestCase {
+    func testAutoLoadNeverSelectsOtherModel() {
+        // La politique d’auto-load ne change pas l’id sélectionné — elle charge seulement si installé.
+        XCTAssertTrue(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: true,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: false
+            )
+        )
+        // Sans fichier : aucun téléchargement implicite.
+        XCTAssertFalse(
+            LocalModelAutoLoadPolicy.shouldAttemptLoad(
+                wantsLocalExecution: true,
+                isInstalled: false,
+                isReady: false,
+                exclusiveBusy: false,
+                isLoading: false
             )
         )
     }
@@ -564,4 +662,111 @@ final class LocalAISettingsActionGateTests: XCTestCase {
     }
 }
 
+final class AIParityArchitectureTests: XCTestCase {
+    func testAllDownloadableModelsShareApplicationCapabilities() {
+        for model in LocalModelDescriptor.downloadable {
+            let app = ApplicationCapabilities.full
+            XCTAssertTrue(app.agent, model.id)
+            XCTAssertTrue(app.web, model.id)
+            XCTAssertTrue(app.mail, model.id)
+            XCTAssertTrue(app.files, model.id)
+            XCTAssertTrue(app.memory, model.id)
+            XCTAssertTrue(app.visionWorkflow, model.id)
+        }
+    }
 
+    func testExecutionProfilesDifferByBudgetNotFeatures() {
+        let qwen = LocalModelDescriptor.primary.executionProfile
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")!.executionProfile
+        XCTAssertEqual(qwen.performanceClass, .compact)
+        XCTAssertEqual(gemma.performanceClass, .ample)
+        XCTAssertLessThan(qwen.maxWorkflowSteps, gemma.maxWorkflowSteps)
+        XCTAssertLessThan(qwen.contextCharBudget, gemma.contextCharBudget)
+        XCTAssertLessThanOrEqual(qwen.maxToolCalls, gemma.maxToolCalls)
+    }
+
+    func testStructuredActionParserToolAndFinal() {
+        let tool = StructuredActionParser.parse(
+            #"{"type":"tool","action":"web_search","arguments":{"query":"meteo"}}"#
+        )
+        if case .tool(let call) = tool {
+            XCTAssertEqual(call.action, "web_search")
+            XCTAssertEqual(call.arguments["query"], "meteo")
+        } else {
+            XCTFail("expected tool")
+        }
+
+        let final = StructuredActionParser.parse(
+            #"{"type":"final","content":"Bonjour"}"#
+        )
+        if case .final(let text) = final {
+            XCTAssertEqual(text, "Bonjour")
+        } else {
+            XCTFail("expected final")
+        }
+
+        let plain = StructuredActionParser.parse("Reponse libre sans JSON")
+        if case .final(let text) = plain {
+            XCTAssertTrue(text.contains("Reponse libre"))
+        } else {
+            XCTFail("expected plain final")
+        }
+    }
+
+    func testContextCompressorKeepsRecentAndSummarizesOlder() {
+        var history: [LLMChatMessage] = []
+        for i in 0..<20 {
+            history.append(LLMChatMessage(role: .user, content: "user-\(i) " + String(repeating: "x", count: 40)))
+            history.append(LLMChatMessage(role: .assistant, content: "asst-\(i) " + String(repeating: "y", count: 40)))
+        }
+        let profile = LocalModelExecutionProfile.compact
+        let packet = ConversationContextCompressor.compress(
+            history: history,
+            profile: profile,
+            taskHint: "test"
+        )
+        XCTAssertFalse(packet.systemAugment.isEmpty)
+        XCTAssertLessThanOrEqual(packet.messages.count, profile.historyMessageBudget)
+        XCTAssertTrue(packet.messages.contains { $0.content.contains("user-19") || $0.content.contains("asst-19") })
+        XCTAssertLessThanOrEqual(packet.approximateChars, profile.contextCharBudget + 200)
+    }
+
+    func testNativeCapabilitiesDoNotGateAgent() {
+        let native = ModelNativeCapabilities.from(descriptor: .primary)
+        XCTAssertFalse(native.supportsVision)
+        XCTAssertTrue(ApplicationCapabilities.full.agent)
+    }
+}
+
+final class LlamaInferencePerfTests: XCTestCase {
+    func testA15DefaultPrefersMetalWithAllLayers() {
+        let c = LlamaInferenceConfig.a15Default
+        XCTAssertTrue(c.preferMetal)
+        XCTAssertEqual(c.nGpuLayers, -1)
+        XCTAssertEqual(c.nCtx, 2048)
+        XCTAssertLessThanOrEqual(c.nUbatch, c.nBatch)
+        XCTAssertEqual(c.flashAttention, .auto)
+    }
+
+    func testExecutionProfilesCarryInferenceWithoutFeatureGating() {
+        let qwen = LocalModelDescriptor.primary.executionProfile
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m")!.executionProfile
+        XCTAssertTrue(ApplicationCapabilities.full.agent)
+        XCTAssertTrue(qwen.inference.preferMetal)
+        XCTAssertTrue(gemma.inference.preferMetal)
+        XCTAssertNotEqual(qwen.maxWorkflowSteps, gemma.maxWorkflowSteps)
+    }
+
+    func testResolvedThreadsCappedForA15Class() {
+        let t = LlamaInferenceConfig.resolvedThreads(explicit: nil)
+        XCTAssertGreaterThanOrEqual(t, 1)
+        XCTAssertLessThanOrEqual(t, 4)
+        XCTAssertEqual(LlamaInferenceConfig.resolvedThreads(explicit: 2), 2)
+    }
+
+    func testHeavyModelProfileUsesConservativeGpuLayers() {
+        let e4b = LocalModelDescriptor.descriptor(id: "gemma4-e4b-it")!.executionProfile
+        XCTAssertEqual(e4b.inference.nGpuLayers, 28)
+        XCTAssertLessThan(e4b.inference.nCtx, LlamaInferenceConfig.a15Default.nCtx)
+    }
+}

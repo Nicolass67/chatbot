@@ -23,11 +23,7 @@ protocol LLMProvider: Sendable {
 
 // MARK: - Remote (thin)
 
-/// Enveloppe documentaire : le flux distant reste dans `ChatStreamingService` /
-/// `APIClient` (SSE `/api/chat`). Ce provider ne remplace pas encore le chemin ChatScreen ;
-/// il expose le même protocole pour un routage futur via `ExecutionModeStore`.
 struct RemoteLLMProvider: LLMProvider {
-    /// Réservé — le streaming distant productif passe toujours par `ChatStreamingService`.
     var note: String {
         "ChatScreen utilise ChatStreamingService pour le chat distant (PC / LM Studio)."
     }
@@ -57,12 +53,13 @@ struct RemoteLLMProvider: LLMProvider {
 
 // MARK: - Local
 
-/// Provider local : `LocalInferenceEngine` + `LocalPrompts` + troncature d’historique (~3k chars).
+/// Provider local : moteur + template du **modèle actif** (pas Qwen hardcodé partout).
 struct LocalLLMProvider: LLMProvider {
     var engine: LocalInferenceEngine = .shared
     var promptKind: LocalPromptKind = .conversation
-    /// Heuristique caractères ≈ budget tokens (~3k pour laisser de la marge sous n_ctx 4096).
     var historyCharBudget: Int = 3_000
+    /// Profil runtime du modèle chargé (ChatML Qwen, Gemma, …).
+    var runtimeProfile: LocalModelRuntimeProfile = .chatmlQwen
 
     func stream(
         messages: [LLMChatMessage],
@@ -70,10 +67,12 @@ struct LocalLLMProvider: LLMProvider {
         maxTokens: Int
     ) -> AsyncThrowingStream<String, Error> {
         let system = systemPrompt ?? LocalPrompts.systemPrompt(for: promptKind)
+        let profile = runtimeProfile
         let prompt = Self.buildPrompt(
             system: system,
             messages: messages,
-            charBudget: historyCharBudget
+            charBudget: historyCharBudget,
+            profile: profile
         )
         let engine = self.engine
         return AsyncThrowingStream { continuation in
@@ -81,19 +80,29 @@ struct LocalLLMProvider: LLMProvider {
                 do {
                     let stream = await engine.generate(prompt: prompt, maxTokens: maxTokens)
                     var accumulated = ""
-                    var yieldedCount = 0
+                    var emittedCount = 0
                     for try await token in stream {
                         accumulated += token
-                        let cut = ChatMLPromptBuilder.truncateAssistantOutput(accumulated)
-                        if cut.text.count > yieldedCount {
-                            let start = cut.text.index(cut.text.startIndex, offsetBy: yieldedCount)
-                            continuation.yield(String(cut.text[start...]))
-                            yieldedCount = cut.text.count
+                        let step = LocalChatTemplate.streamingSafeEmit(
+                            accumulated: accumulated,
+                            alreadyEmittedCount: emittedCount,
+                            profile: profile
+                        )
+                        if !step.emit.isEmpty {
+                            continuation.yield(step.emit)
                         }
-                        if cut.hitStop {
+                        emittedCount = step.newEmittedCount
+                        if step.hitStop {
                             await engine.cancel()
                             break
                         }
+                    }
+                    // Flush final sanitised (défense en profondeur).
+                    let final = LocalChatTemplate.truncateAssistantOutput(accumulated, profile: profile)
+                    if final.text.count > emittedCount {
+                        let start = final.text.index(final.text.startIndex, offsetBy: emittedCount)
+                        let tail = String(final.text[start...])
+                        if !tail.isEmpty { continuation.yield(tail) }
                     }
                     continuation.finish()
                 } catch {
@@ -107,16 +116,26 @@ struct LocalLLMProvider: LLMProvider {
         }
     }
 
-    /// Prompt ChatML Qwen (partagé avec Mail via `ChatMLPromptBuilder`).
+    static func buildPrompt(
+        system: String,
+        messages: [LLMChatMessage],
+        charBudget: Int,
+        profile: LocalModelRuntimeProfile = .chatmlQwen
+    ) -> String {
+        LocalChatTemplate.buildPrompt(
+            system: system,
+            messages: messages,
+            charBudget: charBudget,
+            profile: profile
+        )
+    }
+
+    /// Raccourci compat tests / anciens appels.
     static func buildPrompt(
         system: String,
         messages: [LLMChatMessage],
         charBudget: Int
     ) -> String {
-        ChatMLPromptBuilder.buildPrompt(
-            system: system,
-            messages: messages,
-            charBudget: charBudget
-        )
+        buildPrompt(system: system, messages: messages, charBudget: charBudget, profile: .chatmlQwen)
     }
 }

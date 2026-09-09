@@ -21,9 +21,11 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 
 ## Runtime
 
-- llama.cpp XCFramework (Metal, arm64 device)
+- llama.cpp XCFramework (Metal **compilé** dans le framework arm64 device)
 - Fetch : `npm.cmd run ios:fetch-llama`
-- `n_ctx = 2048` — budgets prompts locaux réduits (KV cache iPhone)
+- Load : tentative **Metal + `n_gpu_layers`** via `LlamaInferenceConfig` (ExecutionProfile), **fallback CPU** automatique si le load Metal échoue
+- Diagnostics : log `[local-ai:load]` + écran Réglages IA locale (backend effectif, ctx, batch, threads)
+- `n_ctx` / batch / threads : paramétrés par modèle (pas de gating features)
 
 ## Modes d’exécution (Réglages)
 
