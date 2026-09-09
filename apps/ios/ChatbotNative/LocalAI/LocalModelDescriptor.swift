@@ -81,7 +81,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     let compatibilityNote: String
     let statusNote: String
     /// `mmproj` compagnon. `nil` = texte seul. Ne jamais substituer ce fichier au GGUF texte.
-    let mmproj: LocalMmprojDescriptor? = nil
+    /// Pas de valeur par défaut sur ce `let` : Swift exclurait alors le paramètre du memberwise init.
+    let mmproj: LocalMmprojDescriptor?
 
     var isDownloadable: Bool { downloadURL != nil && expectedBytes > 0 }
     var hasOptionalVisionProjector: Bool { mmproj != nil }
@@ -145,7 +146,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 2.4,
             compatibilityIPhone14Plus: .recommended,
             compatibilityNote: "Validé sur iPhone 14 Plus / A15 — modèle actif par défaut.",
-            statusNote: "Stable"
+            statusNote: "Stable",
+            mmproj: nil
         ),
         LocalModelDescriptor(
             id: "lfm25-1.2b-instruct-q4_k_m",
@@ -167,7 +169,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 1.6,
             compatibilityIPhone14Plus: .recommended,
             compatibilityNote: "Très léger — bon pour comparer vitesse vs Qwen3 1.7B.",
-            statusNote: "À tester"
+            statusNote: "À tester",
+            mmproj: nil
         ),
         LocalModelDescriptor(
             id: "qwen35-2b-q4_k_m",
@@ -223,7 +226,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 4.2,
             compatibilityIPhone14Plus: .experimental,
             compatibilityNote: "~2.5 Go disque — limite sur 6 Go RAM avec contexte utile.",
-            statusNote: "Catalogue — download bientôt"
+            statusNote: "Catalogue — download bientôt",
+            mmproj: nil
         ),
         LocalModelDescriptor(
             id: "granite4-micro-q4_k_m",
@@ -245,7 +249,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 3.8,
             compatibilityIPhone14Plus: .experimental,
             compatibilityNote: "~2.1 Go — à tester ; pas encore d’URL GGUF figée dans l’app.",
-            statusNote: "Catalogue"
+            statusNote: "Catalogue",
+            mmproj: nil
         ),
 
         // MARK: Rouge — non recommandé 6 Go
@@ -269,7 +274,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 5.5,
             compatibilityIPhone14Plus: .notRecommended,
             compatibilityNote: "Intéressant raisonnement/code mais lourd pour A15 / 6 Go.",
-            statusNote: "Non recommandé"
+            statusNote: "Non recommandé",
+            mmproj: nil
         ),
         LocalModelDescriptor(
             id: "gemma4-e2b-it-q4_0",
@@ -291,7 +297,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             estimatedRuntimeMemoryGB: 5.4,
             compatibilityIPhone14Plus: .notRecommended,
             compatibilityNote: "Étudié seulement. Q4_0 officiel ~3,35 Go + mmproj 0,34–0,99 Go. Pas équivalent mémoire à Qwen3.5 2B (1,18+0,64 Go). Non téléchargeable.",
-            statusNote: "Expérimental interne — hors UI"
+            statusNote: "Expérimental interne — hors UI",
+            mmproj: nil
         ),
     ]
 
