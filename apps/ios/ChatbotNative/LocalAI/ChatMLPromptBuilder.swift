@@ -42,10 +42,15 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
             "<|im_start|>",
             "<|endoftext|>",
         ],
-        disableThinkingSuffix: " /no_think",
+        // Qwen3.5 ne se pilote pas par `/no_think` : le template officiel coupe la
+        // réflexion en préremplissant un bloc `<think>` vide (ci-dessous). Ajouter
+        // en plus « /no_think » à chaque message utilisateur injectait un marqueur
+        // absent des données d'entraînement, dans le tour courant *et* dans tout
+        // l'historique reconstruit.
+        disableThinkingSuffix: nil,
         assistantGenerationPrefill: "<think>\n\n</think>\n\n",
-        defaultContextLength: 2048,
-        defaultMaxOutputTokens: 512,
+        defaultContextLength: 6144,
+        defaultMaxOutputTokens: 1_024,
         defaultTemperature: 0.7,
         enableThinking: false,
         bosPrefix: ""
@@ -274,17 +279,12 @@ enum LocalChatTemplate {
         charBudget: Int,
         profile: LocalModelRuntimeProfile
     ) -> String {
-        let imStart = "<|im_start|>"
-        let imEnd = "<|im_end|>"
-        var blocks: [String] = []
-        blocks.append("\(imStart)system\n\(system)\n\(imEnd)")
-
         var selected: [LLMChatMessage] = []
         var used = system.count + 32
         for message in messages.reversed() {
             var content = message.content
             if message.role == .user, let suffix = profile.disableThinkingSuffix,
-               !content.contains("/no_think") {
+               !content.contains(suffix) {
                 content += suffix
             }
             let cost = content.count + 40
@@ -300,11 +300,52 @@ enum LocalChatTemplate {
             selected.insert(LLMChatMessage(role: message.role, content: content), at: 0)
             used += cost
         }
+        return assembleChatML(system: system, messages: selected, profile: profile)
+    }
 
-        for message in selected {
-            blocks.append("\(imStart)\(message.role.rawValue)\n\(message.content)\n\(imEnd)")
-        }
-        blocks.append("\(imStart)assistant\n\(chatMLAssistantPrefill(profile))")
+    // MARK: - Rendu ChatML (blocs unitaires, réutilisés par l'ajusteur en tokens)
+
+    static let imStartToken = "<|im_start|>"
+    static let imEndToken = "<|im_end|>"
+
+    /// Bloc système. Pas de `\n` avant `<|im_end|>` : le template officiel Qwen
+    /// écrit `<|im_start|>system\n{content}<|im_end|>`. Le retour parasite
+    /// déplaçait chaque tour hors de la distribution vue à l'entraînement.
+    static func renderChatMLSystemBlock(_ system: String) -> String {
+        "\(imStartToken)system\n\(system)\(imEndToken)"
+    }
+
+    static func renderChatMLBlock(_ message: LLMChatMessage) -> String {
+        "\(imStartToken)\(message.role.rawValue)\n\(message.content)\(imEndToken)"
+    }
+
+    /// En-tête du tour à générer, préremplissage de réflexion inclus.
+    static func renderChatMLAssistantHeader(_ profile: LocalModelRuntimeProfile) -> String {
+        "\(imStartToken)assistant\n\(chatMLAssistantPrefill(profile))"
+    }
+
+    /// Préfixe de prompt réellement invariant, destiné au cache KV disque.
+    ///
+    /// Uniquement l'ouverture du message système suivie de son texte statique :
+    /// ni horloge (elle change chaque jour), ni faits mémorisés (ils changent à
+    /// chaque nouveau fait), sinon le cache serait invalidé en permanence.
+    static func stableCachePrefix(
+        staticSystem: String,
+        profile: LocalModelRuntimeProfile
+    ) -> String? {
+        guard profile.templateKind == .chatml || profile.templateKind == .generic else { return nil }
+        guard !staticSystem.isEmpty else { return nil }
+        return profile.bosPrefix + imStartToken + "system\n" + staticSystem
+    }
+
+    static func assembleChatML(
+        system: String,
+        messages: [LLMChatMessage],
+        profile: LocalModelRuntimeProfile
+    ) -> String {
+        var blocks: [String] = [renderChatMLSystemBlock(system)]
+        blocks.append(contentsOf: messages.map(renderChatMLBlock))
+        blocks.append(renderChatMLAssistantHeader(profile))
         return profile.bosPrefix + blocks.joined(separator: "\n")
     }
 
@@ -464,14 +505,23 @@ enum LocalChatTemplate {
         var hitStop: Bool
     }
 
+    /// Compilée une seule fois. Elle était reconstruite à chaque token émis,
+    /// soit ~1000 compilations de regex par réponse.
+    private static let residualControlTagRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: #"<\|[^|>]*\|>"#, options: [])
+
     /// Retire **tous** les tokens de contrôle connus + motifs `<|...|>`.
     static func stripControlTokens(_ raw: String, profile: LocalModelRuntimeProfile) -> String {
+        // Aucun `<` ⇒ aucun token de contrôle possible. Cas de très loin le plus
+        // fréquent pendant le streaming : on évite N remplacements + une regex.
+        guard raw.contains("<") else { return raw }
+
         var text = raw
-        for token in profile.controlTokens {
+        for token in profile.controlTokens where text.contains(token) {
             text = text.replacingOccurrences(of: token, with: "")
         }
         // Défense générique : balises <|...|> restantes.
-        if let regex = try? NSRegularExpression(pattern: #"<\|[^|>]*\|>"#, options: []) {
+        if text.contains("<|"), let regex = residualControlTagRegex {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
         }
@@ -486,6 +536,21 @@ enum LocalChatTemplate {
         _ raw: String,
         profile: LocalModelRuntimeProfile = .chatmlQwen
     ) -> TruncationResult {
+        // Chemin rapide : sans `<`, aucune balise think / contrôle / stop ChatML
+        // ne peut être présente. Seul `firstLegacyTurnBoundary` reste à vérifier.
+        if !raw.contains("<") {
+            if let idx = firstLegacyTurnBoundary(in: raw) {
+                return TruncationResult(
+                    text: String(raw[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines),
+                    hitStop: true
+                )
+            }
+            return TruncationResult(
+                text: raw.trimmingCharacters(in: .whitespacesAndNewlines),
+                hitStop: false
+            )
+        }
+
         var text = raw
         var hit = false
 

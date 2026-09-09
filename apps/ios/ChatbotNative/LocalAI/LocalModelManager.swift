@@ -834,7 +834,7 @@ final class LocalModelManager: ObservableObject {
             logLoadTrace("before-libllama-load")
             try await engine.load(
                 path: path,
-                config: activeDescriptor.executionProfile.inference,
+                config: memoryAdjustedInference(activeDescriptor.executionProfile.inference),
                 modelId: activeDescriptor.id,
                 quant: activeDescriptor.quant
             )
@@ -843,6 +843,7 @@ final class LocalModelManager: ObservableObject {
             // Re-vérifier après load (TOCTOU / sideload parallèle).
             if isInstalled {
                 state = .ready
+                await primeStablePromptPrefix()
                 logLoadTrace("success-ready")
             } else {
                 logLoadTrace("before-unload")
@@ -859,6 +860,54 @@ final class LocalModelManager: ObservableObject {
             applyPresenceToState(presence, clearTransientErrors: false)
             logLoadTrace("after-catch-applyPresence")
         }
+    }
+
+    /// Dimensionne `n_ctx` sur la marge jetsam réelle du process plutôt que sur
+    /// une constante compilée : sur un 14 Plus déjà chargé, la fenêtre haute de
+    /// l'échelle peut être hors budget avant même le premier `llama_decode`.
+    private func memoryAdjustedInference(_ base: LlamaInferenceConfig) -> LlamaInferenceConfig {
+        let ladder = base.resolvedContextLadder
+        guard ladder.count > 1 else { return base }
+
+        let weights = actualFileSize > 0 ? actualFileSize : activeDescriptor.expectedBytes
+        let sizing = KVCacheSizing.profile(for: activeDescriptor.id)
+        var config = base
+
+        for candidate in ladder {
+            let kv = sizing.bytes(
+                context: Int(candidate),
+                typeK: base.kvCacheTypeK,
+                typeV: base.kvCacheTypeV
+            )
+            // `nil` = API indisponible (simulateur) : on garde l'échelle telle quelle.
+            guard let affordable = DeviceMemoryGuard.canAfford(
+                weightsBytes: weights,
+                kvBytes: kv
+            ) else { return base }
+            if affordable {
+                config.nCtx = candidate
+                config.contextLadder = ladder.filter { $0 < candidate }
+                return config
+            }
+        }
+
+        // Aucune fenêtre ne tient : tenter la plus petite, l'échelle runtime
+        // produira l'erreur explicite si même celle-ci échoue.
+        config.nCtx = ladder.last ?? base.nCtx
+        config.contextLadder = []
+        return config
+    }
+
+    /// Restaure (ou planifie) le cache KV du préfixe système invariant.
+    ///
+    /// Ne concerne que le premier message après ce chargement : au sein d'une
+    /// session, la réutilisation du préfixe en mémoire est déjà complète.
+    private func primeStablePromptPrefix() async {
+        guard let prefix = LocalChatTemplate.stableCachePrefix(
+            staticSystem: LocalPrompts.conversation,
+            profile: activeDescriptor.runtimeProfile
+        ) else { return }
+        await engine.primeStablePrefix(prefix)
     }
 
     func unload() async {

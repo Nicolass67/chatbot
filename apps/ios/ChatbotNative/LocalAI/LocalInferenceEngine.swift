@@ -47,6 +47,14 @@ struct LocalInferenceMetrics: Sendable, Equatable, Codable {
     var peakMemoryBytesHint: UInt64?
     var backendEffective: String?
     var nGpuLayersConfigured: Int32?
+    /// Tokens du prompt servis depuis le KV du tour précédent (0 = prefill complet).
+    var reusedPrefixTokens: Int = 0
+
+    /// Part du prompt qui n'a pas eu besoin d'être réencodée.
+    var prefixReuseRatio: Double? {
+        guard promptTokens > 0 else { return nil }
+        return Double(reusedPrefixTokens) / Double(promptTokens)
+    }
 
     static let empty = LocalInferenceMetrics(
         loadDuration: nil,
@@ -61,7 +69,8 @@ struct LocalInferenceMetrics: Sendable, Equatable, Codable {
         cancellationLatencyMs: nil,
         peakMemoryBytesHint: nil,
         backendEffective: nil,
-        nGpuLayersConfigured: nil
+        nGpuLayersConfigured: nil,
+        reusedPrefixTokens: 0
     )
 }
 
@@ -74,6 +83,9 @@ actor LocalInferenceEngine {
     private var loadedModelId: String?
     private var cancelGeneration = false
     private var generationInFlight = false
+    private var activeConfig: LlamaInferenceConfig = .a15Default
+    /// Préfixe système à écrire sur disque après la première génération réussie.
+    private var pendingPrefixCache: (signature: PromptPrefixCache.Signature, tokens: [Int32])?
 
 #if canImport(llama)
     private var llama: LlamaContext?
@@ -145,6 +157,10 @@ actor LocalInferenceEngine {
             loadedPath = path
             loadedModelId = modelId
             lastLoadDiagnostics = LlamaContext.lastDiagnostics
+            // La config effective peut avoir été dégradée par l'échelle de contexte :
+            // l'empreinte du cache de prompt doit refléter ce qui a réellement été ouvert.
+            activeConfig = Self.effectiveConfig(requested: config, diagnostics: lastLoadDiagnostics)
+            pendingPrefixCache = nil
             var metrics = lastMetrics
             metrics.loadDuration = Date().timeIntervalSince(started)
             metrics.backendEffective = lastLoadDiagnostics?.backendEffective
@@ -246,7 +262,8 @@ actor LocalInferenceEngine {
     /// Stream de tokens (pièces décodées).
     func generate(
         prompt: String,
-        maxTokens: Int = 256
+        maxTokens: Int = 256,
+        options: LocalGenerationOptions = .default
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -254,6 +271,7 @@ actor LocalInferenceEngine {
                     try await self.runGeneration(
                         prompt: prompt,
                         maxTokens: maxTokens,
+                        options: options,
                         onToken: { token in
                             continuation.yield(token)
                         }
@@ -276,6 +294,7 @@ actor LocalInferenceEngine {
         maxTokens: Int = 256,
         images: [Data] = [],
         mmprojPath: String? = nil,
+        options: LocalGenerationOptions = .default,
         onToken: @escaping @Sendable (String) async -> Void
     ) async throws {
         try await runGeneration(
@@ -283,9 +302,17 @@ actor LocalInferenceEngine {
             maxTokens: maxTokens,
             images: images,
             mmprojPath: mmprojPath,
+            options: options,
             onToken: onToken
         )
     }
+
+    /// Fenêtre de contexte **réellement ouverte**, après l'échelle de repli.
+    ///
+    /// Le profil décrit ce qu'on demande ; si l'allocation a échoué en 6144 et
+    /// que le contexte tourne en 4096, budgéter sur le profil garantit un
+    /// dépassement au premier prompt un peu long.
+    var activeContextTokens: Int { Int(activeConfig.nCtx) }
 
     /// Nombre de tokens llama du prompt (nil si moteur non chargé).
     func countTokens(_ text: String) -> Int? {
@@ -298,11 +325,112 @@ actor LocalInferenceEngine {
 #endif
     }
 
+    /// Config telle qu'ouverte réellement (l'échelle de contexte peut avoir dégradé
+    /// `n_ctx` ou repassé le KV en f16).
+    private static func effectiveConfig(
+        requested: LlamaInferenceConfig,
+        diagnostics: LlamaLoadDiagnostics?
+    ) -> LlamaInferenceConfig {
+        guard let diagnostics else { return requested }
+        var config = requested
+        config.nCtx = diagnostics.nCtx
+        if let typeK = LlamaKVCacheType(rawValue: diagnostics.kvCacheTypeK) {
+            config.kvCacheTypeK = typeK
+        }
+        if let typeV = LlamaKVCacheType(rawValue: diagnostics.kvCacheTypeV) {
+            config.kvCacheTypeV = typeV
+        }
+        if let mode = LlamaFlashAttentionMode(rawValue: diagnostics.flashAttention) {
+            config.flashAttention = mode
+        }
+        return config
+    }
+
+    /// Amorce le KV avec le préfixe système stable depuis le cache disque.
+    ///
+    /// La réutilisation en mémoire couvre déjà tous les tours d'une session ;
+    /// ceci ne sert qu'au premier message après un lancement ou un rechargement
+    /// de modèle. Sans effet si le cache est absent, incompatible, ou incohérent.
+    func primeStablePrefix(_ prefix: String) {
+#if canImport(llama)
+        guard isLoaded, let llama, !prefix.isEmpty else { return }
+        let modelId = loadedModelId ?? loadedPath ?? "unknown"
+        let signature = PromptPrefixCache.signature(
+            modelId: modelId,
+            config: activeConfig,
+            prompt: prefix
+        )
+
+        var tokens = llama.tokenIds(for: prefix)
+        // La dernière frontière de token n'est pas stable : le caractère suivant
+        // du prompt complet peut fusionner avec elle. On sacrifie quelques tokens
+        // pour garantir que le cache est bien un préfixe du prompt réel.
+        guard tokens.count > 100 else { return }
+        tokens.removeLast(4)
+
+        if let url = PromptPrefixCache.existingState(for: signature) {
+            let restored = llama.loadPrefixState(
+                from: url.path(percentEncoded: false),
+                expectedTokens: tokens
+            )
+            if restored > 0 {
+                print("[local-ai:prefix-cache] restauré \(restored) tokens depuis le disque")
+                pendingPrefixCache = nil
+                return
+            }
+            print("[local-ai:prefix-cache] état illisible ou incohérent — purge")
+            PromptPrefixCache.discard(signature: signature)
+        }
+        pendingPrefixCache = (signature, tokens)
+#else
+        _ = prefix
+#endif
+    }
+
+#if canImport(llama)
+    /// Écrit le cache après une génération réussie, quand le KV contient bien
+    /// le préfixe attendu.
+    private func persistPendingPrefixCache() {
+        guard let pending = pendingPrefixCache, let llama else { return }
+        guard let url = PromptPrefixCache.stateURLForWriting(
+            signature: pending.signature,
+            tokenCount: pending.tokens.count
+        ) else {
+            pendingPrefixCache = nil
+            return
+        }
+        let saved = llama.savePrefixState(
+            to: url.path(percentEncoded: false),
+            expectedTokens: pending.tokens
+        )
+        if saved {
+            PromptPrefixCache.writeMetadata(pending.signature)
+            print("[local-ai:prefix-cache] écrit \(pending.tokens.count) tokens")
+        } else {
+            PromptPrefixCache.discard(signature: pending.signature)
+        }
+        pendingPrefixCache = nil
+    }
+#endif
+
+    /// Comptage par lot — un seul aller-retour vers l'actor pour tout un prompt.
+    /// Sans ça, ajuster un historique de 24 messages coûte 24 sauts de contexte.
+    /// Repli sur l'estimation caractères si le modèle n'est pas chargé.
+    func countTokens(batch texts: [String]) -> [Int] {
+#if canImport(llama)
+        if isLoaded, let llama {
+            return texts.map { llama.countTokens($0) }
+        }
+#endif
+        return texts.map { GenerationContextBudget.estimateTokens($0) }
+    }
+
     private func runGeneration(
         prompt: String,
         maxTokens: Int,
         images: [Data] = [],
         mmprojPath: String? = nil,
+        options: LocalGenerationOptions = .default,
         onToken: @escaping @Sendable (String) async -> Void
     ) async throws {
 #if canImport(llama)
@@ -322,12 +450,16 @@ actor LocalInferenceEngine {
             throw LocalInferenceError.generatingFailed("Impossible de décoder l’image jointe.")
         }
 
+        let deadline = options.timeout.map { started.addingTimeInterval($0) }
         do {
             try await llama.generate(
                 prompt: prompt,
                 maxTokens: Int32(maxTokens),
                 images: bitmaps,
-                mmprojPath: mmprojPath
+                mmprojPath: mmprojPath,
+                sampling: options.sampling,
+                grammar: options.grammar,
+                deadline: deadline
             ) { piece in
                 if Task.isCancelled {
                     llama.stop()
@@ -368,6 +500,10 @@ actor LocalInferenceEngine {
             throw LocalInferenceError.generatingFailed(detail)
         }
 
+        // Le KV contient maintenant le prompt complet : le préfixe système en est
+        // le début, donc il est sauvegardable tel quel.
+        persistPendingPrefixCache()
+
         let tokenCount = counter.count
         let totalSec = Date().timeIntervalSince(started)
         let promptSec = llama.lastPromptEvalSeconds
@@ -380,6 +516,7 @@ actor LocalInferenceEngine {
         metrics.promptTokens = promptTok
         metrics.generatedTokens = tokenCount
         metrics.totalSeconds = totalSec
+        metrics.reusedPrefixTokens = llama.lastReusedPrefixTokens
         if promptSec > 0, promptTok > 0 {
             metrics.promptTokensPerSecond = Double(promptTok) / promptSec
         }
@@ -400,10 +537,12 @@ actor LocalInferenceEngine {
         lastMetrics = metrics
         print(
             String(
-                format: "[local-ai:perf] backend=%@ gpuLayers=%d prompt=%d tok (%.0fms, %.1f t/s) gen=%d tok TTFT=%.0fms gen=%.1f t/s total=%.0fms",
+                format: "[local-ai:perf] backend=%@ gpuLayers=%d prompt=%d tok (kvReuse=%d/%.0f%%, %.0fms, %.1f t/s) gen=%d tok TTFT=%.0fms gen=%.1f t/s total=%.0fms",
                 metrics.backendEffective ?? "?",
                 metrics.nGpuLayersConfigured ?? -999,
                 metrics.promptTokens,
+                metrics.reusedPrefixTokens,
+                (metrics.prefixReuseRatio ?? 0) * 100,
                 (metrics.promptEvalSeconds ?? 0) * 1000,
                 metrics.promptTokensPerSecond ?? 0,
                 metrics.generatedTokens,
@@ -417,6 +556,7 @@ actor LocalInferenceEngine {
         _ = maxTokens
         _ = images
         _ = mmprojPath
+        _ = options
         _ = onToken
         throw LocalInferenceError.notAvailable
 #endif

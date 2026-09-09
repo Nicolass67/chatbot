@@ -26,6 +26,40 @@ protocol AIRuntime: AnyObject {
     func cancel() async
 }
 
+extension AIRuntime {
+    /// Point d'entrée unique des workflows : options d'échantillonnage,
+    /// grammaire et réflexion quand le runtime les supporte, sinon repli sur la
+    /// surface commune. Évite de dupliquer partout le `if let onToken`.
+    @MainActor
+    func generateLocal(
+        system: String,
+        messages: [LLMChatMessage],
+        maxTokens: Int?,
+        options: LocalGenerationOptions = .default,
+        onToken: (@MainActor (String) -> Void)? = nil
+    ) async throws -> String {
+        if let local = self as? LocalAIRuntime {
+            return try await local.generateStream(
+                system: system,
+                messages: messages,
+                maxTokens: maxTokens,
+                images: [],
+                options: options,
+                onToken: onToken ?? { _ in }
+            )
+        }
+        if let onToken {
+            return try await generateStream(
+                system: system,
+                messages: messages,
+                maxTokens: maxTokens,
+                onToken: onToken
+            )
+        }
+        return try await generate(system: system, messages: messages, maxTokens: maxTokens)
+    }
+}
+
 /// Erreurs runtime partagées (pas de logique métier).
 enum AIRuntimeError: Error, LocalizedError, Sendable {
     case notReady
@@ -136,10 +170,43 @@ final class LocalAIRuntime: AIRuntime {
         }
         guard models.isReady else { throw AIRuntimeError.notReady }
 
+        return try await generateStream(
+            system: system,
+            messages: messages,
+            maxTokens: maxTokens,
+            images: images,
+            options: .default,
+            onToken: onToken
+        )
+    }
+
+    /// Chemin unique de génération locale.
+    ///
+    /// Le budget contexte est respecté **par construction** via `LocalPromptFitter` :
+    /// plus de boucle « je tente, ça dépasse, je réduis, je recommence », qui
+    /// tokenisait le prompt jusqu'à quatre fois et jetait le préfixe KV à chaque
+    /// reprise. Une seule reprise défensive subsiste, si le moteur refuse malgré tout.
+    func generateStream(
+        system: String,
+        messages: [LLMChatMessage],
+        maxTokens: Int?,
+        images: [Data],
+        options: LocalGenerationOptions,
+        onToken: @escaping @MainActor (String) -> Void
+    ) async throws -> String {
+        if !models.isReady {
+            await models.loadIntoEngine()
+        }
+        guard models.isReady else { throw AIRuntimeError.notReady }
+
         let profile = executionProfile
-        let template = chatTemplateProfile
-        let requested = maxTokens ?? profile.maxOutputTokens
-        let budget = GenerationContextBudget.make(profile: profile, requestedOutput: requested)
+        var template = chatTemplateProfile
+        // Réflexion décidée par tour : elle change le préremplissage de l'en-tête
+        // assistant (`<think>\n` au lieu d'un bloc think vide).
+        if let thinking = options.enableThinking {
+            template.enableThinking = thinking
+        }
+        let requested = max(32, maxTokens ?? profile.maxOutputTokens)
         var working = messages
         let visionImages = Array(images.prefix(LocalVision.maxImagesPerTurn))
         if !visionImages.isEmpty, let idx = working.lastIndex(where: { $0.role == .user }) {
@@ -150,56 +217,58 @@ final class LocalAIRuntime: AIRuntime {
             return models.visionProjectorURL(for: models.activeDescriptor)?
                 .path(percentEncoded: false)
         }()
+
+        var resolvedOptions = options
+        if resolvedOptions.timeout == nil {
+            resolvedOptions.timeout = profile.generationTimeoutSeconds
+        }
+
+        // Budgéter sur la fenêtre réellement ouverte, pas sur celle demandée :
+        // l'échelle de repli a pu dégrader `n_ctx` au chargement.
+        let nCtx = await engine.activeContextTokens
+        var promptCeiling = min(
+            profile.hardPromptTokenCeiling(outputTokens: requested),
+            max(256, nCtx - requested - GenerationContextBudget.safetyTokens)
+        )
         var lastError: Error?
 
-        for attempt in 0..<3 {
+        // Deux passes au maximum : la seconde uniquement si le moteur signale un
+        // dépassement que le budget calculé n'avait pas anticipé.
+        for attempt in 0..<2 {
             try Task.checkCancellation()
             if attempt > 0 {
-                working = GenerationContextBudget.shrinkMessages(
-                    working,
-                    attempt: attempt,
-                    toolResultCharBudget: profile.toolResultCharBudget
-                )
+                promptCeiling = max(256, promptCeiling / 2)
             }
-            let charBudget = max(400, budget.promptBudget * 3)
-            let prompt = LocalChatTemplate.buildPrompt(
+
+            let fitted = await LocalPromptFitter.fit(
                 system: system,
                 messages: working,
-                charBudget: charBudget,
-                profile: template
+                profile: template,
+                tokenBudget: promptCeiling,
+                engine: engine
             )
-            let promptTokens = await engine.countTokens(prompt) ?? GenerationContextBudget.estimateTokens(prompt)
-            let output = min(requested, max(32, budget.nCtx - promptTokens - budget.safetyTokens))
-            WorkflowTrace.log("context", [
-                "attempt": "\(attempt)",
-                "prompt_tokens": "\(promptTokens)",
-                "reserved_output": "\(output)",
-                "context_budget": "\(budget.nCtx)",
-                "prompt_budget": "\(budget.promptBudget)",
-                "web_chars": "\(working.last?.content.count ?? 0)",
-            ])
-            WorkflowTrace.log("llama", [
-                "n_ctx": "\(profile.inference.nCtx)",
-                "n_batch": "\(profile.inference.nBatch)",
-                "n_ubatch": "\(profile.inference.nUbatch)",
-                "ngl": "\(profile.inference.nGpuLayers)",
-                "backend": profile.inference.preferMetal ? "metal" : "cpu",
-            ])
+            let output = min(
+                requested,
+                max(32, nCtx - fitted.promptTokens - GenerationContextBudget.safetyTokens)
+            )
 
-            if visionImages.isEmpty, promptTokens > budget.promptBudget {
-                lastError = AIRuntimeError.contextOverflow
-                continue
-            }
+            var contextFields = fitted.traceFields
+            contextFields["attempt"] = "\(attempt)"
+            contextFields["prompt_ceiling"] = "\(promptCeiling)"
+            contextFields["reserved_output"] = "\(output)"
+            contextFields["n_ctx"] = "\(nCtx)"
+            WorkflowTrace.log("context", contextFields)
 
             let accumulator = RuntimeStringAccumulator()
             let engineRef = engine
             let emitted = StreamEmitCounter()
             do {
                 try await engineRef.generate(
-                    prompt: prompt,
+                    prompt: fitted.prompt,
                     maxTokens: output,
                     images: visionImages,
-                    mmprojPath: mmprojPath
+                    mmprojPath: mmprojPath,
+                    options: resolvedOptions
                 ) { piece in
                     accumulator.append(piece)
                     let step = LocalChatTemplate.streamingSafeEmit(

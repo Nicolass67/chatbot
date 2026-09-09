@@ -6,5 +6,13 @@
 	<array>
 		<string>group.fr.nicolazer.chatbot.native</string>
 	</array>
+	<!-- Inférence GGUF locale : sans ces deux capacités l'app est plafonnée
+	     à ~2,0-2,4 Go sur iPhone 14 Plus (6 Go), ce qui interdit n_ctx > 2048.
+	     Mesure de référence sur A15/6 Go : ~+1 Go de marge jetsam.
+	     Best-effort : toujours vérifier os_proc_available_memory() avant de charger. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
 </dict>
 </plist>

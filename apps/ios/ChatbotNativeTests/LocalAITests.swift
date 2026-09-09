@@ -2,17 +2,20 @@ import XCTest
 @testable import ChatbotNative
 
 final class LocalModelDescriptorTests: XCTestCase {
-    func testPrimaryIsQwen3Q4KM() {
+    func testPrimaryIsQwen35Dense2B() {
         let m = LocalModelDescriptor.primary
-        XCTAssertEqual(m.id, "qwen3-1.7b-q4_k_m")
-        XCTAssertEqual(m.filename, "Qwen3-1.7B-Q4_K_M.gguf")
+        XCTAssertEqual(m.id, "qwen35-2b-q4_k_m")
+        XCTAssertEqual(m.filename, "Qwen3.5-2B-Q4_K_M.gguf")
         XCTAssertTrue(m.isDownloadable)
         XCTAssertNotNil(m.downloadURL)
-        XCTAssertTrue(m.downloadURL!.absoluteString.contains("Qwen3-1.7B-Q4_K_M.gguf"))
-        XCTAssertTrue(m.downloadURL!.absoluteString.contains("second-state"))
-        XCTAssertEqual(m.expectedBytes, 1_282_439_264)
+        XCTAssertTrue(m.downloadURL!.absoluteString.contains("Qwen3.5-2B-Q4_K_M.gguf"))
+        XCTAssertTrue(m.downloadURL!.absoluteString.contains("lmstudio-community"))
+        XCTAssertEqual(m.expectedBytes, 1_270_808_032)
         XCTAssertEqual(m.compatibilityIPhone14Plus, .recommended)
         XCTAssertEqual(m.runtimeProfile.templateKind, .chatml)
+        // `primary` et `recommended` doivent désigner le même modèle : c'est
+        // l'incohérence qui faisait démarrer une installation neuve sur Qwen3 1.7B.
+        XCTAssertTrue(m.recommended)
     }
 
     func testCatalogHasMultiModelsAndOnlyOnePrimary() {
@@ -135,7 +138,7 @@ final class LocalModelDescriptorTests: XCTestCase {
             charBudget: 2000,
             profile: .chatmlQwen
         )
-        XCTAssertTrue(qwen.contains("/no_think"))
+        XCTAssertFalse(qwen.contains("/no_think"))
         XCTAssertTrue(qwen.contains("<think>\n\n</think>\n\n"))
         XCTAssertFalse(qwen.hasPrefix("<|startoftext|>"))
 
@@ -231,8 +234,10 @@ final class LocalLLMProviderPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("<|im_start|>assistant\n"))
         XCTAssertTrue(prompt.hasSuffix("<think>\n\n</think>\n\n"))
         XCTAssertFalse(prompt.hasPrefix("System:"))
-        // /no_think injecté pour Qwen3 non-thinking mobile
-        XCTAssertTrue(prompt.contains("/no_think"))
+        // Le mode non-thinking passe par le bloc `<think></think>` préremplí du
+        // template officiel. `/no_think` ajoutait un suffixe au message
+        // utilisateur : redondant, et il déstabilisait le préfixe du cache KV.
+        XCTAssertFalse(prompt.contains("/no_think"))
     }
 
     func testBuildPromptTruncatesOldestMessages() {
@@ -906,13 +911,13 @@ final class AIParityArchitectureTests: XCTestCase {
     }
 
     func testExecutionProfilesDifferByBudgetNotFeatures() {
-        let qwen = LocalModelDescriptor.primary.executionProfile
-        let other = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
-        XCTAssertEqual(qwen.performanceClass, .compact)
-        XCTAssertEqual(other.performanceClass, .balanced)
-        XCTAssertLessThan(qwen.maxWorkflowSteps, other.maxWorkflowSteps)
-        XCTAssertLessThanOrEqual(qwen.contextCharBudget, other.contextCharBudget)
-        XCTAssertLessThanOrEqual(qwen.maxToolCalls, other.maxToolCalls)
+        let light = LocalModelDescriptor.descriptor(id: "qwen3-1.7b-q4_k_m")!.executionProfile
+        let primary = LocalModelDescriptor.primary.executionProfile
+        XCTAssertEqual(light.performanceClass, .compact)
+        XCTAssertEqual(primary.performanceClass, .ample)
+        XCTAssertLessThan(light.maxWorkflowSteps, primary.maxWorkflowSteps)
+        XCTAssertLessThanOrEqual(light.contextCharBudget, primary.contextCharBudget)
+        XCTAssertLessThanOrEqual(light.maxToolCalls, primary.maxToolCalls)
     }
 
     func testStructuredActionParserToolAndFinal() {
@@ -943,6 +948,7 @@ final class AIParityArchitectureTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testContextCompressorKeepsRecentAndSummarizesOlder() {
         var history: [LLMChatMessage] = []
         for i in 0..<20 {
@@ -962,8 +968,11 @@ final class AIParityArchitectureTests: XCTestCase {
     }
 
     func testNativeCapabilitiesDoNotGateAgent() {
+        // Le modèle par défaut est désormais Qwen3.5 2B : vision déclarée
+        // (via mmproj compagnon) mais l'agent ne dépend d'aucune de ces capacités.
         let native = ModelNativeCapabilities.from(descriptor: .primary)
-        XCTAssertFalse(native.supportsVision)
+        XCTAssertEqual(LocalModelDescriptor.primary.id, "qwen35-2b-q4_k_m")
+        XCTAssertFalse(native.supportsNativeToolCalling)
         XCTAssertTrue(ApplicationCapabilities.full.agent)
     }
 }
@@ -979,12 +988,12 @@ final class LlamaInferencePerfTests: XCTestCase {
     }
 
     func testExecutionProfilesCarryInferenceWithoutFeatureGating() {
-        let qwen = LocalModelDescriptor.primary.executionProfile
-        let other = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
+        let primary = LocalModelDescriptor.primary.executionProfile
+        let light = LocalModelDescriptor.descriptor(id: "qwen3-1.7b-q4_k_m")!.executionProfile
         XCTAssertTrue(ApplicationCapabilities.full.agent)
-        XCTAssertTrue(qwen.inference.preferMetal)
-        XCTAssertTrue(other.inference.preferMetal)
-        XCTAssertNotEqual(qwen.maxWorkflowSteps, other.maxWorkflowSteps)
+        XCTAssertTrue(primary.inference.preferMetal)
+        XCTAssertTrue(light.inference.preferMetal)
+        XCTAssertNotEqual(primary.maxWorkflowSteps, light.maxWorkflowSteps)
     }
 
     func testResolvedThreadsCappedForA15Class() {
@@ -1006,9 +1015,10 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertFalse(gemma.thinkingEnabled)
         XCTAssertEqual(gemma.generationTimeoutSeconds, 240)
         let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
-        XCTAssertEqual(qwen.inference.nCtx, 2048)
+        XCTAssertEqual(qwen.inference.nCtx, 6144)
+        XCTAssertEqual(qwen.inference.contextLadder, [4096, 3072, 2048])
         XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
-        XCTAssertEqual(qwen.performanceClass, .balanced)
+        XCTAssertEqual(qwen.performanceClass, .ample)
         XCTAssertEqual(qwen.inference.nThreads, 4)
         XCTAssertEqual(qwen.inference.nThreadsBatch, 4)
         let lfmVL = LocalModelDescriptor.descriptor(id: "lfm25-vl-3b-q4_k_m")!.executionProfile
@@ -1020,8 +1030,6 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertEqual(mini.inference.nCtx, 1536)
         XCTAssertEqual(mini.inference.imageMaxTokens, 96)
         XCTAssertTrue(mini.thinkingEnabled)
-        XCTAssertEqual(qwen.inference.nCtx, 2048)
-        XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
         let granite = LocalModelDescriptor.descriptor(id: "granite4-micro-q4_k_m")!.executionProfile
         XCTAssertNil(granite.inference.nThreads)
         XCTAssertNil(granite.inference.nThreadsBatch)
@@ -1097,13 +1105,28 @@ final class LlamaInferencePerfTests: XCTestCase {
 
     func testConversationPromptAllowsMarkdownAndExplanations() {
         XCTAssertTrue(LocalPrompts.conversation.contains("Markdown"))
-        XCTAssertEqual(LocalPrompts.conversationTask(for: "Explique-moi la théorie des cordes"), .explanation)
-        XCTAssertEqual(
-            LocalPrompts.conversationTask(for: "Explique-moi la théorie des cordes en détail."),
-            .detailed
-        )
-        XCTAssertEqual(LocalPrompts.conversationTask(for: "ok"), .short)
         XCTAssertFalse(LocalPrompts.mailSummary.contains("Qui / quoi / quand"))
+    }
+
+    /// Le prompt système est tokenisé avec `parse_special: true`. Y écrire
+    /// `<|im_end|>` ou `<think>` en clair injecte de vrais tokens de contrôle
+    /// au milieu du message système : le modèle croit le tour terminé.
+    func testConversationPromptContainsNoRawControlTokens() {
+        for token in ["<|im_start|>", "<|im_end|>", "<think>", "</think>", "<|endoftext|>"] {
+            XCTAssertFalse(
+                LocalPrompts.conversation.contains(token),
+                "token de contrôle « \(token) » présent dans le prompt système"
+            )
+        }
+    }
+
+    func testClockBlockIsInjectedExactlyOnce() {
+        let system = LocalPrompts.systemPrompt(for: .conversation)
+        XCTAssertTrue(RuntimeTemporalContext.containsClockBlock(system))
+        let occurrences = system.components(
+            separatedBy: RuntimeTemporalContext.clockBlockMarker
+        ).count - 1
+        XCTAssertEqual(occurrences, 1)
     }
 
     func testLocalFilesRootIdStable() {
@@ -1156,15 +1179,16 @@ final class LocalParityWorkflowTests: XCTestCase {
 
     func testPromptBudgetReservesOutput() {
         let profile = LocalModelExecutionProfile.compact
-        let budget = GenerationContextBudget.make(
-            profile: profile,
-            requestedOutput: profile.outputTokens(for: .webSynthesize)
+        let requested = profile.outputTokens(for: .webSynthesize)
+        let ceiling = profile.hardPromptTokenCeiling(outputTokens: requested)
+        XCTAssertGreaterThan(ceiling, 300)
+        // La sortie réservée et la marge de sécurité tiennent sous `n_ctx`.
+        XCTAssertLessThanOrEqual(
+            ceiling + requested + GenerationContextBudget.safetyTokens,
+            Int(profile.inference.nCtx)
         )
-        XCTAssertEqual(budget.nCtx, Int(profile.inference.nCtx))
-        XCTAssertEqual(budget.promptBudget + budget.reservedOutputTokens + budget.safetyTokens, budget.nCtx)
-        XCTAssertGreaterThan(budget.promptBudget, 300)
         let huge = String(repeating: "lasagne vegan ", count: 400)
-        XCTAssertGreaterThan(GenerationContextBudget.estimateTokens(huge), budget.promptBudget)
+        XCTAssertGreaterThan(GenerationContextBudget.estimateTokens(huge), ceiling)
         let clipped = GenerationContextBudget.clip(huge, maxChars: 400)
         XCTAssertEqual(clipped.count, 400)
     }
@@ -1196,13 +1220,6 @@ final class LocalParityWorkflowTests: XCTestCase {
         XCTAssertLessThanOrEqual(packet.sources.count, profile.maxWebResults)
         XCTAssertFalse(packet.promptBlock.contains("Je n'ai pas accès à Internet"))
         XCTAssertFalse(packet.promptBlock.contains("WebSearchTool a été exécuté"))
-    }
-
-    func testShrinkMessagesDropsOldest() {
-        let msgs = (0..<6).map { LLMChatMessage(role: .user, content: "m\($0) " + String(repeating: "x", count: 200)) }
-        let shrunk = GenerationContextBudget.shrinkMessages(msgs, attempt: 2, toolResultCharBudget: 300)
-        XCTAssertEqual(shrunk.count, 1)
-        XCTAssertLessThanOrEqual(shrunk[0].content.count, 300)
     }
 
     func testGroundingPromptForbidsNoInternetDenial() {

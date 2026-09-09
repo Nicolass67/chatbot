@@ -7,6 +7,8 @@ enum ChatWorkflow {
         var history: [LLMChatMessage]
         var systemPrompt: String
         var taskHint: String?
+        /// Active le résumé roulant et la mémoire persistante de ce fil.
+        var conversationId: String?
     }
 
     struct Result: Sendable {
@@ -19,36 +21,70 @@ enum ChatWorkflow {
         runtime: any AIRuntime,
         onToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
+        // Le moteur local est unique : un résumé de fond encore en vol
+        // retarderait le premier token de ce tour.
+        ConversationMemoryService.shared.yieldEngine()
+
         let profile = runtime.executionProfile
+        // « et lui ? » n'est pas une clé de recherche : on la rattache aux tours
+        // précédents avant d'interroger la mémoire. Le prompt, lui, reste intact.
+        let recallQuery = QueryRewriter.retrievalQuery(
+            userText: request.userText,
+            history: request.history
+        )
         let packet = ConversationContextCompressor.compress(
             history: request.history,
             profile: profile,
-            taskHint: request.taskHint
+            taskHint: request.taskHint,
+            conversationId: request.conversationId,
+            recallQuery: recallQuery
         )
         var system = request.systemPrompt
         if !packet.systemAugment.isEmpty {
             system += "\n\n" + packet.systemAugment
         }
-        system += "\n\n" + RuntimeTemporalContext.silentClockBlock()
+        // Le bloc horloge est déjà posé par `LocalPrompts.systemPrompt(for:)`.
+        // Il était ajouté une seconde fois ici : deux dates identiques dans le
+        // même message système, et un préfixe de prompt qui change à chaque
+        // requête sans rien apporter.
+        if !RuntimeTemporalContext.containsClockBlock(system) {
+            system += "\n\n" + RuntimeTemporalContext.silentClockBlock()
+        }
         var messages = packet.messages
         if messages.last?.role != .user {
             messages.append(LLMChatMessage(role: .user, content: request.userText))
         }
-        let text: String
-        if let onToken {
-            text = try await runtime.generateStream(
-                system: system,
-                messages: messages,
-                maxTokens: profile.outputTokens(for: LocalPrompts.conversationTask(for: request.userText)),
-                onToken: onToken
-            )
-        } else {
-            text = try await runtime.generate(
-                system: system,
-                messages: messages,
-                maxTokens: profile.outputTokens(for: LocalPrompts.conversationTask(for: request.userText))
-            )
-        }
+
+        // Routage sémantique : longueur de réponse et réflexion décidées par
+        // similarité d'intention, pas par une liste de mots-clés.
+        let route = await SemanticRouter.shared.route(
+            userText: request.userText,
+            history: request.history
+        )
+        let maxTokens = route.outputTokens(profile: profile)
+        let options = route.generationOptions(profile: profile)
+        WorkflowTrace.log("route", route.traceFields)
+
+        let text = try await runtime.generateLocal(
+            system: system,
+            messages: messages,
+            maxTokens: maxTokens,
+            options: options,
+            onToken: onToken
+        )
+
+        // Après coup uniquement : résumé roulant et extraction de faits ne doivent
+        // rien ajouter au délai avant le premier token.
+        ConversationMemoryService.shared.ingestTurn(
+            conversationId: request.conversationId,
+            history: request.history + [
+                LLMChatMessage(role: .user, content: request.userText),
+                LLMChatMessage(role: .assistant, content: text),
+            ],
+            userText: request.userText,
+            assistantText: text,
+            runtime: runtime
+        )
         return Result(text: text)
     }
 }
@@ -79,6 +115,7 @@ enum AgentWorkflow {
         onEvent: ((AgentOrchestrationEvent) -> Void)? = nil,
         onFinalToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
+        ConversationMemoryService.shared.yieldEngine()
         let profile = runtime.executionProfile
         var toolCalls = 0
         var steps = 0
@@ -180,7 +217,9 @@ enum AgentWorkflow {
         let packet = ConversationContextCompressor.compress(
             history: request.history,
             profile: profile,
-            taskHint: request.userText
+            taskHint: request.userText,
+            conversationId: request.threadId,
+            recallQuery: request.userText
         )
         let clock = RuntimeTemporalContext.silentClockBlock()
 
@@ -191,15 +230,17 @@ enum AgentWorkflow {
 
             let activeOp = firstOpenOperationalIndex(in: plan, synthesisIndex: synthesisStepIndex(in: plan))
 
+            // La grammaire impose du JSON valide : plus de troisième option
+            // « texte libre », qu'elle interdit de toute façon.
             let system = """
-            Tu es l’agent Chatbot. Tu disposes d’outils. Réponds soit :
-            1) JSON {"type":"tool","action":"<nom>","arguments":{...}}
-            2) JSON {"type":"final","content":"<réponse utilisateur>"}
-            3) Texte final si tu as assez d’info.
+            Tu es l’agent Chatbot. Tu disposes d’outils. Réponds par un seul objet JSON :
+            1) {"type":"tool","action":"<nom>","arguments":{...}} pour appeler un outil
+            2) {"type":"final","content":"<réponse utilisateur>"} quand tu as assez d’information
             Outils :
             \(tools.catalogSummary)
             Budgets : max \(profile.maxToolCalls) appels outils.
             N’invente pas de données mail/web/fichiers : utilise un outil.
+            Les arguments sont toujours des chaînes de caractères.
             Formate la réponse finale en Markdown. Ne récite pas les sources. Cite (web_N) seulement après un fait.
             Exécute l’étape active du plan avant de conclure. Ne saute pas l’analyse.
             \(clock)
@@ -231,10 +272,15 @@ enum AgentWorkflow {
             }
             messages.append(LLMChatMessage(role: .user, content: userBlob))
 
-            let raw = try await runtime.generate(
+            let raw = try await runtime.generateLocal(
                 system: system,
                 messages: messages,
-                maxTokens: profile.outputTokens(for: .agentStep)
+                maxTokens: profile.outputTokens(for: .agentStep),
+                options: LocalGenerationOptions(
+                    sampling: .structured,
+                    grammar: ToolCallGrammar.agentStep(toolNames: tools.toolNames),
+                    timeout: profile.generationTimeoutSeconds
+                )
             )
 
             switch StructuredActionParser.parse(raw) {
@@ -646,14 +692,19 @@ enum AgentWorkflow {
         Pas de filler. Pas de « Je pense que ». Pas d’autre texte.
         """
         do {
-            let raw = try await runtime.generate(
+            let raw = try await runtime.generateLocal(
                 system: """
                 Tu es un planificateur d’agent. JSON uniquement, sans markdown.
                 Les titres doivent coller à la tâche réelle. 3 étapes de préférence.
                 \(RuntimeTemporalContext.silentClockBlock())
                 """,
                 messages: [LLMChatMessage(role: .user, content: prompt)],
-                maxTokens: min(280, profile.outputTokens(for: .agentStep))
+                maxTokens: min(280, profile.outputTokens(for: .agentStep)),
+                options: LocalGenerationOptions(
+                    sampling: .structured,
+                    grammar: ToolCallGrammar.agentPlan,
+                    timeout: profile.generationTimeoutSeconds
+                )
             )
             if let parsed = parsePlanJSON(raw), parsed.count >= 1 {
                 return clampPlanSteps(parsed)
@@ -696,13 +747,18 @@ enum AgentWorkflow {
         Empty steps array if ready to answer.
         """
         do {
-            let raw = try await runtime.generate(
+            let raw = try await runtime.generateLocal(
                 system: """
                 Tu révises le plan d’un agent. JSON uniquement.
                 \(RuntimeTemporalContext.silentClockBlock())
                 """,
                 messages: [LLMChatMessage(role: .user, content: prompt)],
-                maxTokens: min(220, runtime.executionProfile.outputTokens(for: .agentStep))
+                maxTokens: min(220, runtime.executionProfile.outputTokens(for: .agentStep)),
+                options: LocalGenerationOptions(
+                    sampling: .structured,
+                    grammar: ToolCallGrammar.agentPlan,
+                    timeout: runtime.executionProfile.generationTimeoutSeconds
+                )
             )
             guard let parsed = parsePlanJSON(raw) else { return current }
             var next = done

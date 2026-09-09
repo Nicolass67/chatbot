@@ -4182,7 +4182,8 @@ private var sendBlockedHint: String {
                 userText: userText,
                 history: history,
                 systemPrompt: LocalPrompts.systemPrompt(for: promptKind),
-                taskHint: userText
+                taskHint: userText,
+                conversationId: conversation.id
             ),
             runtime: LocalAIRuntime.shared,
             onToken: { token in

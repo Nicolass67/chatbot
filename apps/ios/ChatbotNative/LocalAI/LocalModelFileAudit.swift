@@ -100,6 +100,21 @@ enum LocalModelFileAudit {
         ])
     }
 
+    /// Les snapshots listent deux répertoires et lisent les attributs de chaque
+    /// entrée. C'était l'instrumentation d'une enquête sur des GGUF disparus ;
+    /// en usage normal, chaque chargement de modèle paie une dizaine de ces
+    /// balayages synchrones sans qu'on lise jamais le résultat.
+    ///
+    /// Conservé mais désactivé hors DEBUG, réactivable sur incident via
+    /// `defaults write … localAI.fsDiagnostics -bool YES`.
+    static let fsDiagnosticsEnabled: Bool = {
+#if DEBUG
+        return true
+#else
+        return UserDefaults.standard.bool(forKey: "localAI.fsDiagnostics")
+#endif
+    }()
+
     /// Snapshot lecture-seule du conteneur Models / Application Support.
     /// Ne crée, ne déplace, ne supprime aucun fichier.
     static func snapshotFS(
@@ -107,6 +122,7 @@ enum LocalModelFileAudit {
         finalPath: String,
         fileManager: FileManager = .default
     ) {
+        guard fsDiagnosticsEnabled else { return }
         let finalURL = URL(fileURLWithPath: finalPath, isDirectory: false)
         let modelsDirectory = finalURL.deletingLastPathComponent()
         let applicationSupport = modelsDirectory.deletingLastPathComponent()
@@ -139,6 +155,7 @@ enum LocalModelFileAudit {
         destination: String? = nil,
         watchedFinalPath: String? = nil
     ) {
+        guard fsDiagnosticsEnabled else { return }
         var fields: [String: any CustomStringConvertible] = [
             "operation": operation,
             "phase": phase,

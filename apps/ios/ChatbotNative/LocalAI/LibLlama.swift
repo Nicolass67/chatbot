@@ -260,6 +260,19 @@ final class LlamaContext: @unchecked Sendable {
     /// Projecteur vision — chargé à la demande, jamais à la place du GGUF texte.
     private var mtmdCtx: OpaquePointer?
 
+    /// Miroir exact des tokens présents dans le KV de la séquence 0.
+    /// Mis à jour uniquement après un `llama_decode` réussi, donc toujours
+    /// cohérent avec l'état réel du cache, y compris après annulation.
+    private var kvTokens: [llama_token] = []
+    /// `false` quand le KV contient des tokens dont on ignore les ids (image mtmd) :
+    /// le miroir n'est plus exact, aucune réutilisation de préfixe n'est permise.
+    private var kvMirrorValid = true
+    /// Config d'échantillonnage actuellement compilée dans la chaîne.
+    private var activeSampling: LlamaSamplingConfig
+    private var activeGrammar: String?
+    /// Tokens du prompt réutilisés depuis le KV lors de la dernière génération.
+    private(set) var lastReusedPrefixTokens: Int = 0
+
     /// Dernier diagnostic de load (protégé par `diagLock`).
     private static let diagLock = NSLock()
     nonisolated(unsafe) private static var _lastDiagnostics: LlamaLoadDiagnostics?
@@ -294,15 +307,234 @@ final class LlamaContext: @unchecked Sendable {
         let batchCap = Int(max(config.nBatch, 64))
         self.batch = llama_batch_init(Int32(batchCap), 0, 1)
         self.temporary_invalid_cchars = []
+        let resolvedVocab = llama_model_get_vocab(model)
+        self.vocab = resolvedVocab
+        self.activeSampling = config.sampling
+        self.activeGrammar = nil
+        self.sampling = LlamaContext.makeSamplerChain(
+            vocab: resolvedVocab,
+            sampling: config.sampling,
+            grammar: nil
+        )
+    }
+
+    /// Chaîne d'échantillonnage dans l'ordre de référence llama.cpp :
+    /// `grammaire → pénalités → top_k → top_p → min_p → température → tirage`.
+    ///
+    /// L'ordre n'est pas cosmétique : appliquer la température avant `top_p`
+    /// aiguise la distribution, si bien que `top_p` ne tronque plus le même
+    /// ensemble que celui sur lequel le modèle a été calibré.
+    private static func makeSamplerChain(
+        vocab: OpaquePointer,
+        sampling: LlamaSamplingConfig,
+        grammar: String?
+    ) -> UnsafeMutablePointer<llama_sampler> {
         let sparams = llama_sampler_chain_default_params()
-        self.sampling = llama_sampler_chain_init(sparams)
-        llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(config.temperature))
-        if config.topK > 0 {
-            llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(config.topK))
+        let chain = llama_sampler_chain_init(sparams)
+
+        // 1) Grammaire GBNF : masque les tokens structurellement invalides.
+        if let grammar, !grammar.isEmpty {
+            let grammarSampler: UnsafeMutablePointer<llama_sampler>? = grammar.withCString { gPtr in
+                "root".withCString { rootPtr in
+                    llama_sampler_init_grammar(vocab, gPtr, rootPtr)
+                }
+            }
+            if let grammarSampler {
+                llama_sampler_chain_add(chain, grammarSampler)
+            } else {
+                print("[local-ai:sampler] grammaire GBNF invalide — génération non contrainte")
+            }
         }
-        llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(config.topP, 1))
-        llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
-        vocab = llama_model_get_vocab(model)
+
+        // 2) Pénalités : sur les logits bruts, avant toute troncature.
+        if sampling.usesPenalties {
+            llama_sampler_chain_add(chain, llama_sampler_init_penalties(
+                sampling.penaltyLastN,
+                sampling.repeatPenalty,
+                sampling.frequencyPenalty,
+                sampling.presencePenalty
+            ))
+        }
+
+        // 3) Troncatures.
+        if sampling.topK > 0 {
+            llama_sampler_chain_add(chain, llama_sampler_init_top_k(sampling.topK))
+        }
+        if sampling.topP > 0, sampling.topP < 1 {
+            llama_sampler_chain_add(chain, llama_sampler_init_top_p(sampling.topP, 1))
+        }
+        if sampling.minP > 0 {
+            llama_sampler_chain_add(chain, llama_sampler_init_min_p(sampling.minP, 1))
+        }
+
+        // 4) Température puis tirage stochastique.
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(sampling.temperature))
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(sampling.seed))
+        return chain
+    }
+
+    /// Recompile la chaîne seulement si la config change ; sinon simple reset.
+    private func ensureSampler(_ next: LlamaSamplingConfig, grammar: String?) {
+        if next == activeSampling, grammar == activeGrammar {
+            llama_sampler_reset(sampling)
+            return
+        }
+        llama_sampler_free(sampling)
+        sampling = LlamaContext.makeSamplerChain(vocab: vocab, sampling: next, grammar: grammar)
+        activeSampling = next
+        activeGrammar = grammar
+    }
+
+    // MARK: - KV cache (miroir exact de la séquence 0)
+
+    private func resetKV() {
+        llama_memory_clear(llama_get_memory(context), true)
+        kvTokens.removeAll(keepingCapacity: true)
+        kvMirrorValid = true
+        n_cur = 0
+    }
+
+    /// Longueur du plus long préfixe commun entre le KV courant et le prompt.
+    /// On garde toujours au moins un token à décoder : sans decode, pas de logits.
+    private func reusablePrefixLength(for promptTokens: [llama_token]) -> Int {
+        guard inferenceConfig.prefixReuseEnabled, kvMirrorValid, !kvTokens.isEmpty else { return 0 }
+        let limit = min(kvTokens.count, promptTokens.count)
+        var n = 0
+        while n < limit, kvTokens[n] == promptTokens[n] { n += 1 }
+        if n >= promptTokens.count { n = max(0, promptTokens.count - 1) }
+        return n
+    }
+
+    /// Tronque le KV au préfixe commun. Renvoie le nombre de tokens conservés.
+    private func trimKV(to nKeep: Int) -> Int {
+        guard nKeep > 0 else {
+            resetKV()
+            return 0
+        }
+        if nKeep >= kvTokens.count {
+            n_cur = Int32(kvTokens.count)
+            return kvTokens.count
+        }
+        let memory = llama_get_memory(context)
+        // Attention pleine (Qwen3.5) : la suppression partielle réussit toujours.
+        // Un `false` signalerait une mémoire récurrente/hybride → repli propre.
+        guard llama_memory_seq_rm(memory, 0, llama_pos(nKeep), -1) else {
+            resetKV()
+            return 0
+        }
+        kvTokens.removeSubrange(nKeep...)
+        n_cur = Int32(nKeep)
+        return nKeep
+    }
+
+    /// Préfille `tokens[from...]` par paquets de `n_batch`, en positions absolues.
+    private func prefill(_ tokens: [llama_token], from start: Int) throws {
+        let batchLimit = Int(max(inferenceConfig.nBatch, 1))
+        var i = start
+        while i < tokens.count {
+            if cancelRequested { throw LlamaError.cancelled }
+            llama_batch_clear(&batch)
+            let end = min(i + batchLimit, tokens.count)
+            for j in i..<end {
+                let isLast = j == tokens.count - 1
+                llama_batch_add(&batch, tokens[j], Int32(j), [0], isLast)
+            }
+            if decodeObserved(batch) != 0 {
+                // Le KV est dans un état indéterminé après un decode raté.
+                resetKV()
+                throw LlamaError.couldNotInitializeContext(
+                    "échec prefill llama_decode (batch \(i)..\(end - 1))"
+                )
+            }
+            kvTokens.append(contentsOf: tokens[i..<end])
+            i = end
+        }
+        n_cur = Int32(tokens.count)
+    }
+
+    // MARK: - Cache de prompt sur disque
+
+    /// Sauvegarde le KV du préfixe `[0, count)` pour le réutiliser après un
+    /// redémarrage. Ne sert qu'au premier message d'une session : dans la même
+    /// session, la réutilisation en mémoire est déjà totale.
+    ///
+    /// L'état sauvegardé est lié aux paramètres exacts du contexte (n_ctx, type
+    /// du KV, Flash Attention). C'est à l'appelant de valider la compatibilité
+    /// via une empreinte ; ici on ne fait qu'écrire et relire.
+    @discardableResult
+    func savePrefixState(to path: String, expectedTokens: [llama_token]) -> Bool {
+        guard kvMirrorValid, !expectedTokens.isEmpty, expectedTokens.count <= kvTokens.count else {
+            return false
+        }
+        let tokens = Array(kvTokens.prefix(expectedTokens.count))
+        // Le KV ne commence pas par le préfixe attendu (autre prompt système,
+        // autre workflow) : sauvegarder produirait un état trompeur.
+        guard tokens == expectedTokens else { return false }
+        let written = tokens.withUnsafeBufferPointer { buffer -> size_t in
+            path.withCString { cPath in
+                llama_state_seq_save_file(context, cPath, 0, buffer.baseAddress, buffer.count)
+            }
+        }
+        return written > 0
+    }
+
+    /// Recharge un préfixe sauvegardé. Le miroir KV est remplacé par les tokens
+    /// réellement restaurés, donc reste exact.
+    @discardableResult
+    func loadPrefixState(from path: String, expectedTokens: [llama_token]) -> Int {
+        guard !expectedTokens.isEmpty else { return 0 }
+        resetKV()
+
+        var restored = [llama_token](repeating: 0, count: expectedTokens.count)
+        var count: size_t = 0
+        let read = restored.withUnsafeMutableBufferPointer { buffer -> size_t in
+            path.withCString { cPath in
+                llama_state_seq_load_file(
+                    context,
+                    cPath,
+                    0,
+                    buffer.baseAddress,
+                    buffer.count,
+                    &count
+                )
+            }
+        }
+        guard read > 0, count > 0, count <= expectedTokens.count else {
+            resetKV()
+            return 0
+        }
+        let loaded = Array(restored.prefix(Int(count)))
+        // Un état restauré qui ne correspond pas aux tokens attendus produirait
+        // des logits sans rapport avec le prompt : on préfère repartir de zéro.
+        guard loaded == Array(expectedTokens.prefix(loaded.count)) else {
+            resetKV()
+            return 0
+        }
+        kvTokens = loaded
+        kvMirrorValid = true
+        n_cur = Int32(loaded.count)
+        return loaded.count
+    }
+
+    /// Tokens du prompt, exposés pour préparer un cache disque.
+    func tokenIds(for text: String) -> [llama_token] {
+        tokenize(text: text, add_bos: false)
+    }
+
+    /// Décodage à vide : compile les pipelines Metal et pagine les poids mmapés
+    /// hors du chemin utilisateur. Sans ça, le tout premier token de la session
+    /// paie l'intégralité de ce coût.
+    @discardableResult
+    func warmup() -> TimeInterval {
+        let started = Date()
+        let bos = llama_vocab_bos(vocab)
+        let token = bos >= 0 ? bos : llama_vocab_eos(vocab)
+        guard token >= 0 else { return 0 }
+        llama_batch_clear(&batch)
+        llama_batch_add(&batch, token, 0, [0], true)
+        _ = llama_decode(context, batch)
+        resetKV()
+        return Date().timeIntervalSince(started)
     }
 
     func setThreads(_ n: Int32, batch: Int32) {
@@ -475,12 +707,29 @@ final class LlamaContext: @unchecked Sendable {
         }
 
         let nLayers = llama_model_n_layer(model)
-        let ctx = try finishContext(model: model, config: config)
+        let opened = try openContext(model: model, config: config)
+        let ctx = opened.context
+        let effective = opened.effectiveConfig
+        if opened.degraded {
+            print("[local-ai:context] \(opened.notes.joined(separator: " · "))")
+        }
+
+        var warmupMs: Double?
+        if effective.warmupOnLoad {
+            warmupMs = ctx.warmup() * 1000
+        }
+
         let loadMs = Date().timeIntervalSince(loadStarted) * 1000
-        let threads = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreads)
-        let threadsBatch = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreadsBatch ?? config.nThreads)
-        // Estimation grossière KV f16 : 2 * n_layer * n_ctx * n_embd * 2 bytes — n_embd inconnu → hint ctx*layers.
-        let kvHint = Int64(config.nCtx) * Int64(max(nLayers, 1)) * 256
+        let threads = LlamaInferenceConfig.resolvedThreads(explicit: effective.nThreads)
+        let threadsBatch = LlamaInferenceConfig.resolvedThreads(explicit: effective.nThreadsBatch ?? effective.nThreads)
+        // KV réel : 2 (K+V) * n_layer * n_embd_kv * n_ctx * octets par élément.
+        // `n_embd_kv` n'est pas exposé — on prend `n_embd / 2` comme approximation
+        // GQA prudente, recalée par famille dans `KVCacheSizing`.
+        let embdApprox = max(Int(llama_model_n_embd(model)) / 2, 256)
+        let kvElementBytes = (effective.kvCacheTypeK.bytesPerElement + effective.kvCacheTypeV.bytesPerElement) / 2
+        let kvHint = Int64(
+            2.0 * Double(max(nLayers, 1)) * Double(embdApprox) * Double(effective.nCtx) * kvElementBytes
+        )
 
         let gdn = LlamaGdnRuntimeObserver.shared.snapshot(
             modelHasGdnLayers: LlamaGdnProbeObservation.modelImpliesGdnLayers(
@@ -501,18 +750,23 @@ final class LlamaContext: @unchecked Sendable {
             cpuDeviceName: probe.cpuName,
             nGpuLayersConfigured: configuredGpuLayers,
             nLayerModel: nLayers,
-            nCtx: config.nCtx,
-            nBatch: config.nBatch,
-            nUbatch: config.nUbatch,
+            nCtx: effective.nCtx,
+            nCtxRequested: config.nCtx,
+            nBatch: effective.nBatch,
+            nUbatch: effective.nUbatch,
             nThreads: threads,
             nThreadsBatch: threadsBatch,
-            flashAttention: config.flashAttention.rawValue,
+            flashAttention: effective.effectiveFlashAttention.rawValue,
+            kvCacheTypeK: effective.kvCacheTypeK.rawValue,
+            kvCacheTypeV: effective.kvCacheTypeV.rawValue,
             usedMmap: usedMmap,
             loadDurationMs: loadMs,
+            warmupDurationMs: warmupMs,
             fellBackToCPU: fellBack || effectiveBackend == "cpu" && wantMetal,
             fallbackReason: fallbackReason,
             llamaLogTail: LlamaLogCapture.shared.summary,
             estimatedKVBytesHint: kvHint,
+            availableMemoryAtLoad: DeviceMemoryGuard.availableBytes(),
             gdn: gdn
         )
         diagLock.lock()
@@ -583,6 +837,7 @@ final class LlamaContext: @unchecked Sendable {
         model_params.devices = deviceSlots
 
         if let loaded = loadModel(at: path, params: model_params) {
+            purgeStagedCopy(of: path)
             return loaded
         }
 
@@ -590,6 +845,7 @@ final class LlamaContext: @unchecked Sendable {
         if useMmap {
             model_params.load_mode = LLAMA_LOAD_MODE_NONE
             if let loaded = loadModel(at: path, params: model_params) {
+                purgeStagedCopy(of: path)
                 return loaded
             }
         }
@@ -624,6 +880,29 @@ final class LlamaContext: @unchecked Sendable {
         return loaded
     }
 
+    /// Emplacement de la copie de secours pour un GGUF donné.
+    private static func stagedCopyURL(for sourcePath: String) -> URL {
+        let source = URL(fileURLWithPath: sourcePath)
+        let library = source
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return library
+            .appendingPathComponent("ChatbotModels", isDirectory: true)
+            .appendingPathComponent(source.lastPathComponent)
+    }
+
+    /// La copie de secours n'était jamais reprise : une fois créée elle laissait
+    /// un doublon de la taille du modèle (≈1,4 Go) pour toute la vie de l'app.
+    /// Dès que le chemin normal fonctionne, elle n'a plus de raison d'exister.
+    private static func purgeStagedCopy(of sourcePath: String) {
+        let staged = stagedCopyURL(for: sourcePath)
+        let path = staged.path(percentEncoded: false)
+        guard path != sourcePath, FileManager.default.fileExists(atPath: path) else { return }
+        LocalModelFileAudit.logFileDelete(path: path, caller: "purgeStagedCopy")
+        try? FileManager.default.removeItem(at: staged)
+    }
+
     /// Copie de secours, uniquement quand le runtime C ne sait pas ouvrir un
     /// GGUF que Foundation vient de lire. Le test est volontairement placé dans
     /// `Library/ChatbotModels`, sans espace, et ne supprime jamais l'original.
@@ -633,11 +912,8 @@ final class LlamaContext: @unchecked Sendable {
         LlamaLogCapture.shared.recordFileDiagnostic(
             LlamaFileDiagnostics.report(path: sourcePath, phase: "before copy source")
         )
-        let library = source
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let directory = library.appendingPathComponent("ChatbotModels", isDirectory: true)
+        let destination = stagedCopyURL(for: sourcePath)
+        let directory = destination.deletingLastPathComponent()
 
         LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-createDirectory", finalPath: sourcePath)
         let directoryPath = directory.path(percentEncoded: false)
@@ -658,7 +934,6 @@ final class LlamaContext: @unchecked Sendable {
         )
         LocalModelFileAudit.snapshotFS(point: "stageForLlama-after-createDirectory", finalPath: sourcePath)
 
-        let destination = directory.appendingPathComponent(source.lastPathComponent)
         let destPath = destination.path(percentEncoded: false)
         if fm.fileExists(atPath: destPath) {
             LocalModelFileAudit.snapshotFS(point: "stageForLlama-before-removeItem-staged", finalPath: sourcePath)
@@ -738,21 +1013,93 @@ final class LlamaContext: @unchecked Sendable {
         return stagedPath
     }
 
-    private static func finishContext(model: OpaquePointer, config: LlamaInferenceConfig) throws -> LlamaContext {
-        let n_threads = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreads)
-        let n_threads_batch = LlamaInferenceConfig.resolvedThreads(
-            explicit: config.nThreadsBatch ?? config.nThreads
+    /// Résultat d'ouverture : la config peut avoir été dégradée par rapport à
+    /// la demande (contexte plus court, KV repassé en f16) si l'allocation échoue.
+    struct ContextOpenResult {
+        var context: LlamaContext
+        var effectiveConfig: LlamaInferenceConfig
+        var degraded: Bool
+        var notes: [String]
+    }
+
+    private static func ggmlType(for kind: LlamaKVCacheType) -> ggml_type {
+        switch kind {
+        case .f16: return GGML_TYPE_F16
+        case .q8_0: return GGML_TYPE_Q8_0
+        case .q5_1: return GGML_TYPE_Q5_1
+        case .q4_0: return GGML_TYPE_Q4_0
+        }
+    }
+
+    /// Ouvre le contexte en descendant l'échelle `n_ctx`, puis en repliant le KV
+    /// sur f16 si la quantification n'est pas supportée. On ne devine pas la
+    /// limite jetsam : on tente, et on dégrade proprement.
+    private static func openContext(
+        model: OpaquePointer,
+        config: LlamaInferenceConfig
+    ) throws -> ContextOpenResult {
+        var notes: [String] = []
+        var kvCandidates: [(LlamaKVCacheType, LlamaKVCacheType)] = [(config.kvCacheTypeK, config.kvCacheTypeV)]
+        if config.kvCacheTypeK != .f16 || config.kvCacheTypeV != .f16 {
+            kvCandidates.append((.f16, .f16))
+        }
+
+        for nCtx in config.resolvedContextLadder {
+            for (typeK, typeV) in kvCandidates {
+                var attempt = config
+                attempt.nCtx = nCtx
+                attempt.kvCacheTypeK = typeK
+                attempt.kvCacheTypeV = typeV
+                if let ctx = tryInitContext(model: model, config: attempt) {
+                    let degraded = nCtx != config.nCtx
+                        || typeK != config.kvCacheTypeK
+                        || typeV != config.kvCacheTypeV
+                    if degraded {
+                        notes.append(
+                            "dégradé n_ctx \(config.nCtx)→\(nCtx) kv \(config.kvCacheTypeK.rawValue)/\(config.kvCacheTypeV.rawValue)→\(typeK.rawValue)/\(typeV.rawValue)"
+                        )
+                    }
+                    return ContextOpenResult(
+                        context: LlamaContext(model: model, context: ctx, config: attempt),
+                        effectiveConfig: attempt,
+                        degraded: degraded,
+                        notes: notes
+                    )
+                }
+                notes.append("échec n_ctx=\(nCtx) kv=\(typeK.rawValue)/\(typeV.rawValue)")
+            }
+        }
+
+        llama_model_free(model)
+        throw LlamaError.couldNotInitializeContext(
+            "init contexte impossible (\(notes.joined(separator: " · "))).\(LlamaLogCapture.shared.summary)"
         )
+    }
+
+    private static func tryInitContext(
+        model: OpaquePointer,
+        config: LlamaInferenceConfig
+    ) -> OpaquePointer? {
         var ctx_params = llama_context_default_params()
         ctx_params.n_ctx = config.nCtx
         ctx_params.n_batch = config.nBatch
         ctx_params.n_ubatch = min(config.nUbatch, config.nBatch)
-        ctx_params.n_threads = n_threads
-        ctx_params.n_threads_batch = n_threads_batch
-        ctx_params.cb_eval = llamaGdnEvalCallback
-        ctx_params.cb_eval_user_data = nil
-        // Flash Attention : AUTO laisse llama.cpp décider (Metal FA quand supporté).
-        switch config.flashAttention {
+        ctx_params.n_threads = LlamaInferenceConfig.resolvedThreads(explicit: config.nThreads)
+        ctx_params.n_threads_batch = LlamaInferenceConfig.resolvedThreads(
+            explicit: config.nThreadsBatch ?? config.nThreads
+        )
+        ctx_params.type_k = ggmlType(for: config.kvCacheTypeK)
+        ctx_params.type_v = ggmlType(for: config.kvCacheTypeV)
+
+        // Le callback GDN installe un eval callback sur *tout* le graphe ggml :
+        // il empêche la fusion d'opérateurs et casse le batching. Diagnostic seul.
+        if config.evalCallbackEnabled {
+            ctx_params.cb_eval = llamaGdnEvalCallback
+            ctx_params.cb_eval_user_data = nil
+        }
+
+        // Le KV quantifié exige Flash Attention côté Metal.
+        switch config.effectiveFlashAttention {
         case .auto:
             ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO
         case .enabled:
@@ -760,16 +1107,8 @@ final class LlamaContext: @unchecked Sendable {
         case .disabled:
             ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
         }
-        // Activer les compteurs perf natifs si exposés.
         ctx_params.no_perf = false
-
-        guard let context = llama_init_from_model(model, ctx_params) else {
-            llama_model_free(model)
-            throw LlamaError.couldNotInitializeContext(
-                "init contexte impossible (mémoire ?).\(LlamaLogCapture.shared.summary)"
-            )
-        }
-        return LlamaContext(model: model, context: context, config: config)
+        return llama_init_from_model(model, ctx_params)
     }
 
     private static func byteLabel(_ bytes: Int64) -> String {
@@ -796,45 +1135,6 @@ final class LlamaContext: @unchecked Sendable {
             swiftString.append(Character(UnicodeScalar(UInt8(bitPattern: char))))
         }
         return swiftString
-    }
-
-    func get_n_tokens() -> Int32 {
-        batch.n_tokens
-    }
-
-    func completion_init(text: String) {
-        cancelRequested = false
-        is_done = false
-        let promptStarted = Date()
-        tokens_list = tokenize(text: text, add_bos: false)
-        temporary_invalid_cchars = []
-        promptTokenCount = tokens_list.count
-
-        let n_ctx = llama_n_ctx(context)
-        let n_kv_req = tokens_list.count + (Int(n_len) - tokens_list.count)
-        if n_kv_req > n_ctx {
-            // KV trop petit — la génération s’arrêtera tôt ; pas de spam console.
-        }
-
-        // Prefill par chunks ≤ n_batch (évite overflow batch pour prompts longs).
-        let batchLimit = Int(max(inferenceConfig.nBatch, 1))
-        var i = 0
-        while i < tokens_list.count {
-            llama_batch_clear(&batch)
-            let end = min(i + batchLimit, tokens_list.count)
-            for j in i..<end {
-                let isLast = j == tokens_list.count - 1
-                llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
-            }
-            if decodeObserved(batch) != 0 {
-                is_done = true
-                lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
-                return
-            }
-            i = end
-        }
-        n_cur = Int32(tokens_list.count)
-        lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
     }
 
     private func completion_loop() throws -> String {
@@ -881,6 +1181,11 @@ final class LlamaContext: @unchecked Sendable {
 
         if decodeObserved(batch) != 0 {
             is_done = true
+            // Decode raté : le KV n'est plus fiable, on interdit toute réutilisation.
+            resetKV()
+        } else {
+            // Le token vient d'entrer dans le KV : le miroir doit le refléter.
+            kvTokens.append(new_token_id)
         }
 
         if cancelRequested {
@@ -897,11 +1202,23 @@ final class LlamaContext: @unchecked Sendable {
         maxTokens: Int32,
         images: [LocalVision.RGBBitmap] = [],
         mmprojPath: String? = nil,
+        sampling samplingConfig: LlamaSamplingConfig? = nil,
+        grammar: String? = nil,
+        deadline: Date? = nil,
         onToken: @Sendable (String) async -> Void
     ) async throws {
+        let effectiveSampling = samplingConfig ?? inferenceConfig.sampling
         // Prompt ChatML/Gemma déjà complet → pas de BOS supplémentaire (sinon EOS immédiat fréquent).
         if images.isEmpty {
-            try await generateOnce(prompt: prompt, maxTokens: maxTokens, addBos: false, onToken: onToken)
+            try await generateOnce(
+                prompt: prompt,
+                maxTokens: maxTokens,
+                addBos: false,
+                sampling: effectiveSampling,
+                grammar: grammar,
+                deadline: deadline,
+                onToken: onToken
+            )
             return
         }
         guard let mmprojPath, !mmprojPath.isEmpty else {
@@ -918,6 +1235,8 @@ final class LlamaContext: @unchecked Sendable {
             mmprojPath: mmprojPath,
             maxTokens: maxTokens,
             addBos: false,
+            sampling: effectiveSampling,
+            deadline: deadline,
             onToken: onToken
         )
     }
@@ -964,6 +1283,8 @@ final class LlamaContext: @unchecked Sendable {
         mmprojPath: String,
         maxTokens: Int32,
         addBos: Bool,
+        sampling samplingConfig: LlamaSamplingConfig,
+        deadline: Date?,
         onToken: @Sendable (String) async -> Void
     ) async throws {
         try ensureVision(mmprojPath: mmprojPath)
@@ -975,8 +1296,11 @@ final class LlamaContext: @unchecked Sendable {
         is_done = false
         temporary_invalid_cchars = []
         n_decode = 0
-        llama_memory_clear(llama_get_memory(context), true)
-        llama_sampler_reset(sampling)
+        resetKV()
+        // mtmd écrit des tokens image dans le KV dont on ne connaît pas les ids :
+        // le miroir devient incomplet, donc inutilisable comme préfixe.
+        kvMirrorValid = false
+        ensureSampler(samplingConfig, grammar: nil)
 
         var bitmaps: [OpaquePointer] = []
         defer {
@@ -1057,6 +1381,10 @@ final class LlamaContext: @unchecked Sendable {
         var generatedPieces = 0
         while !is_done {
             if cancelRequested { throw LlamaError.cancelled }
+            if let deadline, Date() >= deadline {
+                is_done = true
+                break
+            }
             let piece = try completion_loop()
             if !piece.isEmpty {
                 generatedPieces += 1
@@ -1072,16 +1400,16 @@ final class LlamaContext: @unchecked Sendable {
         prompt: String,
         maxTokens: Int32,
         addBos: Bool,
+        sampling samplingConfig: LlamaSamplingConfig,
+        grammar: String?,
+        deadline: Date?,
         onToken: @Sendable (String) async -> Void
     ) async throws {
         cancelRequested = false
         is_done = false
         temporary_invalid_cchars = []
         n_decode = 0
-
-        // Critique : vider le KV entre tours — sinon positions 0..n écrasent un cache sale → EOS / vide.
-        llama_memory_clear(llama_get_memory(context), true)
-        llama_sampler_reset(sampling)
+        ensureSampler(samplingConfig, grammar: grammar)
 
         let promptTokens = tokenize(text: prompt, add_bos: addBos)
         guard !promptTokens.isEmpty else {
@@ -1101,46 +1429,41 @@ final class LlamaContext: @unchecked Sendable {
         n_len = Int32(promptTokens.count + maxGen)
         tokens_list = promptTokens
         promptTokenCount = tokens_list.count
+
+        // Réutilisation du préfixe KV : le prompt système et tout l'historique
+        // sont déjà encodés depuis le tour précédent. Seul le delta est préfillé.
+        let nKeep = trimKV(to: reusablePrefixLength(for: promptTokens))
+        lastReusedPrefixTokens = nKeep
+
         WorkflowTrace.log("llama", [
             "n_ctx": "\(nCtx)",
             "n_batch": "\(inferenceConfig.nBatch)",
             "n_ubatch": "\(inferenceConfig.nUbatch)",
             "prompt_tokens": "\(promptTokens.count)",
+            "kv_reused": "\(nKeep)",
+            "prefill_tokens": "\(promptTokens.count - nKeep)",
             "reserved_output": "\(maxGen)",
         ])
 
         let promptStarted = Date()
-        let batchLimit = Int(max(inferenceConfig.nBatch, 1))
-        var i = 0
-        while i < tokens_list.count {
-            if cancelRequested { throw LlamaError.cancelled }
-            llama_batch_clear(&batch)
-            let end = min(i + batchLimit, tokens_list.count)
-            for j in i..<end {
-                let isLast = j == tokens_list.count - 1
-                llama_batch_add(&batch, tokens_list[j], Int32(j), [0], isLast)
-            }
-            if decodeObserved(batch) != 0 {
-                throw LlamaError.couldNotInitializeContext(
-                    "échec prefill llama_decode (batch \(i)..\(end - 1))"
-                )
-            }
-            i = end
-        }
-        n_cur = Int32(tokens_list.count)
+        try prefill(promptTokens, from: nKeep)
         lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
 
         var generatedPieces = 0
         var sampledTokens = 0
         while !is_done {
-            if cancelRequested {
-                throw LlamaError.cancelled
+            if cancelRequested { throw LlamaError.cancelled }
+            if let deadline, Date() >= deadline {
+                // Budget dépassé : rendre le texte déjà produit vaut mieux qu'une erreur.
+                print("[local-ai:gen] deadline atteinte après \(sampledTokens) tokens")
+                is_done = true
+                break
             }
             let piece = try completion_loop()
             sampledTokens += 1
             if sampledTokens == 1 {
                 print(
-                    "[local-ai:gen] promptTok=\(promptTokens.count) firstPiece=\(piece.prefix(40).debugDescription) empty=\(piece.isEmpty)"
+                    "[local-ai:gen] promptTok=\(promptTokens.count) kvReused=\(nKeep) firstPiece=\(piece.prefix(40).debugDescription) empty=\(piece.isEmpty)"
                 )
             }
             if !piece.isEmpty {
@@ -1149,47 +1472,38 @@ final class LlamaContext: @unchecked Sendable {
             }
         }
 
-        // Premier token EOG / aucune pièce → une retry (BOS inverse + KV clear).
-        if generatedPieces == 0 {
-            print("[local-ai:gen] empty generation — retry once (bos=\(!addBos))")
-            cancelRequested = false
-            is_done = false
-            temporary_invalid_cchars = []
-            n_decode = 0
-            llama_memory_clear(llama_get_memory(context), true)
-            llama_sampler_reset(sampling)
-            let retryTokens = tokenize(text: prompt, add_bos: !addBos)
-            guard !retryTokens.isEmpty else {
-                throw LlamaError.couldNotInitializeContext("génération vide (EOG immédiat)")
+        guard generatedPieces == 0 else { return }
+
+        // EOG immédiat / aucune pièce → une seule reprise, KV neuf et BOS inversé.
+        print("[local-ai:gen] empty generation — retry once (bos=\(!addBos))")
+        cancelRequested = false
+        is_done = false
+        temporary_invalid_cchars = []
+        n_decode = 0
+        resetKV()
+        llama_sampler_reset(sampling)
+        let retryTokens = tokenize(text: prompt, add_bos: !addBos)
+        guard !retryTokens.isEmpty else {
+            throw LlamaError.couldNotInitializeContext("génération vide (EOG immédiat)")
+        }
+        if retryTokens.count >= nCtx {
+            throw LlamaError.promptExceedsContext(promptTokens: retryTokens.count, nCtx: nCtx)
+        }
+        tokens_list = retryTokens
+        promptTokenCount = tokens_list.count
+        let retryGen = min(Int(max(1, maxTokens)), max(1, nCtx - retryTokens.count - 1))
+        n_len = Int32(retryTokens.count + retryGen)
+        lastReusedPrefixTokens = 0
+        try prefill(retryTokens, from: 0)
+        while !is_done {
+            if cancelRequested { throw LlamaError.cancelled }
+            if let deadline, Date() >= deadline {
+                is_done = true
+                break
             }
-            if retryTokens.count >= nCtx {
-                throw LlamaError.promptExceedsContext(promptTokens: retryTokens.count, nCtx: nCtx)
-            }
-            tokens_list = retryTokens
-            promptTokenCount = tokens_list.count
-            let retryGen = min(Int(max(1, maxTokens)), max(1, nCtx - retryTokens.count - 1))
-            n_len = Int32(retryTokens.count + retryGen)
-            var j = 0
-            while j < tokens_list.count {
-                if cancelRequested { throw LlamaError.cancelled }
-                llama_batch_clear(&batch)
-                let end = min(j + batchLimit, tokens_list.count)
-                for k in j..<end {
-                    let isLast = k == tokens_list.count - 1
-                    llama_batch_add(&batch, tokens_list[k], Int32(k), [0], isLast)
-                }
-                if decodeObserved(batch) != 0 {
-                    throw LlamaError.couldNotInitializeContext("échec prefill retry")
-                }
-                j = end
-            }
-            n_cur = Int32(tokens_list.count)
-            while !is_done {
-                if cancelRequested { throw LlamaError.cancelled }
-                let piece = try completion_loop()
-                if !piece.isEmpty {
-                    await onToken(piece)
-                }
+            let piece = try completion_loop()
+            if !piece.isEmpty {
+                await onToken(piece)
             }
         }
     }
@@ -1199,9 +1513,8 @@ final class LlamaContext: @unchecked Sendable {
         temporary_invalid_cchars.removeAll()
         cancelRequested = false
         is_done = false
-        n_cur = 0
         n_decode = 0
-        llama_memory_clear(llama_get_memory(context), true)
+        resetKV()
     }
 
     func countTokens(_ text: String) -> Int {

@@ -178,11 +178,18 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     var nativeAudio: Bool { capabilities.audio }
     var nativeToolCalling: Bool { false }
     var runtimeSupport: String { "llama.cpp · Metal" }
-    var recommended: Bool { id == "qwen35-2b-q4_k_m" }
+    var recommended: Bool { id == LocalModelDescriptor.primaryId }
 
-    /// Modèle principal recommandé (Qwen3 1.7B Q4_K_M) — inchangé / validé.
+    static let primaryId = "qwen35-2b-q4_k_m"
+
+    /// Modèle par défaut et repli : Qwen3.5 2B Q4_K_M.
+    ///
+    /// `primary` pointait sur Qwen3 1.7B alors que `recommended` désignait déjà
+    /// Qwen3.5 2B : une installation neuve démarrait donc sur un modèle que ni
+    /// le profil d'exécution ajusté, ni le dimensionnement KV, ni les réglages
+    /// d'échantillonnage ne ciblent.
     static var primary: LocalModelDescriptor {
-        catalog.first { $0.id == "qwen3-1.7b-q4_k_m" }!
+        catalog.first { $0.id == primaryId } ?? catalog[0]
     }
 
     static let catalog: [LocalModelDescriptor] = [
@@ -206,7 +213,7 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             minimumRecommendedRAMGB: 4,
             estimatedRuntimeMemoryGB: 2.4,
             compatibilityIPhone14Plus: .recommended,
-            compatibilityNote: "Validé sur iPhone 14 Plus / A15 — modèle actif par défaut.",
+            compatibilityNote: "Validé sur iPhone 14 Plus / A15 — repli léger si Qwen3.5 2B ne tient pas.",
             statusNote: "Stable",
             mmproj: nil
         ),

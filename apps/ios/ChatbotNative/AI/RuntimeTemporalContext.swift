@@ -8,6 +8,13 @@ enum RuntimeTemporalContext {
         Calendar.current.component(.year, from: now)
     }
 
+    /// Marqueur du bloc horloge, utilisé pour ne pas l'injecter deux fois.
+    static let clockBlockMarker = "Contexte temporel (interne"
+
+    static func containsClockBlock(_ text: String) -> Bool {
+        text.contains(clockBlockMarker)
+    }
+
     /// Bloc à coller dans les system prompts (Agent, chat, recherche).
     static func silentClockBlock(now: Date = Date(), locale: Locale = Locale(identifier: "fr_FR")) -> String {
         let year = currentYear(now: now)

@@ -2,31 +2,24 @@ import Foundation
 
 /// Budget réel llama : `promptTokens + reservedOutput <= n_ctx`.
 /// `n_ctx` n’est **pas** un budget de prompt ; une partie est réservée à la génération.
-struct GenerationContextBudget: Equatable, Sendable {
-    var nCtx: Int
-    var reservedOutputTokens: Int
-    var safetyTokens: Int
+///
+/// L'arbitrage lui-même appartient désormais à `LocalPromptFitter`, qui compte
+/// de vrais tokens du modèle chargé. Ne restent ici que les constantes et les
+/// replis partagés : la version précédente exposait aussi un budget dérivé du
+/// profil et une réduction d'historique par tentative, tous deux court-circuités
+/// par le fitter et donc trompeurs à laisser en place.
+enum GenerationContextBudget {
+    /// Marge fixe conservée sous `n_ctx`.
+    ///
+    /// 8 tokens ne suffisaient pas : l'en-tête assistant avec préremplissage
+    /// `<think>\n\n</think>\n\n` en consomme déjà 6, et le décalage entre le
+    /// comptage du prompt et sa retokenisation dans le moteur atteint quelques
+    /// tokens. Franchir `n_ctx` fait échouer le decode, pas seulement tronquer.
+    static let safetyTokens = 32
 
-    var promptBudget: Int {
-        max(128, nCtx - reservedOutputTokens - safetyTokens)
-    }
-
-    static func make(
-        profile: LocalModelExecutionProfile,
-        requestedOutput: Int
-    ) -> GenerationContextBudget {
-        let nCtx = max(256, Int(profile.inference.nCtx))
-        let minPrompt = 384
-        let requested = max(32, requestedOutput)
-        let reserved = min(max(32, requested), max(32, nCtx - minPrompt))
-        return GenerationContextBudget(
-            nCtx: nCtx,
-            reservedOutputTokens: reserved,
-            safetyTokens: 8
-        )
-    }
-
-    /// Estimation conservatrice (UTF-8 / 3) si le tokenizer llama n’est pas disponible.
+    /// Repli **uniquement** quand le tokenizer llama est indisponible (modèle non
+    /// chargé). Le compte en octets UTF-8 / 3 surestime le français accentué —
+    /// c'est voulu : surestimer tronque un peu trop, sous-estimer casse le decode.
     static func estimateTokens(_ text: String) -> Int {
         max(1, (text.utf8.count + 2) / 3)
     }
@@ -35,23 +28,6 @@ struct GenerationContextBudget: Equatable, Sendable {
         guard maxChars > 0 else { return "" }
         if text.count <= maxChars { return text }
         return String(text.prefix(maxChars))
-    }
-
-    /// Réduit l’historique / le dernier message outil sans second modèle.
-    static func shrinkMessages(
-        _ messages: [LLMChatMessage],
-        attempt: Int,
-        toolResultCharBudget: Int
-    ) -> [LLMChatMessage] {
-        guard !messages.isEmpty else { return messages }
-        let keep = attempt >= 2 ? 1 : max(1, messages.count - attempt * 2)
-        var slice = Array(messages.suffix(keep))
-        let cap = max(240, toolResultCharBudget / max(attempt, 1))
-        if var last = slice.last, last.content.count > cap {
-            last.content = clip(last.content, maxChars: cap)
-            slice[slice.count - 1] = last
-        }
-        return slice
     }
 }
 

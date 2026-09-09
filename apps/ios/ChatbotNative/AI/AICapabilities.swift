@@ -52,6 +52,16 @@ struct ModelNativeCapabilities: Equatable, Sendable, Hashable {
 /// Budgets d’exécution pour **le même** workflow. Varie selon le modèle, pas les features.
 struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var contextCharBudget: Int
+    /// Autorité en **tokens** pour le contexte de génération.
+    ///
+    /// Les budgets en caractères ne sont qu'une approximation grossière : en
+    /// français Qwen tokenise autour de 3,1 caractères par token, mais un corps
+    /// de mail HTML ou du JSON d'outil tombe sous 2,0. Compter en caractères
+    /// fait donc soit dépasser `n_ctx` (et déclencher un re-prefill complet en
+    /// boucle de repli), soit gaspiller un tiers de la fenêtre.
+    ///
+    /// `0` = dériver de `contextCharBudget` (profils historiques non migrés).
+    var contextTokenBudget: Int = 0
     var historyMessageBudget: Int
     var maxOutputTokens: Int
     var temperature: Double
@@ -74,11 +84,27 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     /// Réflexion Gemma 4 : off par défaut (qualité vs temps à mesurer, jamais forcée).
     var thinkingEnabled: Bool
     var thinkingTokenBudget: Int
+    /// Le routeur peut activer la réflexion pour les seules tâches qui en profitent
+    /// (raisonnement, comparaison, calcul) au lieu de la subir sur « salut ».
+    var adaptiveThinking: Bool = false
 
     enum PerformanceClass: String, Sendable, Hashable {
         case compact
         case balanced
         case ample
+    }
+
+    /// Budget contexte effectif en tokens.
+    /// Conversion prudente 3,0 car/token pour les profils encore en caractères.
+    var resolvedContextTokenBudget: Int {
+        if contextTokenBudget > 0 { return contextTokenBudget }
+        return max(512, contextCharBudget / 3)
+    }
+
+    /// Plafond dur imposé par le moteur, marge de sortie déduite.
+    func hardPromptTokenCeiling(outputTokens: Int) -> Int {
+        let engineCeiling = Int(inference.nCtx) - outputTokens - GenerationContextBudget.safetyTokens
+        return max(256, min(resolvedContextTokenBudget, engineCeiling))
     }
 
     /// Profil dérivé du descripteur — **mêmes features**, budgets + inference différents.
@@ -87,10 +113,7 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         case "qwen3-1.7b-q4_k_m", "lfm25-1.2b-instruct-q4_k_m":
             return .compact
         case "qwen35-2b-q4_k_m":
-            var p = LocalModelExecutionProfile.balanced
-            p.inference.nThreads = 4
-            p.inference.nThreadsBatch = 4
-            return p
+            return .qwen35Dense2B
         case "lfm25-vl-3b-q4_k_m":
             return .lfm25VL3BExperimental
         case "minicpm-v46-thinking-q4_k_m":
@@ -213,6 +236,59 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         }(),
         thinkingEnabled: false,
         thinkingTokenBudget: 0
+    )
+
+    /// **Profil principal** — Qwen3.5 2B Q4_K_M sur iPhone 14 Plus (A15, 6 Go).
+    /// Réglé qualité d'abord : c'est le seul modèle réellement utilisé.
+    ///
+    /// Budget mémoire visé (`increased-memory-limit` actif) :
+    /// poids ≈ 1,27 Go + KV q8_0 6144 tokens ≈ 360 Mo + compute ≈ 300 Mo ≈ 1,95 Go.
+    /// `contextLadder` dégrade proprement si la marge jetsam est plus serrée.
+    ///
+    /// La réutilisation du préfixe KV rend le contexte long quasi gratuit après
+    /// le premier tour : seul le delta du message est préfillé.
+    static let qwen35Dense2B = LocalModelExecutionProfile(
+        contextCharBudget: 14_000,
+        contextTokenBudget: 4_608,
+        historyMessageBudget: 24,
+        maxOutputTokens: 1_024,
+        temperature: 0.7,
+        topP: 0.8,
+        maxWorkflowSteps: 8,
+        maxToolCalls: 8,
+        maxWebResults: 6,
+        maxFetchedPages: 3,
+        maxEvidencePerSource: 3,
+        maxWebSnippetChars: 480,
+        maxMailMessages: 8,
+        maxMailBodyChars: 7_000,
+        maxDocumentChunks: 8,
+        maxChunkChars: 2_000,
+        toolResultCharBudget: 4_000,
+        generationTimeoutSeconds: 240,
+        performanceClass: .ample,
+        inference: {
+            var c = LlamaInferenceConfig.a15Default
+            c.nCtx = 6144
+            c.contextLadder = [4096, 3072, 2048]
+            c.nGpuLayers = -1
+            // Prefill : gros batch logique, ubatch modéré pour borner le buffer Metal.
+            c.nBatch = 512
+            c.nUbatch = 256
+            c.nThreads = 4
+            c.nThreadsBatch = 4
+            c.sampling = .qwenInstruct
+            c.kvCacheTypeK = .q8_0
+            c.kvCacheTypeV = .q8_0
+            c.flashAttention = .enabled
+            c.prefixReuseEnabled = true
+            c.warmupOnLoad = true
+            c.evalCallbackEnabled = false
+            return c
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 1_024,
+        adaptiveThinking: true
     )
 
     /// iPhone 14 Plus / 6 Go — prudent. Qualité avant vitesse. Pas 128K de contexte.

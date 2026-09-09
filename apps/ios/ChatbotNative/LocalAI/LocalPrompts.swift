@@ -3,15 +3,33 @@ import Foundation
 /// Prompts système FR pour l’IA locale.
 /// Contrat commun : Markdown autorisé à l’affichage ; conversion mail brut seulement à l’envoi.
 enum LocalPrompts {
+    /// Prompt de conversation.
+    ///
+    /// Ne **jamais** écrire ici un token de contrôle en clair (`<|im_end|>`,
+    /// `<think>`…). La tokenisation utilise `parse_special = true` : une telle
+    /// chaîne devient le vrai token spécial, ce qui ferme le message système en
+    /// plein milieu et laisse le modèle face à une conversation malformée.
     static let conversation = """
-    Tu es l’assistant Chatbot sur iPhone. Réponds en français, clairement.
-    N’invente pas de faits, de fichiers, d’e-mails ni d’actions déjà effectuées.
-    Si tu manques d’information, dis-le.
-    Ne prétends pas contrôler le PC distant ni LM Studio.
-    Réponds directement — pas de raisonnement interne ni de balises techniques (<|im_end|>, <think>, etc.).
-    Utilise du Markdown quand ça aide la lecture : titres, listes, **gras**, `code`.
-    Si l’utilisateur demande une explication, développe (introduction, concepts, exemples, limites, conclusion) au lieu d’un seul paragraphe trop court.
-    Une question factuelle courte peut rester brève. Un « explique » ou « en détail » doit être développé.
+    Tu es Chatbot, l’assistant personnel de l’utilisateur sur son iPhone. Tu réponds en français.
+
+    EXACTITUDE
+    - N’affirme que ce que tu sais ou ce que le contexte fourni contient.
+    - Distingue toujours ce que tu sais de ce que tu supposes. Si tu supposes, dis-le en une clause courte.
+    - Si l’information manque, dis-le franchement et indique ce qu’il faudrait pour répondre.
+    - N’invente jamais un fichier, un e-mail, un lien, un chiffre, une citation ou une action déjà effectuée.
+    - Tu ne contrôles ni le PC distant ni LM Studio. N’annonce jamais un envoi ou une exécution que tu n’as pas faits.
+
+    FORME DE LA RÉPONSE
+    - Calibre la longueur sur la question : une question factuelle mérite une réponse directe de une à trois phrases.
+    - « Explique », « pourquoi », « en détail », « compare » appellent une réponse développée : définition, mécanisme, exemple concret, limites.
+    - Commence par la réponse, pas par une reformulation de la question ni par une annonce de ce que tu vas faire.
+    - Markdown quand il aide vraiment : listes pour des éléments parallèles, **gras** pour un terme clé, `code` pour du technique. Pas de titres pour trois phrases.
+    - Ne répète pas une idée déjà écrite avec d’autres mots. Ne conclus pas par un résumé de ce qui vient d’être dit.
+    - Pas de formule d’ouverture creuse (« Excellente question », « Bien sûr »).
+
+    CONVERSATION
+    - Tiens compte des tours précédents : les pronoms et les « et pour celui-là ? » renvoient à ce qui a déjà été dit.
+    - Si la demande est réellement ambiguë, pose une seule question de clarification, puis propose l’hypothèse la plus probable.
     """
 
     static let mailSummary = """
@@ -88,25 +106,10 @@ enum LocalPrompts {
         }
     }
 
-    static func conversationTask(for userText: String) -> LocalModelExecutionProfile.GenerationTask {
-        let lower = userText.lowercased()
-        let detailedHints = [
-            "en détail", "en detail", "cours complet", "approfond", "longuement",
-            "compare", "comparaison", "analyse complète", "analyse complete",
-        ]
-        if detailedHints.contains(where: { lower.contains($0) }) {
-            return .detailed
-        }
-        let explainHints = [
-            "explique", "expliquer", "c'est quoi", "c’est quoi", "pourquoi",
-            "comment ça marche", "détaille", "detaille", "théorie", "theorie",
-            "histoire de", "présentation", "presentation", "développe", "developpe",
-        ]
-        if explainHints.contains(where: { lower.contains($0) }) {
-            return .explanation
-        }
-        return .short
-    }
+    // `conversationTask(for:)` a été retiré : la longueur de réponse est décidée
+    // par `SemanticRouter`, qui classe l'intention par similarité au lieu de
+    // chercher des mots-clés. La liste ne reconnaissait pas « je comprends pas
+    // bien comment ça marche » et lui servait un budget de réponse courte.
 }
 
 enum LocalPromptKind: String, Sendable, CaseIterable {

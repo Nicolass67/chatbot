@@ -157,6 +157,10 @@ final class AIToolRegistry {
             .joined(separator: "\n")
     }
 
+    /// Noms réellement enregistrés — source de vérité de la grammaire GBNF,
+    /// pour que le modèle ne puisse pas nommer un outil inexistant.
+    var toolNames: [String] { tools.keys.sorted() }
+
     func execute(
         _ call: AIToolCall,
         profile: LocalModelExecutionProfile
