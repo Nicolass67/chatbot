@@ -72,14 +72,11 @@ final class LlamaContext: @unchecked Sendable {
     static func create_context(path: String) throws -> LlamaContext {
         llama_backend_init()
         var model_params = llama_model_default_params()
-        // mmap = moins de RAM résidente ; pas de mlock (évite jetsam iPhone).
-        model_params.use_mmap = true
-        model_params.use_mlock = false
 
 #if targetEnvironment(simulator)
         model_params.n_gpu_layers = 0
 #else
-        // Offload Metal — laisse le CPU mapper le fichier plutôt que tout charger en RAM.
+        // Offload Metal — mmap par défaut côté llama.cpp (moins de RAM résidente).
         model_params.n_gpu_layers = 99
 #endif
 
