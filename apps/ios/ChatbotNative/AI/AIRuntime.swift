@@ -106,13 +106,14 @@ final class LocalAIRuntime: AIRuntime {
         )
 
         let accumulator = RuntimeStringAccumulator()
+        let engineRef = engine
         do {
-            try await engine.generate(prompt: prompt, maxTokens: tokens) { piece in
+            try await engineRef.generate(prompt: prompt, maxTokens: tokens) { piece in
                 accumulator.append(piece)
                 let cut = LocalChatTemplate.truncateAssistantOutput(accumulator.value, profile: template)
                 if cut.hitStop {
                     accumulator.replace(with: cut.text)
-                    await engine.cancel()
+                    await engineRef.cancel()
                 }
             }
         } catch let error as LocalInferenceError {
