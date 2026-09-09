@@ -292,6 +292,67 @@ private enum StreamingMarkdownSplit {
     }
 }
 
+/// Contrats de layout des listes Markdown — le texte wrappe dans la largeur restante.
+enum MarkdownListRowLayout {
+    static let markerSpacing: CGFloat = AppTheme.space8
+    static let numberedMarkerMinWidth: CGFloat = 22
+    static let quoteBarWidth: CGFloat = 3
+    /// Jamais de `lineLimit(1)` sur un `li` : le wrap vertical est obligatoire.
+    static let textLineLimit: Int? = nil
+    static let clipsOverflow = false
+
+    static func textWidth(containerWidth: CGFloat, markerWidth: CGFloat) -> CGFloat {
+        max(0, containerWidth - markerWidth - markerSpacing)
+    }
+}
+
+extension View {
+    /// Force le wrap dans la largeur proposée. Sans ça, un `Text` dans un `HStack`
+    /// annonce sa largeur intrinsèque (une seule ligne) et dépasse le message.
+    func markdownFlexibleBlock() -> some View {
+        multilineTextAlignment(.leading)
+            .lineLimit(MarkdownListRowLayout.textLineLimit)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(0)
+    }
+}
+
+struct MarkdownListRow<Content: View>: View {
+    enum Marker: Equatable {
+        case bullet
+        case numbered(Int)
+    }
+
+    let marker: Marker
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: MarkdownListRowLayout.markerSpacing) {
+            markerView
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+            content
+                .markdownFlexibleBlock()
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var markerView: some View {
+        switch marker {
+        case .bullet:
+            Text("•")
+                .foregroundStyle(AppTheme.secondary)
+        case .numbered(let index):
+            Text("\(index).")
+                .font(CNFont.body.monospacedDigit())
+                .foregroundStyle(AppTheme.muted)
+                .frame(minWidth: MarkdownListRowLayout.numberedMarkerMinWidth, alignment: .trailing)
+        }
+    }
+}
+
 struct MarkdownMessageView: View {
     let markdown: String
     /// Pendant le stream SSE : markdown live, reparse cadencé (~30 fps) + préfixe figé.
@@ -401,39 +462,41 @@ struct MarkdownMessageView: View {
         switch block {
         case .heading(let level, let text):
             inlineContent(text, font: headingFont(level), foreground: AppTheme.foreground)
+                .markdownFlexibleBlock()
         case .paragraph(let text):
             inlineContent(text, font: CNFont.body, foreground: AppTheme.foreground)
+                .markdownFlexibleBlock()
         case .code(let language, let code):
             CodeBlockView(language: language, code: code)
         case .bullet(let items):
             VStack(alignment: .leading, spacing: AppTheme.space8) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .top, spacing: AppTheme.space8) {
-                        Text("•")
-                            .foregroundStyle(AppTheme.secondary)
+                    MarkdownListRow(marker: .bullet) {
                         inlineContent(item, font: CNFont.body, foreground: AppTheme.foreground)
                     }
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         case .numbered(let items):
             VStack(alignment: .leading, spacing: AppTheme.space8) {
                 ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                    HStack(alignment: .top, spacing: AppTheme.space8) {
-                        Text("\(idx + 1).")
-                            .font(CNFont.body.monospacedDigit())
-                            .foregroundStyle(AppTheme.muted)
-                            .frame(minWidth: 22, alignment: .trailing)
+                    MarkdownListRow(marker: .numbered(idx + 1)) {
                         inlineContent(item, font: CNFont.body, foreground: AppTheme.foreground)
                     }
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         case .quote(let text):
             HStack(alignment: .top, spacing: AppTheme.space12) {
                 RoundedRectangle(cornerRadius: 1)
                     .fill(AppTheme.secondary.opacity(0.55))
-                    .frame(width: 3)
+                    .frame(width: MarkdownListRowLayout.quoteBarWidth)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                 inlineContent(text, font: CNFont.callout, foreground: AppTheme.muted)
+                    .markdownFlexibleBlock()
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, AppTheme.space4)
         case .table(let headers, let rows):
             ScrollView(.horizontal, showsIndicators: false) {

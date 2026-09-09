@@ -550,6 +550,7 @@ struct CitationAwareInlineText: View {
                     .font(font)
                     .foregroundStyle(foreground)
                     .textSelection(.enabled)
+                    .markdownFlexibleBlock()
             }
             if !split.citations.isEmpty {
                 CitationFlowLayout(spacing: 6, lineSpacing: 6) {
@@ -557,7 +558,9 @@ struct CitationAwareInlineText: View {
                         SourcePillView(citation: cite)
                     }
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
 }
