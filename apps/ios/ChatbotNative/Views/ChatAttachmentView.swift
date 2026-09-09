@@ -275,7 +275,7 @@ private struct ChatAttachmentImageGrid: View {
     private var rows: [[MessageAttachmentDTO]] {
         let visible = Array(images.prefix(ChatAttachmentMetrics.maxVisibleImages))
         let cols = ChatAttachmentMetrics.columns(imageCount: images.count)
-        stride(from: 0, to: visible.count, by: cols).map { start in
+        return stride(from: 0, to: visible.count, by: cols).map { start in
             Array(visible[start..<min(start + cols, visible.count)])
         }
     }
