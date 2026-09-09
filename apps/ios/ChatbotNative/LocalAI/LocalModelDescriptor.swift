@@ -92,8 +92,13 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     /// `mmproj` compagnon. `nil` = texte seul. Ne jamais substituer ce fichier au GGUF texte.
     /// Pas de valeur par défaut sur ce `let` : Swift exclurait alors le paramètre du memberwise init.
     let mmproj: LocalMmprojDescriptor?
+    /// Si non `nil`, le runtime actuel ne peut pas charger ce GGUF — pas de bouton Télécharger.
+    var runtimeIncompatibilityReason: String? = nil
+    /// VL-first : « Utiliser » exige le mmproj. Qwen / Gemma restent optionnels.
+    var requiresCompanionVisionToLoad: Bool = false
 
-    var isDownloadable: Bool { downloadURL != nil && expectedBytes > 0 }
+    var isDownloadable: Bool { downloadURL != nil && expectedBytes > 0 && runtimeIncompatibilityReason == nil }
+    var isRuntimeCompatible: Bool { runtimeIncompatibilityReason == nil }
     var hasOptionalVisionProjector: Bool { mmproj != nil }
 
     var expectedSizeLabel: String {
@@ -114,8 +119,29 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             return "Ultra compact · économique"
         case "gemma4-e2b-it-q4_0":
             return "Plus puissant, plus lourd"
+        case "lfm25-vl-3b-q4_k_m":
+            return "Vision généraliste · plus lourd"
+        case "minicpm-v46-thinking-q4_k_m":
+            return "Compact · raisonnement visuel"
+        case "north-micro-vision-instruct":
+            return "Documents / OCR — pas de GGUF"
         default:
             return "Utilisable hors ligne"
+        }
+    }
+
+    var familyDisplayName: String {
+        switch id {
+        case "qwen35-2b-q4_k_m": return "Qwen3.5"
+        case "qwen3-1.7b-q4_k_m", "qwen3-4b-q4_k_m": return "Qwen3"
+        case "lfm25-1.2b-instruct-q4_k_m": return "LFM2.5"
+        case "lfm25-vl-3b-q4_k_m": return "LFM2.5-VL"
+        case "gemma4-e2b-it-q4_0", "gemma4-e4b-it": return "Gemma 4"
+        case "minicpm-v46-thinking-q4_k_m": return "MiniCPM-V"
+        case "north-micro-vision-instruct": return "North Micro Vision"
+        case "granite4-micro-q4_k_m": return "Granite"
+        case "phi4-mini-3.8b": return "Phi"
+        default: return family
         }
     }
 
@@ -126,6 +152,8 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
         case "lfm2": return "lfm"
         case "granite": return "granite"
         case "phi3": return "phi"
+        case "minicpmv", "qwen35-minicpm": return "minicpm"
+        case "cohere_compass": return "north"
         default: return architecture
         }
     }
@@ -267,24 +295,113 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
                 sha256: "021059cce659fe7f9170d5599761d7bbaf644b798dab9503aca30dc43e6beb14"
             )
         ),
+        LocalModelDescriptor(
+            id: "lfm25-vl-3b-q4_k_m",
+            displayName: "LFM2.5-VL 3B",
+            provider: "LiquidAI",
+            architecture: "lfm2",
+            parameterCountLabel: "3.1B",
+            quant: "Q4_K_M",
+            expectedBytes: 1_674_455_072,
+            filename: "LFM2.5-VL-3B-Q4_K_M.gguf",
+            downloadURL: URL(string: "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/LFM2.5-VL-3B-Q4_K_M.gguf"),
+            sha256: "2436cf4bbac9a16e5dfc7799a140e583c2bc15958f4b24a391f8a8b10ecb8884",
+            version: "1.0",
+            license: "LFM License",
+            contextLength: 32_768,
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: false, multilingual: true),
+            runtimeProfile: .chatmlLfmVL,
+            minimumRecommendedRAMGB: 6,
+            estimatedRuntimeMemoryGB: 3.2,
+            compatibilityIPhone14Plus: .experimental,
+            compatibilityNote: "Option Vision généraliste. Pas un remplacement de Qwen3.5 2B (MMStar/MME inférieurs, RealWorldQA/ChartQA/MMMB supérieurs). mmproj officiel Q8_0 — obligatoire avant chargement. Qwen n’est jamais remplacé automatiquement.",
+            statusNote: "Expérimental",
+            mmproj: LocalMmprojDescriptor(
+                filename: "mmproj-LFM2.5-VL-3B-Q8_0.gguf",
+                downloadURL: URL(string: "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/mmproj-LFM2.5-VL-3B-Q8_0.gguf")!,
+                expectedBytes: 583_109_984,
+                quant: "Q8_0",
+                sourceRepo: "LiquidAI/LFM2.5-VL-3B-GGUF",
+                compatibilityNote: "Projecteur officiel LFM2 (PROJECTOR_TYPE_LFM2). Ne pas substituer le mmproj Qwen3.5. Q8_0 plus léger que BF16/F16 du même dépôt.",
+                sha256: "ecbbe7097f696dba67172738d79c9f01132cdb6c0b457606315e268df3d67e64"
+            ),
+            requiresCompanionVisionToLoad: true
+        ),
+        LocalModelDescriptor(
+            id: "minicpm-v46-thinking-q4_k_m",
+            displayName: "MiniCPM-V 4.6 Thinking",
+            provider: "OpenBMB",
+            architecture: "qwen35",
+            parameterCountLabel: "1.3B",
+            quant: "Q4_K_M",
+            expectedBytes: 529_101_536,
+            filename: "MiniCPM-V-4_6-Thinking-Q4_K_M.gguf",
+            downloadURL: URL(string: "https://huggingface.co/openbmb/MiniCPM-V-4.6-Thinking-gguf/resolve/main/MiniCPM-V-4_6-Thinking-Q4_K_M.gguf"),
+            sha256: "2d15cea059289533a4e51cff895888a2afaf8ed0c88bcc11ba590d2a45c6f174",
+            version: "1.0",
+            license: "Apache-2.0",
+            contextLength: 262_144,
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
+            runtimeProfile: .chatmlQwenThinking,
+            minimumRecommendedRAMGB: 6,
+            estimatedRuntimeMemoryGB: 3.4,
+            compatibilityIPhone14Plus: .experimental,
+            compatibilityNote: "Candidat expérimental/efficacité (SigLIP2 + Qwen3.5-0.8B). mmproj F16 ~1,11 Go obligatoire. Thinking ON : la trace `<think>` n’est pas affichée. Pas un remplacement de Qwen3.5 2B. Ne pas utiliser Q8 sur iPhone.",
+            statusNote: "Expérimental",
+            mmproj: LocalMmprojDescriptor(
+                filename: "mmproj-model-f16.gguf",
+                downloadURL: URL(string: "https://huggingface.co/openbmb/MiniCPM-V-4.6-Thinking-gguf/resolve/main/mmproj-model-f16.gguf")!,
+                expectedBytes: 1_108_746_976,
+                quant: "F16",
+                sourceRepo: "openbmb/MiniCPM-V-4.6-Thinking-gguf",
+                compatibilityNote: "Projecteur officiel MiniCPM-V 4.6 (PROJECTOR_TYPE_MINICPMV4_6, llama.cpp ≥ b9049 ; pin b10809). Fichier distinct du GGUF texte.",
+                sha256: "b9d09d261de167b291a69958b520c6411877cbff50e96a83d06e9835627c70f6"
+            ),
+            requiresCompanionVisionToLoad: true
+        ),
     ]
 
-    /// Ordre Settings : référence Qwen3.5, puis Gemma expérimental, puis légers.
+    /// Ordre Settings : Qwen3.5 d’abord, puis options Vision, puis le reste. North est listé même sans GGUF.
     static let userFacingCatalogOrder: [String] = [
         "qwen35-2b-q4_k_m",
+        "lfm25-vl-3b-q4_k_m",
+        "north-micro-vision-instruct",
+        "minicpm-v46-thinking-q4_k_m",
         "gemma4-e2b-it-q4_0",
         "lfm25-1.2b-instruct-q4_k_m",
         "qwen3-1.7b-q4_k_m",
     ]
 
     static var userFacingCatalog: [LocalModelDescriptor] {
-        userFacingCatalogOrder
-            .compactMap { descriptor(id: $0) }
-            .filter { catalog.contains($0) && $0.isDownloadable }
+        userFacingCatalogOrder.compactMap { descriptor(id: $0) }
     }
 
-    /// Hors UI utilisateur : trop lourds ou pas encore téléchargeables (Gemma 4 E4B, etc.).
+    /// Hors UI utilisateur (sauf North, listé via `userFacingCatalogOrder`) : trop lourds ou pas de GGUF.
     static let experimentalInternal: [LocalModelDescriptor] = [
+        LocalModelDescriptor(
+            id: "north-micro-vision-instruct",
+            displayName: "North Micro Vision",
+            provider: "Cohere Labs",
+            architecture: "cohere_compass",
+            parameterCountLabel: "2.4B",
+            quant: "—",
+            expectedBytes: 0,
+            filename: "North-Micro-Vision-Instruct.gguf",
+            downloadURL: nil,
+            sha256: nil,
+            version: "0",
+            license: "Apache-2.0",
+            contextLength: 8_192,
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: false, multilingual: true),
+            runtimeProfile: .generic,
+            minimumRecommendedRAMGB: 6,
+            estimatedRuntimeMemoryGB: 4.0,
+            compatibilityIPhone14Plus: .notRecommended,
+            compatibilityNote: "Non compatible avec le runtime actuel. Dépôt officiel CohereLabs/North-Micro-Vision-Instruct = safetensors (`CohereCompassForConditionalGeneration`). Aucun GGUF llama.cpp publié (recherche Hub vide). Architecture `cohere_compass` absente de llama.cpp b10809. LiteRT `.litertlm` n’est pas un GGUF.",
+            statusNote: "Non compatible",
+            mmproj: nil,
+            runtimeIncompatibilityReason: "Non compatible avec le runtime actuel. Aucun GGUF llama.cpp n’est publié pour North Micro Vision ; l’architecture cohere_compass n’est pas dans llama.cpp b10809."
+        ),
         LocalModelDescriptor(
             id: "qwen3-4b-q4_k_m",
             displayName: "Qwen3 4B",
@@ -387,6 +504,18 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
 
     static var downloadable: [LocalModelDescriptor] {
         catalog.filter(\.isDownloadable)
+    }
+
+    static let northMicroVisionUnavailableLog =
+        "model-catalog north-micro-vision: no compatible GGUF found"
+
+    static func logUnavailableCatalogEntries() {
+        print(northMicroVisionUnavailableLog)
+        LocalModelFileAudit.log("local-ai:catalog", [
+            "event": "north-micro-vision-no-gguf",
+            "repo": "CohereLabs/North-Micro-Vision-Instruct",
+            "reason": "safetensors-only; architecture cohere_compass absent from llama.cpp \(LlamaCppPinnedRelease.tag)",
+        ])
     }
 }
 

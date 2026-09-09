@@ -91,6 +91,12 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
             p.inference.nThreads = 4
             p.inference.nThreadsBatch = 4
             return p
+        case "lfm25-vl-3b-q4_k_m":
+            return .lfm25VL3BExperimental
+        case "minicpm-v46-thinking-q4_k_m":
+            return .miniCPMV46ThinkingExperimental
+        case "north-micro-vision-instruct":
+            return .balanced
         case "granite4-micro-q4_k_m":
             return .balanced
         case "qwen3-4b-q4_k_m":
@@ -242,6 +248,82 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         }(),
         thinkingEnabled: false,
         thinkingTokenBudget: 256
+    )
+
+    /// iPhone 14 Plus / A15 — LFM2.5-VL 3B. Ne modifie pas le profil Qwen3.5 2B.
+    static let lfm25VL3BExperimental = LocalModelExecutionProfile(
+        contextCharBudget: 4_000,
+        historyMessageBudget: 10,
+        maxOutputTokens: 512,
+        temperature: 0.2,
+        topP: 0.9,
+        maxWorkflowSteps: 5,
+        maxToolCalls: 5,
+        maxWebResults: 4,
+        maxFetchedPages: 2,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 320,
+        maxMailMessages: 5,
+        maxMailBodyChars: 4_000,
+        maxDocumentChunks: 5,
+        maxChunkChars: 1_200,
+        toolResultCharBudget: 2_000,
+        generationTimeoutSeconds: 180,
+        performanceClass: .balanced,
+        inference: {
+            var c = LlamaInferenceConfig.a15Default
+            c.nCtx = 1536
+            c.nGpuLayers = -1
+            c.nBatch = 256
+            c.nUbatch = 128
+            c.nThreads = 4
+            c.nThreadsBatch = 4
+            c.temperature = 0.2
+            c.topP = 0.9
+            c.topK = 50
+            c.imageMaxTokens = 128
+            return c
+        }(),
+        thinkingEnabled: false,
+        thinkingTokenBudget: 0
+    )
+
+    /// MiniCPM-V 4.6 Thinking — plus petit LLM, mmproj F16 lourd, thinking ON.
+    static let miniCPMV46ThinkingExperimental = LocalModelExecutionProfile(
+        contextCharBudget: 3_800,
+        historyMessageBudget: 10,
+        maxOutputTokens: 768,
+        temperature: 0.7,
+        topP: 0.8,
+        maxWorkflowSteps: 5,
+        maxToolCalls: 5,
+        maxWebResults: 4,
+        maxFetchedPages: 2,
+        maxEvidencePerSource: 2,
+        maxWebSnippetChars: 320,
+        maxMailMessages: 5,
+        maxMailBodyChars: 4_000,
+        maxDocumentChunks: 5,
+        maxChunkChars: 1_200,
+        toolResultCharBudget: 2_000,
+        generationTimeoutSeconds: 240,
+        performanceClass: .balanced,
+        inference: {
+            var c = LlamaInferenceConfig.a15Default
+            c.nCtx = 1536
+            c.nGpuLayers = -1
+            c.nBatch = 192
+            c.nUbatch = 96
+            c.nThreads = 4
+            c.nThreadsBatch = 4
+            c.temperature = 0.7
+            c.topP = 0.8
+            c.topK = 100
+            c.imageMaxTokens = 96
+            return c
+        }(),
+        thinkingEnabled: true,
+        thinkingTokenBudget: 512
     )
 
     /// Budget de sortie selon la tâche — pas un max unique pour tout.

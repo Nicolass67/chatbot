@@ -70,6 +70,103 @@ final class LocalModelDescriptorTests: XCTestCase {
         XCTAssertEqual(LocalModelComparisonCase.allCases.count, 10)
     }
 
+    func testOptionalVisionCatalogEntriesDoNotReplaceQwen35() {
+        XCTAssertTrue(LocalModelDescriptor.catalog.allSatisfy(\.isDownloadable))
+        XCTAssertEqual(LocalModelDescriptor.userFacingCatalog.map(\.id).first, "qwen35-2b-q4_k_m")
+        XCTAssertTrue(LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.recommended)
+        XCTAssertFalse(LocalModelInstallPolicy.activatesDownloadedModel)
+
+        let lfm = LocalModelDescriptor.descriptor(id: "lfm25-vl-3b-q4_k_m")!
+        XCTAssertTrue(LocalModelDescriptor.catalog.contains { $0.id == lfm.id })
+        XCTAssertTrue(lfm.isDownloadable)
+        XCTAssertEqual(lfm.displayName, "LFM2.5-VL 3B")
+        XCTAssertEqual(lfm.familyDisplayName, "LFM2.5-VL")
+        XCTAssertEqual(lfm.parameterCountLabel, "3.1B")
+        XCTAssertEqual(lfm.filename, "LFM2.5-VL-3B-Q4_K_M.gguf")
+        XCTAssertEqual(lfm.expectedBytes, 1_674_455_072)
+        XCTAssertEqual(lfm.sha256, "2436cf4bbac9a16e5dfc7799a140e583c2bc15958f4b24a391f8a8b10ecb8884")
+        XCTAssertTrue(lfm.downloadURL!.absoluteString.contains("LiquidAI/LFM2.5-VL-3B-GGUF"))
+        XCTAssertTrue(lfm.downloadURL!.absoluteString.contains("LFM2.5-VL-3B-Q4_K_M.gguf"))
+        XCTAssertEqual(lfm.mmproj?.filename, "mmproj-LFM2.5-VL-3B-Q8_0.gguf")
+        XCTAssertEqual(lfm.mmproj?.expectedBytes, 583_109_984)
+        XCTAssertEqual(lfm.mmproj?.sha256, "ecbbe7097f696dba67172738d79c9f01132cdb6c0b457606315e268df3d67e64")
+        XCTAssertTrue(lfm.mmproj!.isValidCompanion(ofTextFilename: lfm.filename))
+        XCTAssertTrue(lfm.requiresCompanionVisionToLoad)
+        XCTAssertFalse(lfm.recommended)
+        XCTAssertEqual(lfm.runtimeProfile.bosPrefix, "<|startoftext|>")
+        XCTAssertNil(lfm.runtimeProfile.disableThinkingSuffix)
+
+        let mini = LocalModelDescriptor.descriptor(id: "minicpm-v46-thinking-q4_k_m")!
+        XCTAssertTrue(mini.isDownloadable)
+        XCTAssertEqual(mini.displayName, "MiniCPM-V 4.6 Thinking")
+        XCTAssertEqual(mini.familyDisplayName, "MiniCPM-V")
+        XCTAssertEqual(mini.parameterCountLabel, "1.3B")
+        XCTAssertEqual(mini.filename, "MiniCPM-V-4_6-Thinking-Q4_K_M.gguf")
+        XCTAssertEqual(mini.expectedBytes, 529_101_536)
+        XCTAssertEqual(mini.sha256, "2d15cea059289533a4e51cff895888a2afaf8ed0c88bcc11ba590d2a45c6f174")
+        XCTAssertTrue(mini.downloadURL!.absoluteString.contains("openbmb/MiniCPM-V-4.6-Thinking-gguf"))
+        XCTAssertEqual(mini.mmproj?.filename, "mmproj-model-f16.gguf")
+        XCTAssertEqual(mini.mmproj?.expectedBytes, 1_108_746_976)
+        XCTAssertEqual(mini.mmproj?.sha256, "b9d09d261de167b291a69958b520c6411877cbff50e96a83d06e9835627c70f6")
+        XCTAssertTrue(mini.requiresCompanionVisionToLoad)
+        XCTAssertTrue(mini.runtimeProfile.enableThinking)
+        XCTAssertNil(mini.runtimeProfile.disableThinkingSuffix)
+        XCTAssertFalse(mini.recommended)
+
+        let north = LocalModelDescriptor.descriptor(id: "north-micro-vision-instruct")!
+        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id == north.id })
+        XCTAssertFalse(north.isDownloadable)
+        XCTAssertNil(north.downloadURL)
+        XCTAssertNotNil(north.runtimeIncompatibilityReason)
+        XCTAssertTrue(north.runtimeIncompatibilityReason!.contains("Non compatible avec le runtime actuel"))
+        XCTAssertTrue(LocalModelDescriptor.userFacingCatalog.contains { $0.id == north.id })
+        XCTAssertEqual(LocalModelDescriptor.northMicroVisionUnavailableLog, "model-catalog north-micro-vision: no compatible GGUF found")
+        XCTAssertFalse(LlamaCppPinnedRelease.cohereCompassArchitectureSupported)
+
+        XCTAssertFalse(LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.requiresCompanionVisionToLoad)
+        XCTAssertEqual(LocalVisionProbeCase.allCases.count, 7)
+        XCTAssertEqual(Set(LocalVisionProbeCase.allCases.map(\.prompt)).count, 7)
+    }
+
+    func testLfmAndMiniCPMTemplatesAreNotQwenStopTokens() {
+        let qwen = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Hi")],
+            charBudget: 2000,
+            profile: .chatmlQwen
+        )
+        XCTAssertTrue(qwen.contains("/no_think"))
+        XCTAssertTrue(qwen.contains("<think>\n\n</think>\n\n"))
+        XCTAssertFalse(qwen.hasPrefix("<|startoftext|>"))
+
+        let lfm = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Hi")],
+            charBudget: 2000,
+            profile: .chatmlLfmVL
+        )
+        XCTAssertTrue(lfm.hasPrefix("<|startoftext|>"))
+        XCTAssertFalse(lfm.contains("/no_think"))
+        XCTAssertFalse(lfm.contains("<think>"))
+
+        let mini = LocalChatTemplate.buildPrompt(
+            system: "SYS",
+            messages: [LLMChatMessage(role: .user, content: "Hi")],
+            charBudget: 2000,
+            profile: .chatmlQwenThinking
+        )
+        XCTAssertFalse(mini.contains("/no_think"))
+        XCTAssertTrue(mini.hasSuffix("<|im_start|>assistant\n<think>\n") || mini.contains("<|im_start|>assistant\n<think>\n"))
+        XCTAssertFalse(mini.contains("<think>\n\n</think>\n\n"))
+
+        let visible = LocalChatTemplate.truncateAssistantOutput(
+            "<think>\nraisonnement interne\n</think>\nRéponse finale<|im_end|>",
+            profile: .chatmlQwenThinking
+        )
+        XCTAssertEqual(visible.text, "Réponse finale")
+        XCTAssertTrue(visible.hitStop)
+    }
+
     func testUserFacingBlurbsStayShortAndDoNotRepeatRecommended() {
         let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!
         XCTAssertTrue(qwen.recommended)
@@ -914,6 +1011,17 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertEqual(qwen.performanceClass, .balanced)
         XCTAssertEqual(qwen.inference.nThreads, 4)
         XCTAssertEqual(qwen.inference.nThreadsBatch, 4)
+        let lfmVL = LocalModelDescriptor.descriptor(id: "lfm25-vl-3b-q4_k_m")!.executionProfile
+        XCTAssertEqual(lfmVL.inference.nCtx, 1536)
+        XCTAssertEqual(lfmVL.inference.imageMaxTokens, 128)
+        XCTAssertEqual(lfmVL.inference.topK, 50)
+        XCTAssertFalse(lfmVL.thinkingEnabled)
+        let mini = LocalModelDescriptor.descriptor(id: "minicpm-v46-thinking-q4_k_m")!.executionProfile
+        XCTAssertEqual(mini.inference.nCtx, 1536)
+        XCTAssertEqual(mini.inference.imageMaxTokens, 96)
+        XCTAssertTrue(mini.thinkingEnabled)
+        XCTAssertEqual(qwen.inference.nCtx, 2048)
+        XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
         let granite = LocalModelDescriptor.descriptor(id: "granite4-micro-q4_k_m")!.executionProfile
         XCTAssertNil(granite.inference.nThreads)
         XCTAssertNil(granite.inference.nThreadsBatch)
@@ -1196,7 +1304,10 @@ final class LocalParityWorkflowTests: XCTestCase {
     func testLlamaCppPinRemainsB10809ForGemma4AndQwenVision() {
         XCTAssertEqual(LlamaCppPinnedRelease.tag, "b10809")
         XCTAssertTrue(LlamaCppPinnedRelease.gemma4TextArchitectureSupported)
-        XCTAssertTrue(LlamaCppPinnedRelease.gemma4vProjectorSupported)
+        XCTAssertTrue(LlamaCppPinnedRelease.lfm2TextArchitectureSupported)
+        XCTAssertTrue(LlamaCppPinnedRelease.lfm2VisionProjectorSupported)
+        XCTAssertTrue(LlamaCppPinnedRelease.minicpmv46ProjectorSupported)
+        XCTAssertFalse(LlamaCppPinnedRelease.cohereCompassArchitectureSupported)
         let vendor = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

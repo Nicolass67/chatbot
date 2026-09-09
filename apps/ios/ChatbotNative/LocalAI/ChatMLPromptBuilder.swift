@@ -25,6 +25,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
     var defaultTemperature: Double
     /// Gemma 4 : canal thought optionnel. Défaut Hugging Face = false.
     var enableThinking: Bool
+    /// Préfixe BOS officiel (ex. LFM `<|startoftext|>`). Vide = aucun.
+    var bosPrefix: String
 
     static let chatmlQwen = LocalModelRuntimeProfile(
         templateKind: .chatml,
@@ -45,7 +47,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 
     static let gemma = LocalModelRuntimeProfile(
@@ -67,7 +70,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 
     static let gemma4E2B = LocalModelRuntimeProfile(
@@ -91,7 +95,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 1536,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 
     static let chatmlInstruct = LocalModelRuntimeProfile(
@@ -111,7 +116,59 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
+    )
+
+    /// LFM2.5-VL : ChatML + BOS officiel. Pas de `/no_think` Qwen.
+    static let chatmlLfmVL = LocalModelRuntimeProfile(
+        templateKind: .chatml,
+        controlTokens: [
+            "<|startoftext|>",
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|pad|>",
+            "<|image_start|>",
+            "<|image_end|>",
+        ],
+        stopSequences: [
+            "<|im_end|>",
+            "<|im_start|>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
+        defaultContextLength: 1536,
+        defaultMaxOutputTokens: 512,
+        defaultTemperature: 0.2,
+        enableThinking: false,
+        bosPrefix: "<|startoftext|>"
+    )
+
+    /// MiniCPM-V Thinking : ChatML Qwen3.5, thinking ON par défaut, **sans** `/no_think`.
+    static let chatmlQwenThinking = LocalModelRuntimeProfile(
+        templateKind: .chatml,
+        controlTokens: [
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|endoftext|>",
+            "<think>",
+            "</think>",
+            "<|image_pad|>",
+            "<|vision_start|>",
+            "<|vision_end|>",
+        ],
+        stopSequences: [
+            "<|im_end|>",
+            "<|im_start|>",
+            "<|endoftext|>",
+        ],
+        disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "<think>\n\n</think>\n\n",
+        defaultContextLength: 1536,
+        defaultMaxOutputTokens: 768,
+        defaultTemperature: 0.7,
+        enableThinking: true,
+        bosPrefix: ""
     )
 
     static let granite = LocalModelRuntimeProfile(
@@ -130,7 +187,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 
     static let phi = LocalModelRuntimeProfile(
@@ -150,7 +208,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 
     static let generic = LocalModelRuntimeProfile(
@@ -162,7 +221,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7,
-        enableThinking: false
+        enableThinking: false,
+        bosPrefix: ""
     )
 }
 
@@ -244,8 +304,20 @@ enum LocalChatTemplate {
         for message in selected {
             blocks.append("\(imStart)\(message.role.rawValue)\n\(message.content)\n\(imEnd)")
         }
-        blocks.append("\(imStart)assistant\n\(profile.assistantGenerationPrefill)")
-        return blocks.joined(separator: "\n")
+        blocks.append("\(imStart)assistant\n\(chatMLAssistantPrefill(profile))")
+        return profile.bosPrefix + blocks.joined(separator: "\n")
+    }
+
+    /// Tokens officiels : MiniCPM Thinking préfixe `<think>\n` ; Qwen3.5 mobile garde le think vide.
+    private static func chatMLAssistantPrefill(_ profile: LocalModelRuntimeProfile) -> String {
+        let usesThink = profile.controlTokens.contains {
+            $0.compare("<think>", options: .caseInsensitive) == .orderedSame
+        }
+        guard usesThink else { return profile.assistantGenerationPrefill }
+        if profile.enableThinking {
+            return "<think>\n"
+        }
+        return profile.assistantGenerationPrefill
     }
 
     private static func buildGemma(

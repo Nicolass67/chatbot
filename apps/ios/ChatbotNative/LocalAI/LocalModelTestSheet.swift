@@ -20,6 +20,8 @@ final class LocalModelTestSession: ObservableObject {
     @Published var visionOutput = ""
     @Published var visionError: String?
     @Published var visionDurationMs: Double?
+    @Published var visionSuite: [LocalVisionProbeResult] = []
+    @Published var visionSuiteCurrent: String?
     @Published var abReport: LocalThreadABReport?
     @Published var abError: String?
     @Published var gdn = LlamaGdnProbeObservation.unknown
@@ -87,6 +89,8 @@ final class LocalModelTestSession: ObservableObject {
         visionError = nil
         visionOutput = ""
         visionDurationMs = nil
+        visionSuite = []
+        visionSuiteCurrent = nil
         LocalModelTestUILog.event("test started", extra: "kind=vision run=\(id.uuidString)")
         LocalModelTestUILog.event("TEST_STARTED", extra: "kind=vision")
         return id
@@ -108,6 +112,34 @@ final class LocalModelTestSession: ObservableObject {
         visionError = message
         LocalModelTestUILog.event("generation failed", extra: "kind=vision error=\(message)")
         LocalModelTestUILog.event("TEST_GENERATION_FAILED", extra: "kind=vision")
+    }
+
+    func applyVisionProbe(_ result: LocalVisionProbeResult) {
+        visionSuiteCurrent = result.title
+        visionSuite.append(result)
+        visionOutput = result.outputPreview
+        visionDurationMs = result.totalMs
+        if result.success {
+            visionError = nil
+        }
+    }
+
+    func finishVisionSuite() {
+        let failed = visionSuite.filter { !$0.success }
+        if visionSuite.isEmpty {
+            visionPhase = .error
+            visionError = visionError ?? "Aucun test vision n’a été exécuté."
+        } else if failed.count == visionSuite.count {
+            visionPhase = .error
+            visionError = failed.first?.errorMessage ?? "Tous les tests vision ont échoué."
+        } else {
+            visionPhase = .success
+            if !failed.isEmpty {
+                visionError = "\(failed.count) échec\(failed.count > 1 ? "s" : "") sur \(visionSuite.count)"
+            }
+        }
+        visionSuiteCurrent = nil
+        LocalModelTestUILog.event("TEST_GENERATION_FINISHED", extra: "kind=vision suite=\(visionSuite.count)")
     }
 
     func startAB() -> UUID {
@@ -174,17 +206,38 @@ final class LocalModelTestSession: ObservableObject {
 
 struct LocalModelTestSheet: View {
     static let textProbePrompt = "Réponds uniquement par : Test OK."
+    static let testerModelIds = [
+        "qwen35-2b-q4_k_m",
+        "lfm25-vl-3b-q4_k_m",
+        "north-micro-vision-instruct",
+        "minicpm-v46-thinking-q4_k_m",
+    ]
 
     @ObservedObject private var models = LocalModelManager.shared
     @Environment(\.dismiss) private var dismiss
     @StateObject private var session = LocalModelTestSession()
+    @State private var selectedModelId = LocalModelManager.shared.activeModelId
+    @State private var switchError: String?
+    @State private var switchingModel = false
+    @State private var benchResults: [LocalModelBenchmarkResult] = []
+    @State private var benchPhase: LocalModelTestSession.Phase = .idle
+
+    private var testerModels: [LocalModelDescriptor] {
+        var ids = Self.testerModelIds
+        if !ids.contains(models.activeModelId) {
+            ids.insert(models.activeModelId, at: 0)
+        }
+        return ids.compactMap { LocalModelDescriptor.descriptor(id: $0) }
+    }
 
     var body: some View {
         NavigationStack {
             List {
+                modelPickerSection
                 textTestSection
                 runtimeDiagnosticSection
                 visionSection
+                benchmarkSection
                 threadABSection
             }
             .navigationTitle("Test local")
@@ -232,18 +285,45 @@ struct LocalModelTestSheet: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button("Vision") {
-                Task { await runVisionTest() }
+                Task { await runVisionSuite() }
             }
-            .disabled(session.isBusy)
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
             Button("A/B 2/4") {
                 Task { await runThreadAB() }
             }
-            .disabled(session.isBusy)
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
             Button("Lancer") {
                 Task { await runTextTest() }
             }
-            .disabled(session.isBusy)
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
             .accessibilityIdentifier(A11yID.Settings.localAITestLaunch)
+        }
+    }
+
+    private var modelPickerSection: some View {
+        Section {
+            Picker("Modèle", selection: $selectedModelId) {
+                ForEach(testerModels) { model in
+                    Text(model.displayName).tag(model.id)
+                }
+            }
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
+            .onChange(of: selectedModelId) { _, newId in
+                Task { await applyTesterModelSelection(newId) }
+            }
+            if switchingModel {
+                ProgressView("Changement de modèle…")
+            }
+            if let switchError {
+                Text(switchError)
+                    .font(CNFont.callout)
+                    .foregroundStyle(AppTheme.danger)
+            }
+            Text("Un seul modèle chargé à la fois. Changer de modèle décharge l’actuel.")
+                .font(CNFont.caption)
+                .foregroundStyle(AppTheme.mutedForeground)
+        } header: {
+            Text("Modèle")
         }
     }
 
@@ -310,9 +390,9 @@ struct LocalModelTestSheet: View {
         Section {
             LabeledContent("Vision", value: visionStatusLabel)
             if session.visionPhase == .running {
-                ProgressView("Test vision…")
+                ProgressView(session.visionSuiteCurrent.map { "Vision : \($0)…" } ?? "Test vision…")
             }
-            if let duration = session.visionDurationMs, session.visionPhase == .success {
+            if let duration = session.visionDurationMs, session.visionPhase == .success, session.visionSuite.isEmpty {
                 LabeledContent("Durée", value: LocalModelTestFormat.seconds(fromMs: duration))
             }
             if session.visionPhase == .error {
@@ -320,21 +400,93 @@ struct LocalModelTestSheet: View {
                     .foregroundStyle(AppTheme.danger)
                     .font(CNFont.callout)
             }
-            if !session.visionOutput.isEmpty {
+            if !session.visionSuite.isEmpty {
+                ForEach(session.visionSuite) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title)
+                            .font(CNFont.callout.weight(.semibold))
+                        Text(visionProbeMetricsLine(row))
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.mutedForeground)
+                        if let err = row.errorMessage, !row.success {
+                            Text(err)
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.danger)
+                        } else if !row.outputPreview.isEmpty {
+                            Text(row.outputPreview)
+                                .font(CNFont.caption)
+                                .foregroundStyle(AppTheme.mutedForeground)
+                                .lineLimit(3)
+                        }
+                    }
+                }
+            } else if !session.visionOutput.isEmpty {
                 Text(session.visionOutput)
                     .font(CNFont.callout)
                     .foregroundStyle(AppTheme.mutedForeground)
                     .textSelection(.enabled)
             }
             Button("Tester la vision") {
-                Task { await runVisionTest() }
+                Task { await runVisionSuite() }
             }
-            .disabled(session.isBusy)
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
         } header: {
             Text("Test Vision")
         } footer: {
-            Text("La vision ne se lance pas avec Lancer. Une erreur vision reste dans cette feuille.")
+            Text("Les 7 cas (image, capture, document, OCR, tableau, question, raisonnement) sont identiques pour chaque modèle. Aucun benchmark automatique.")
         }
+    }
+
+    private var benchmarkSection: some View {
+        Section {
+            if benchPhase == .running {
+                ProgressView("Benchmark…")
+            }
+            ForEach(benchResults) { row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.promptLabel)
+                        .font(CNFont.callout.weight(.semibold))
+                    Text(benchmarkMetricsLine(row))
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                    if !row.success {
+                        Text(row.errorMessage ?? "Échec")
+                            .font(CNFont.caption)
+                            .foregroundStyle(AppTheme.danger)
+                    }
+                }
+            }
+            Button("Benchmark") {
+                Task { await runBenchmark() }
+            }
+            .disabled(session.isBusy || switchingModel || benchPhase == .running)
+        } header: {
+            Text("Benchmark")
+        } footer: {
+            Text("Manuel uniquement. Mesure TTFT, tok/s, durée et RAM sur le modèle déjà chargé.")
+        }
+    }
+
+    private func visionProbeMetricsLine(_ row: LocalVisionProbeResult) -> String {
+        let ttft = LocalModelTestFormat.seconds(fromMs: row.timeToFirstTokenMs)
+        let tps = LocalModelTestFormat.tokensPerSecond(row.tokensPerSecond)
+        let dur = LocalModelTestFormat.seconds(fromMs: row.totalMs)
+        let ram: String
+        if let bytes = row.residentMemoryBytes {
+            ram = String(format: "%.0f Mo", Double(bytes) / 1_048_576.0)
+        } else {
+            ram = "—"
+        }
+        let status = row.success ? "OK" : "échec"
+        return "\(status) · TTFT \(ttft) · \(tps) · \(dur) · RAM \(ram) · ctx \(row.promptTokens)/\(row.nCtx ?? 0)"
+    }
+
+    private func benchmarkMetricsLine(_ row: LocalModelBenchmarkResult) -> String {
+        let ttft = LocalModelTestFormat.seconds(fromMs: row.timeToFirstTokenMs)
+        let tps = LocalModelTestFormat.tokensPerSecond(row.tokensPerSecond)
+        let dur = LocalModelTestFormat.seconds(fromMs: row.totalMs)
+        let status = row.success ? "OK" : "échec"
+        return "\(status) · TTFT \(ttft) · \(tps) · \(dur)"
     }
 
     private var threadABSection: some View {
@@ -425,9 +577,38 @@ struct LocalModelTestSheet: View {
         session.applyText(run: run, result: result)
     }
 
-    private func runVisionTest() async {
+    private func applyTesterModelSelection(_ id: String) async {
+        switchError = nil
+        guard let model = LocalModelDescriptor.descriptor(id: id) else { return }
+        guard model.isRuntimeCompatible else {
+            switchError = model.runtimeIncompatibilityReason
+                ?? "Non compatible avec le runtime actuel"
+            selectedModelId = models.activeModelId
+            return
+        }
+        guard id != models.activeModelId else { return }
+        guard models.canLoad(model) else {
+            switchError = models.isInstalled(model)
+                ? "Installe d’abord le projecteur vision de « \(model.displayName) »."
+                : "« \(model.displayName) » n’est pas installé. Télécharge-le depuis Réglages."
+            selectedModelId = models.activeModelId
+            return
+        }
+        switchingModel = true
+        defer { switchingModel = false }
+        await models.switchToModel(model)
+        if models.isReady, models.activeModelId == model.id {
+            selectedModelId = model.id
+            await refreshGdn()
+        } else {
+            switchError = models.lastError ?? "Impossible de charger « \(model.displayName) »."
+            selectedModelId = models.activeModelId
+        }
+    }
+
+    private func runVisionSuite() async {
         let run = session.startVision()
-        LocalModelTestUILog.event("generation started", extra: "kind=vision run=\(run.uuidString)")
+        LocalModelTestUILog.event("generation started", extra: "kind=vision-suite run=\(run.uuidString)")
         LocalModelTestUILog.event("TEST_GENERATION_STARTED", extra: "kind=vision")
         let model = models.activeDescriptor
         guard model.mmproj != nil else {
@@ -442,27 +623,41 @@ struct LocalModelTestSheet: View {
             return
         }
         guard await ensureModelReady(run: run, kind: "vision") else { return }
-        guard let jpeg = LocalVision.solidColorJPEG(red: 0.86, green: 0.12, blue: 0.12) else {
-            session.failVision(run: run, message: "Impossible de créer l’image de test.")
-            return
+        let results = await LocalVisionProbeRunner.run { probe in
+            session.applyVisionProbe(probe)
         }
-        let started = Date()
-        do {
-            let text = try await LocalAIRuntime.shared.generateStream(
-                system: "Tu es un assistant visuel. Réponds en une phrase.",
-                messages: [
-                    LLMChatMessage(role: .user, content: "Quelle couleur domine cette image ?"),
-                ],
-                maxTokens: 64,
-                images: [jpeg],
-                onToken: { _ in }
+        _ = results
+        session.finishVisionSuite()
+    }
+
+    private func runBenchmark() async {
+        benchPhase = .running
+        benchResults = []
+        if models.isReady {
+            // already loaded
+        } else {
+            let target = models.activeDescriptor
+            guard models.canLoad(target) else {
+                benchPhase = .error
+                return
+            }
+            await models.switchToModel(target)
+            guard models.isReady else {
+                benchPhase = .error
+                return
+            }
+        }
+        var rows: [LocalModelBenchmarkResult] = []
+        for prompt in LocalModelBenchmarkSuite.prompts.prefix(3) {
+            let row = await LocalModelBenchmarkRunner.runPrompt(
+                label: prompt.id,
+                prompt: prompt.text,
+                maxTokens: 48
             )
-            let durationMs = Date().timeIntervalSince(started) * 1000
-            let cleaned = LocalChatTemplate.stripControlTokens(text, profile: models.activeRuntimeProfile)
-            session.applyVision(run: run, output: cleaned, durationMs: durationMs)
-        } catch {
-            session.failVision(run: run, message: error.localizedDescription)
+            rows.append(row)
         }
+        benchResults = rows
+        benchPhase = rows.contains(where: \.success) ? .success : .error
     }
 
     private func runThreadAB() async {
@@ -478,7 +673,7 @@ struct LocalModelTestSheet: View {
     private func ensureModelReady(run: UUID, kind: String) async -> Bool {
         if models.isReady { return true }
         let target = models.activeDescriptor
-        guard models.isInstalled(target) else {
+        guard models.canLoad(target) else {
             failKind(run: run, kind: kind, message: "Aucun modèle chargé. Charge-le depuis Réglages, puis relance.")
             return false
         }

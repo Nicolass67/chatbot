@@ -112,6 +112,20 @@ final class LocalModelManager: ObservableObject {
         presence(for: model).isFullyInstalled
     }
 
+    /// Texte + mmproj obligatoire si le descripteur l’exige (LFM VL / MiniCPM). Qwen reste texte-only.
+    func isFullyInstalled(_ model: LocalModelDescriptor) -> Bool {
+        guard isInstalled(model) else { return false }
+        if model.requiresCompanionVisionToLoad {
+            return isVisionProjectorInstalled(model)
+        }
+        return true
+    }
+
+    func canLoad(_ model: LocalModelDescriptor) -> Bool {
+        guard model.isRuntimeCompatible else { return false }
+        return isFullyInstalled(model)
+    }
+
     /// Liste des modèles réellement présents sur disque.
     var installedModels: [LocalModelDescriptor] {
         LocalModelDescriptor.catalog.filter { isInstalled($0) }
@@ -165,6 +179,7 @@ final class LocalModelManager: ObservableObject {
         }
         refreshMetalAvailability()
         refreshInstalledState()
+        LocalModelDescriptor.logUnavailableCatalogEntries()
         LocalModelFileAudit.log("local-ai:lifecycle", [
             "event": "init",
             "path": modelFilePath,
@@ -185,8 +200,17 @@ final class LocalModelManager: ObservableObject {
     /// Décharge le modèle courant puis charge `model` (un seul en mémoire).
     /// Appelé **uniquement** sur action utilisateur explicite. Jamais d’auto-switch.
     func switchToModel(_ model: LocalModelDescriptor) async {
+        guard model.isRuntimeCompatible else {
+            lastError = model.runtimeIncompatibilityReason
+                ?? "« \(model.displayName) » n’est pas compatible avec le runtime actuel."
+            return
+        }
         guard isInstalled(model) else {
             lastError = "« \(model.displayName) » n’est pas installé."
+            return
+        }
+        if model.requiresCompanionVisionToLoad, !isVisionProjectorInstalled(model) {
+            lastError = "Installe d’abord le projecteur vision de « \(model.displayName) » (mmproj obligatoire)."
             return
         }
         if activeModelId == model.id, isReady {
@@ -266,8 +290,12 @@ final class LocalModelManager: ObservableObject {
 
     func install(model: LocalModelDescriptor = .primary) async {
         let initialState = state.statusLabel
-        guard var remoteURL = model.downloadURL else {
-            lastError = "Ce modèle n’est pas encore téléchargeable."
+        guard var remoteURL = model.downloadURL, model.isRuntimeCompatible else {
+            if model.id == "north-micro-vision-instruct" {
+                print(LocalModelDescriptor.northMicroVisionUnavailableLog)
+            }
+            lastError = model.runtimeIncompatibilityReason
+                ?? "Ce modèle n’est pas encore téléchargeable."
             LocalModelFileAudit.log("local-ai:download", [
                 "phase": "early-exit",
                 "reason": "not-downloadable",
@@ -732,6 +760,7 @@ final class LocalModelManager: ObservableObject {
             exclusiveBusy: exclusiveOperation != nil,
             isLoading: loading
         ) else { return }
+        guard canLoad(activeDescriptor) else { return }
         await loadIntoEngine()
     }
 
@@ -778,6 +807,16 @@ final class LocalModelManager: ObservableObject {
             ])
             LocalModelFileAudit.snapshotFS(point: "E-load-blocked-not-installed", finalPath: modelFilePath)
             logLoadTrace("end-blocked-not-installed")
+            return
+        }
+        if activeDescriptor.requiresCompanionVisionToLoad, !isVisionProjectorInstalled(activeDescriptor) {
+            lastError = "Installe d’abord le projecteur vision de « \(activeDescriptor.displayName) » (mmproj obligatoire)."
+            state = .installed
+            LocalModelFileAudit.log("local-ai:lifecycle", [
+                "event": "load-blocked-mmproj-required",
+                "model": activeDescriptor.id,
+            ])
+            logLoadTrace("end-blocked-mmproj-required")
             return
         }
         guard LocalInferenceEngine.isLlamaRuntimeAvailable else {

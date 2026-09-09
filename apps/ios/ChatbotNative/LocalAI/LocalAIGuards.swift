@@ -35,9 +35,14 @@ enum LocalModelInstallPolicy {
 }
 
 /// Pin llama.cpp : Gemma 4 (`LLM_ARCH_GEMMA4` + `PROJECTOR_TYPE_GEMMA4V`) est déjà dans b10809.
-/// Ne pas bumper : la vision Qwen3.5 fonctionne sur ce tag.
+/// MiniCPM-V 4.6 (`PROJECTOR_TYPE_MINICPMV4_6`) depuis b9049. LFM2 texte + `PROJECTOR_TYPE_LFM2` déjà dans ce tag.
+/// `cohere_compass` (North Micro Vision) est absent. Ne pas bumper : la vision Qwen3.5 fonctionne.
 enum LlamaCppPinnedRelease {
     static let tag = "b10809"
     static let gemma4TextArchitectureSupported = true
     static let gemma4vProjectorSupported = true
+    static let lfm2TextArchitectureSupported = true
+    static let lfm2VisionProjectorSupported = true
+    static let minicpmv46ProjectorSupported = true
+    static let cohereCompassArchitectureSupported = false
 }

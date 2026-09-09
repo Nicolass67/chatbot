@@ -87,6 +87,7 @@ struct LocalAIStatusMark: View {
         case downloading
         case loading
         case error
+        case incompatible
     }
 
     let kind: Kind
@@ -111,6 +112,7 @@ struct LocalAIStatusMark: View {
         case .downloading: return "Téléchargement"
         case .loading: return "Chargement"
         case .error: return "Erreur"
+        case .incompatible: return "Non compatible avec le runtime actuel"
         }
     }
 
@@ -122,6 +124,7 @@ struct LocalAIStatusMark: View {
         case .downloading: return "arrow.down.circle"
         case .loading: return "hourglass"
         case .error: return "exclamationmark.triangle.fill"
+        case .incompatible: return "xmark.octagon.fill"
         }
     }
 
@@ -130,7 +133,7 @@ struct LocalAIStatusMark: View {
         case .active, .downloading, .loading: return AppTheme.accent
         case .installed: return AppTheme.success
         case .available: return AppTheme.mutedForeground
-        case .error: return AppTheme.danger
+        case .error, .incompatible: return AppTheme.danger
         }
     }
 }
@@ -156,6 +159,7 @@ struct LocalAIModelDetailsSheet: View {
         NavigationStack {
             List {
                 Section {
+                    LabeledContent("Famille", value: model.familyDisplayName)
                     LabeledContent("Architecture", value: model.architecture)
                     LabeledContent("Quantification", value: model.quant)
                     LabeledContent("Paramètres", value: model.parameterCountLabel)
@@ -163,6 +167,8 @@ struct LocalAIModelDetailsSheet: View {
                     if let vision = model.userFacingVisionSizeLabel {
                         LabeledContent("Vision", value: vision)
                         LabeledContent("Total", value: model.userFacingPackSizeLabel)
+                    } else if model.capabilities.vision {
+                        LabeledContent("Vision", value: "Oui — pas de GGUF")
                     } else {
                         LabeledContent("Vision", value: "Non")
                     }
@@ -175,6 +181,10 @@ struct LocalAIModelDetailsSheet: View {
                     LabeledContent("Fichier", value: model.filename)
                     if let mmproj = model.mmproj {
                         LabeledContent("Projecteur", value: mmproj.filename)
+                        LabeledContent("SHA256 mmproj", value: mmproj.sha256 ?? "—")
+                    }
+                    if let sha = model.sha256 {
+                        LabeledContent("SHA256", value: sha)
                     }
                 } header: {
                     Text("Fichiers")
@@ -261,7 +271,11 @@ struct LocalAIVisionManageSheet: View {
                             .foregroundStyle(AppTheme.mutedForeground)
                     }
                 } footer: {
-                    Text("La vision appartient à ce modèle. Elle ne change pas le modèle chargé.")
+                    if model.requiresCompanionVisionToLoad {
+                        Text("Sans ce projecteur, « \(model.displayName) » ne peut pas être chargé. La vision ne change pas le modèle déjà en mémoire.")
+                    } else {
+                        Text("La vision appartient à ce modèle. Elle ne change pas le modèle chargé.")
+                    }
                 }
 
                 Section {

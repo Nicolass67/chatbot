@@ -40,11 +40,11 @@ struct LocalAISettingsView: View {
     }
 
     private var installedModels: [LocalModelDescriptor] {
-        LocalModelDescriptor.userFacingCatalog.filter { models.isInstalled($0) }
+        LocalModelDescriptor.userFacingCatalog.filter { models.isFullyInstalled($0) }
     }
 
     private var availableModels: [LocalModelDescriptor] {
-        LocalModelDescriptor.userFacingCatalog.filter { $0.isDownloadable && !models.isInstalled($0) }
+        LocalModelDescriptor.userFacingCatalog.filter { !models.isFullyInstalled($0) }
     }
 
     var body: some View {
@@ -301,7 +301,7 @@ struct LocalAISettingsView: View {
     }
 
     private func currentMetaLine(_ model: LocalModelDescriptor) -> String {
-        var parts = [model.userFacingTextSizeLabel]
+        var parts = [model.familyDisplayName, model.quant, model.userFacingTextSizeLabel]
         if let vision = visionCapabilityLabel(model) {
             parts.append(vision)
         }
@@ -358,7 +358,9 @@ struct LocalAISettingsView: View {
                 if !isActive {
                     LocalAICompactChip(
                         title: "Utiliser",
-                        enabled: !mutationsDisabled && LocalInferenceEngine.isLlamaRuntimeAvailable
+                        enabled: !mutationsDisabled
+                            && LocalInferenceEngine.isLlamaRuntimeAvailable
+                            && models.canLoad(model)
                     ) {
                         requestLoad(model)
                     }
@@ -381,9 +383,16 @@ struct LocalAISettingsView: View {
     }
 
     private func installedMetaLine(_ model: LocalModelDescriptor) -> String {
-        var parts = [model.userFacingTextSizeLabel]
+        var parts = [
+            model.familyDisplayName,
+            model.parameterCountLabel,
+            model.quant,
+            model.userFacingTextSizeLabel,
+        ]
         if let vision = visionCapabilityLabel(model) {
             parts.append(vision)
+        } else {
+            parts.append("Vision non")
         }
         return parts.joined(separator: " · ")
     }
@@ -407,7 +416,7 @@ struct LocalAISettingsView: View {
                 }
             } else {
                 Button("Utiliser") { requestLoad(model) }
-                    .disabled(mutationsDisabled || !LocalInferenceEngine.isLlamaRuntimeAvailable)
+                    .disabled(mutationsDisabled || !LocalInferenceEngine.isLlamaRuntimeAvailable || !models.canLoad(model))
             }
             if model.mmproj != nil {
                 Button("Gérer la vision") { presentedSheet = .visionManage(model) }
@@ -441,27 +450,29 @@ struct LocalAISettingsView: View {
                         .font(CNFont.callout.weight(.semibold))
                         .lineLimit(2)
                         .minimumScaleFactor(0.85)
+                    Text(model.familyDisplayName)
+                        .font(CNFont.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.mutedForeground)
                     Text(model.userFacingBlurb)
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.mutedForeground)
                     if !models.isInstallingText(model) {
                         availableSizeBlock(model)
                     }
+                    availableStatusRow(model)
                 }
                 Spacer(minLength: 4)
-                if !models.isInstallingText(model), visibleError(for: model.id) == nil {
-                    LocalAICompactChip(
-                        title: "Télécharger",
-                        enabled: !mutationsDisabled && !models.textInstallBusy
-                    ) {
-                        requestInstall(model)
-                    }
-                    .accessibilityLabel("Télécharger \(model.displayName)")
-                }
+                availableActionChip(model)
             }
 
             if models.isInstallingText(model) {
                 downloadProgressBlock(model)
+            } else if models.isInstallingVision(model) {
+                ProgressView(value: models.visionProjectorProgress)
+                    .tint(AppTheme.accent)
+                Text("Vision \(Int((models.visionProjectorProgress * 100).rounded())) %")
+                    .font(CNFont.caption2)
+                    .foregroundStyle(AppTheme.mutedForeground)
             } else if let err = visibleError(for: model.id) {
                 compactErrorBlock(err, retry: { requestInstall(model) })
             }
@@ -469,7 +480,63 @@ struct LocalAISettingsView: View {
         .padding(.vertical, 2)
         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 12))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(model.displayName), disponible, \(model.userFacingTextSizeLabel)")
+        .accessibilityLabel(availableAccessibilityLabel(model))
+    }
+
+    @ViewBuilder
+    private func availableActionChip(_ model: LocalModelDescriptor) -> some View {
+        if !model.isRuntimeCompatible {
+            LocalAICompactChip(
+                title: "Détails",
+                kind: .outline,
+                enabled: true
+            ) {
+                presentedSheet = .modelDetails(model)
+            }
+            .accessibilityLabel("Détails de \(model.displayName)")
+        } else if models.isInstallingText(model) || models.isInstallingVision(model) {
+            EmptyView()
+        } else if visibleError(for: model.id) != nil {
+            EmptyView()
+        } else if models.isInstalled(model), model.requiresCompanionVisionToLoad, !models.isVisionProjectorInstalled(model) {
+            LocalAICompactChip(
+                title: "Vision",
+                enabled: !mutationsDisabled && !models.visionProjectorBusy
+            ) {
+                presentedSheet = .visionManage(model)
+            }
+            .accessibilityLabel("Installer la vision de \(model.displayName)")
+        } else if model.isDownloadable {
+            LocalAICompactChip(
+                title: "Télécharger",
+                enabled: !mutationsDisabled && !models.textInstallBusy
+            ) {
+                requestInstall(model)
+            }
+            .accessibilityLabel("Télécharger \(model.displayName)")
+        }
+    }
+
+    @ViewBuilder
+    private func availableStatusRow(_ model: LocalModelDescriptor) -> some View {
+        if !model.isRuntimeCompatible {
+            LocalAIStatusMark(kind: .incompatible)
+        } else if models.isInstallingText(model) || models.isInstallingVision(model) {
+            LocalAIStatusMark(kind: .downloading)
+        } else if models.isInstalled(model), model.requiresCompanionVisionToLoad {
+            Text("Vision requise")
+                .font(CNFont.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+        } else {
+            LocalAIStatusMark(kind: .available)
+        }
+    }
+
+    private func availableAccessibilityLabel(_ model: LocalModelDescriptor) -> String {
+        if let reason = model.runtimeIncompatibilityReason {
+            return "\(model.displayName), non compatible, \(reason)"
+        }
+        return "\(model.displayName), \(model.familyDisplayName), \(model.userFacingTextSizeLabel)"
     }
 
     @ViewBuilder
@@ -477,11 +544,16 @@ struct LocalAISettingsView: View {
         let showFootprint = model.mmproj != nil || model.expectedBytes >= 1_500_000_000
         VStack(alignment: .leading, spacing: 1) {
             if showFootprint, let vision = model.userFacingVisionSizeLabel {
-                Text("~\(model.userFacingTextSizeLabel)")
+                Text("~\(model.userFacingTextSizeLabel) · \(model.quant)")
                 Text("+ \(vision) vision")
                 Text("≈ \(model.userFacingPackSizeLabel) au total")
-            } else {
-                Text("~\(model.userFacingTextSizeLabel)")
+            } else if model.expectedBytes > 0 {
+                Text("~\(model.userFacingTextSizeLabel) · \(model.quant)")
+            }
+            if let reason = model.runtimeIncompatibilityReason {
+                Text(reason)
+                    .foregroundStyle(AppTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if showFootprint, let free = LocalDeviceStorageInfo.availableLabel() {
                 let needed = model.expectedBytes
@@ -616,6 +688,7 @@ struct LocalAISettingsView: View {
     // MARK: - Actions (logique inchangée)
 
     private func requestLoad(_ model: LocalModelDescriptor) {
+        guard models.canLoad(model) else { return }
         switch model.compatibilityIPhone14Plus {
         case .recommended:
             runSwitch(to: model)
