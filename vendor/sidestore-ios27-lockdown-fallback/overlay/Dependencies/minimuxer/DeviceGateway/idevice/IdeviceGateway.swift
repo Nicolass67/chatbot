@@ -543,6 +543,24 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
         serviceName: String,
         action: (OpaquePointer) throws -> T
     ) throws -> T {
+        try DeviceServiceSession.withLockdownSession {
+            try DeviceServiceSession.retryTransient(operation: "lockdown.\(serviceName)") {
+                try self.performWithTcpServiceOnce(
+                    connect: connect,
+                    cleanup: cleanup,
+                    serviceName: serviceName,
+                    action: action
+                )
+            }
+        }
+    }
+
+    private func performWithTcpServiceOnce<T>(
+        connect: @escaping (OpaquePointer?, UnsafeMutablePointer<OpaquePointer?>?) -> UnsafeMutablePointer<IdeviceFfiError>?,
+        cleanup: @escaping (OpaquePointer?) -> Void,
+        serviceName: String,
+        action: (OpaquePointer) throws -> T
+    ) throws -> T {
         verboseLog("[IdeviceGateway] performWithTcpService(\(serviceName)) started")
         
         guard let deviceEndpointIp = deviceEndpointIp else {
@@ -830,23 +848,25 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     private func syncInstallProvisioningProfile(profile: Data) throws {
         debugLog("[IdeviceGateway] installProvisioningProfile() called, profile length: \(profile.count)")
         try verifyInitialized()
-        try performWithEitherService(
-            connectRP: misagent_connect_rsd,
-            connectLockdown: misagent_connect,
-            cleanup: misagent_client_free,
-            serviceName: "misagent"
-        ) { client in
-            try profile.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
-                if let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
-                    verboseLog("[IdeviceGateway] installProvisioningProfile() calling misagent_install")
-                    let installErr = misagent_install(client, baseAddress, profile.count)
-                    if let installErr = installErr {
-                        let msg = self.getErrorMessage(from: installErr)
-                        debugLog("[IdeviceGateway] installProvisioningProfile() misagent_install failed: \(msg)")
-                        defer { safeFreeError(installErr) }
-                        throw IdeviceGatewayError(.serviceError, reason: "Failed to install profile, error: (\(msg))")
+        try DeviceServiceSession.withMisagent(step: "install") {
+            try performWithEitherService(
+                connectRP: misagent_connect_rsd,
+                connectLockdown: misagent_connect,
+                cleanup: misagent_client_free,
+                serviceName: "misagent"
+            ) { client in
+                try profile.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                    if let baseAddress = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                        verboseLog("[IdeviceGateway] installProvisioningProfile() calling misagent_install")
+                        let installErr = misagent_install(client, baseAddress, profile.count)
+                        if let installErr = installErr {
+                            let msg = self.getErrorMessage(from: installErr)
+                            debugLog("[IdeviceGateway] installProvisioningProfile() misagent_install failed: \(msg)")
+                            defer { safeFreeError(installErr) }
+                            throw IdeviceGatewayError(.serviceError, reason: "Failed to install profile, error: (\(msg))")
+                        }
+                        debugLog("[IdeviceGateway] installProvisioningProfile() misagent_install succeeded")
                     }
-                    debugLog("[IdeviceGateway] installProvisioningProfile() misagent_install succeeded")
                 }
             }
         }
@@ -855,22 +875,24 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     private func syncRemoveProvisioningProfile(id: String) throws {
         debugLog("[IdeviceGateway] removeProvisioningProfile() called, id: \(id)")
         try verifyInitialized()
-        try performWithEitherService(
-            connectRP: misagent_connect_rsd,
-            connectLockdown: misagent_connect,
-            cleanup: misagent_client_free,
-            serviceName: "misagent"
-        ) { client in
-            try id.withCString { idPtr in
-                verboseLog("[IdeviceGateway] removeProvisioningProfile() calling misagent_remove")
-                let removeErr = misagent_remove(client, idPtr)
-                if let removeErr = removeErr {
-                    let msg = self.getErrorMessage(from: removeErr)
-                    debugLog("[IdeviceGateway] removeProvisioningProfile() misagent_remove failed: \(msg)")
-                    defer { safeFreeError(removeErr) }
-                    throw IdeviceGatewayError(.serviceError, reason: "Failed to remove profile, error: (\(msg))")
+        try DeviceServiceSession.withMisagent(step: "remove") {
+            try performWithEitherService(
+                connectRP: misagent_connect_rsd,
+                connectLockdown: misagent_connect,
+                cleanup: misagent_client_free,
+                serviceName: "misagent"
+            ) { client in
+                try id.withCString { idPtr in
+                    verboseLog("[IdeviceGateway] removeProvisioningProfile() calling misagent_remove")
+                    let removeErr = misagent_remove(client, idPtr)
+                    if let removeErr = removeErr {
+                        let msg = self.getErrorMessage(from: removeErr)
+                        debugLog("[IdeviceGateway] removeProvisioningProfile() misagent_remove failed: \(msg)")
+                        defer { safeFreeError(removeErr) }
+                        throw IdeviceGatewayError(.serviceError, reason: "Failed to remove profile, error: (\(msg))")
+                    }
+                    debugLog("[IdeviceGateway] removeProvisioningProfile() misagent_remove succeeded")
                 }
-                debugLog("[IdeviceGateway] removeProvisioningProfile() misagent_remove succeeded")
             }
         }
     }
@@ -1421,6 +1443,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     private func syncDumpProfiles(docsPath: String) throws -> String {
         debugLog("[IdeviceGateway] dumpProfiles() called, docsPath: \(docsPath)")
         try verifyInitialized()
+        return try DeviceServiceSession.withMisagent(step: "copy_all") {
         return try performWithEitherService(
             connectRP: misagent_connect_rsd,
             connectLockdown: misagent_connect,
@@ -1471,6 +1494,7 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
             }
             debugLog("[IdeviceGateway] dumpProfiles() complete")
             return dumpDir
+        }
         }
     }
 
@@ -1573,6 +1597,12 @@ public final class IdeviceGateway: BaseDeviceGateway, DeviceGatewayAPI {
     }
 
     private func mountPersonalizedDdiIdevice(image: Data, trustcache: Data, manifest: Data) throws {
+        try DeviceServiceSession.withLockdownSession {
+            try self.mountPersonalizedDdiIdeviceUnlocked(image: image, trustcache: trustcache, manifest: manifest)
+        }
+    }
+
+    private func mountPersonalizedDdiIdeviceUnlocked(image: Data, trustcache: Data, manifest: Data) throws {
         verboseLog("[IdeviceGateway] mountPersonalizedDdiIdevice() starting traditional/TCP provider mounting")
 
         guard let deviceEndpointIp = deviceEndpointIp else {

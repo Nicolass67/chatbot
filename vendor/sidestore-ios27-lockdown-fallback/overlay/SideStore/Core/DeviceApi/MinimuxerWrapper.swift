@@ -201,10 +201,11 @@ func installProvisioningProfiles(_ profileData: Data) async throws {
     #if targetEnvironment(simulator)
     debugLog("[SideStore] installProvisioningProfiles(profileData) is no-op on simulator")
     #else
-    debugLog("[SideStore] installProvisioningProfiles(profileData) invoked")
+    debugLog("[refresh] misagent install begin bytes=\(profileData.count) transport=\(minimuxer.gateway.pairingFileType)")
     try await withRemotePairingRetry {
         try await minimuxer.core.installProvisioningProfile(profile: profileData)
     }
+    debugLog("[refresh] misagent install succeeded bytes=\(profileData.count)")
     #endif
 }
 
@@ -213,10 +214,11 @@ func removeProvisioningProfile(_ id: String) async throws {
     #if targetEnvironment(simulator)
     debugLog("[SideStore] removeProvisioningProfile(id) is no-op on simulator")
     #else
-    debugLog("[SideStore] removeProvisioningProfile(id) invoked")
+    debugLog("[refresh] misagent remove begin id=\(id) transport=\(minimuxer.gateway.pairingFileType)")
     try await withRemotePairingRetry {
         try await minimuxer.core.removeProvisioningProfile(id: id)
     }
+    debugLog("[refresh] misagent remove succeeded id=\(id)")
     #endif
 }
 
@@ -334,10 +336,12 @@ func dumpProfiles(_ docsPath: String) async throws -> String {
     debugLog("[SideStore] dumpProfiles(docsPath) is no-op on simulator")
     return ""
     #else
-    debugLog("[SideStore] dumpProfiles(docsPath) invoked")
-    return try await withRemotePairingRetry {
+    debugLog("[refresh] misagent copy_all begin transport=\(minimuxer.gateway.pairingFileType)")
+    let dumped = try await withRemotePairingRetry {
         try await minimuxer.core.dumpProfiles(docsPath: docsPath)
     }
+    debugLog("[refresh] misagent copy_all succeeded path=\(dumped)")
+    return dumped
     #endif
 }
 

@@ -71,6 +71,14 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
     private let state = State()
+
+    /// Serializes dump/remove/install so Refresh All cannot open concurrent misagent sockets.
+    private actor ProfileOperationGate {
+        func run<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+            try await body()
+        }
+    }
+    private let profileGate = ProfileOperationGate()
     
     var pairingFileType: PairingProtocol { self.gateway.pairingFileType }
     
@@ -514,20 +522,33 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
 
     func installProvisioningProfile(profile: Data) async throws {
-        try await matchingPriority{
-            try await self.gateway.installProvisioningProfile(profile: profile)
+        try await profileGate.run {
+            debugLog("[misagent] step=install enqueue bytes=\(profile.count)")
+            try await matchingPriority {
+                try await self.gateway.installProvisioningProfile(profile: profile)
+            }
+            debugLog("[misagent] step=install succeeded bytes=\(profile.count)")
         }
     }
 
     func removeProvisioningProfile(id: String) async throws {
-        try await matchingPriority{
-            try await self.gateway.removeProvisioningProfile(id: id)
+        try await profileGate.run {
+            debugLog("[misagent] step=remove enqueue id=\(id)")
+            try await matchingPriority {
+                try await self.gateway.removeProvisioningProfile(id: id)
+            }
+            debugLog("[misagent] step=remove succeeded id=\(id)")
         }
     }
 
     func dumpProfiles(docsPath: String) async throws -> String {
-        try await matchingPriority{
-            try await self.gateway.dumpProfiles(docsPath: docsPath)
+        try await profileGate.run {
+            debugLog("[misagent] step=copy_all enqueue")
+            let path = try await matchingPriority {
+                try await self.gateway.dumpProfiles(docsPath: docsPath)
+            }
+            debugLog("[misagent] step=copy_all succeeded path=\(path)")
+            return path
         }
     }
 

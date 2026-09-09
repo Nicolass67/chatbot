@@ -13,6 +13,7 @@ SideStore 0.7.0 classifies a hybrid iLoader pairing file as `.rppairing` because
 2. Prefers RemotePairing only if 49152 is reachable
 3. Falls back to lockdown 62078 for compatible operations (UDID, AFC, instproxy, misagent, heartbeat)
 4. Returns `requiresRemotePairing` for JIT / iOS 17+ debug instead of faking a 62078 debug proxy
+5. Serializes lockdown/misagent sessions and retries BrokenPipe with a fresh connection (max 3 attempts)
 
 Pairing files, LocalDevVPN, and Device IP are not modified by this overlay.
 

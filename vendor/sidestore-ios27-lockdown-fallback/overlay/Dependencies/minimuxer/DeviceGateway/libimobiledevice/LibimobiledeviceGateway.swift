@@ -349,21 +349,25 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
         cleanup: (Client?) -> E,
         _ body: (Client) throws -> T
     ) throws -> T where E.RawValue: BinaryInteger {
-        try withLockdown { device, lockdown in
-            var serviceDescriptor: lockdownd_service_descriptor_t? = nil
-            let sErr = lockdownd_start_service(lockdown, service.rawValue, &serviceDescriptor)
-            guard sErr == LOCKDOWN_E_SUCCESS, let serviceDescriptor = serviceDescriptor else {
-                throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to start lockdown service '\(service.rawValue)': code \(sErr.rawValue)")
-            }
-            defer { lockdownd_service_descriptor_free(serviceDescriptor) }
+        try DeviceServiceSession.withLockdownSession {
+            try DeviceServiceSession.retryTransient(operation: "lockdown.\(service.rawValue)") {
+                try self.withLockdown { device, lockdown in
+                    var serviceDescriptor: lockdownd_service_descriptor_t? = nil
+                    let sErr = lockdownd_start_service(lockdown, service.rawValue, &serviceDescriptor)
+                    guard sErr == LOCKDOWN_E_SUCCESS, let serviceDescriptor = serviceDescriptor else {
+                        throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to start lockdown service '\(service.rawValue)': code \(sErr.rawValue)")
+                    }
+                    defer { lockdownd_service_descriptor_free(serviceDescriptor) }
 
-            var client: Client? = nil
-            let cErr = create(device, serviceDescriptor, &client)
-            guard cErr.rawValue == 0, let client = client else {
-                throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to create client for '\(service.rawValue)': code \(cErr.rawValue)")
+                    var client: Client? = nil
+                    let cErr = create(device, serviceDescriptor, &client)
+                    guard cErr.rawValue == 0, let client = client else {
+                        throw LibimobiledeviceGatewayError(.serviceError, reason: "Failed to create client for '\(service.rawValue)': code \(cErr.rawValue)")
+                    }
+                    defer { _ = cleanup(client) }
+                    return try body(client)
+                }
             }
-            defer { _ = cleanup(client) }
-            return try body(client)
         }
     }
 
@@ -619,6 +623,12 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
     }
 
     func syncInstallProvisioningProfile(profile: Data) throws {
+        try DeviceServiceSession.withMisagent(step: "install") {
+            try self.syncInstallProvisioningProfileUnlocked(profile: profile)
+        }
+    }
+
+    private func syncInstallProvisioningProfileUnlocked(profile: Data) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.misagent) { stream in
                 debugLog("[LibimobiledeviceGateway] Installing provisioning profile via RSD misagent...")
@@ -653,6 +663,12 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
     }
 
     func syncRemoveProvisioningProfile(id: String) throws {
+        try DeviceServiceSession.withMisagent(step: "remove") {
+            try self.syncRemoveProvisioningProfileUnlocked(id: id)
+        }
+    }
+
+    private func syncRemoveProvisioningProfileUnlocked(id: String) throws {
         if pairingFileType == .rppairing {
             try withRSDService(.misagent) { stream in
                 try rsdSendPlist(stream, dict: ["MessageType": "Remove", "ProfileID": id])
@@ -677,6 +693,12 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI 
     }
 
     func syncDumpProfiles(docsPath: String) throws -> String {
+        return try DeviceServiceSession.withMisagent(step: "copy_all") {
+            try self.syncDumpProfilesUnlocked(docsPath: docsPath)
+        }
+    }
+
+    private func syncDumpProfilesUnlocked(docsPath: String) throws -> String {
         if pairingFileType == .rppairing {
             return try withRSDService(.misagent) { stream in
                 try rsdSendPlist(stream, dict: ["MessageType": "CopyAll"])

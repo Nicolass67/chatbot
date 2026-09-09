@@ -20,6 +20,7 @@ let package = Package(
             path: ".",
             exclude: ["Tests"],
             sources: [
+                "DeviceServiceSession.swift",
                 "DeviceTransport.swift",
                 "FFIDispatcher.swift",
                 "MinimuxerCommonLogging.swift",
