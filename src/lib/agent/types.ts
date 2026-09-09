@@ -53,7 +53,8 @@ export const planStepDraftSchema = z.object({
 });
 
 export const agentPlanDraftSchema = z.object({
-  steps: z.array(planStepDraftSchema).min(2).max(8),
+  /** Plans courts exécutables : 3–4 étapes (max 4). */
+  steps: z.array(planStepDraftSchema).min(3).max(4),
 });
 
 export type AgentPlanDraft = z.infer<typeof agentPlanDraftSchema>;
@@ -169,4 +170,13 @@ export interface AgentExecutionContext {
   researchState?: import("./research-flow").ResearchFlowState;
   freshnessState?: import("./freshness-policy").FreshnessState;
   executedQueries?: string[];
+  /** Contexte applicatif durable (mail/fichier + web enrichi). */
+  applicationContext?: string;
+  /**
+   * Dernière réflexion d'étape — réinjectée en entrée du tour suivant
+   * pour enchaîner vraiment recherche → analyse → synthèse.
+   */
+  lastReflection?: string;
+  /** Journal court des réflexions (ordre chronologique). */
+  stepReflections?: Array<{ stepId: string; title: string; reflection: string }>;
 }

@@ -11,6 +11,7 @@ import {
   MAIL_DRAFT_REWRITE_SYSTEM,
   buildComposeUserPrompt,
   buildRewriteUserPrompt,
+  isNearlyIdenticalRewrite,
   stripRewriteMeta,
 } from "@/lib/mail/draft-rewrite";
 
@@ -75,16 +76,28 @@ export async function rewriteMailDraftBody(input: {
   if (!instruction) throw new Error("Instruction vide.");
   if (body.length < 1) throw new Error("Brouillon vide.");
 
-  const bodyText = await completeText({
-    system: MAIL_DRAFT_REWRITE_SYSTEM,
-    user: buildRewriteUserPrompt({
-      instruction,
-      body: body.slice(0, 8000),
-      to: input.to,
-      subject: input.subject,
-    }),
-    model: input.model,
-  });
+  const runOnce = (forceVisibleChange: boolean) =>
+    completeText({
+      system: MAIL_DRAFT_REWRITE_SYSTEM,
+      user: buildRewriteUserPrompt({
+        instruction,
+        body: body.slice(0, 8000),
+        to: input.to,
+        subject: input.subject,
+        forceVisibleChange,
+      }),
+      model: input.model,
+    });
+
+  let bodyText = await runOnce(false);
+  if (isNearlyIdenticalRewrite(body, bodyText)) {
+    bodyText = await runOnce(true);
+  }
+  if (isNearlyIdenticalRewrite(body, bodyText)) {
+    throw new Error(
+      "La réécriture n’a pas modifié le brouillon. Reformule la consigne."
+    );
+  }
 
   const draftId = input.draftId?.trim();
   if (draftId && !draftId.startsWith("local-")) {

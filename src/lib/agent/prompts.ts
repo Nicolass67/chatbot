@@ -19,14 +19,14 @@ export function buildPlannerSystemPrompt(temporal: TemporalContext): string {
 
   const researchBlock = needsResearchPlan
     ? `
-Plan recommandé pour une demande d'information actuelle (3 étapes) :
+Plan recommandé (exactement 3 étapes simples et exécutables) :
 1. Recherche Web ciblée
-2. Analyse des sources collectées
+2. Analyser et comparer les sources trouvées
 3. Synthèse / réponse finale
 `
     : "";
 
-  return `Tu es un planificateur d'agent IA. Analyse l'objectif de l'utilisateur et produis un plan d'exécution structuré.
+  return `Tu es un planificateur d'agent IA. Analyse l'objectif de l'utilisateur et produis un plan d'exécution COURT et RÉELLEMENT EXÉCUTABLE.
 
 Contexte temporel :
 ${temporalBlock}
@@ -41,14 +41,16 @@ Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans commentaire) 
 }
 
 Règles :
-- Entre 3 et 4 étapes (5 maximum pour les tâches très complexes)
+- Exactement 3 étapes, ou 4 maximum si vraiment nécessaire — JAMAIS plus de 4
 - IDs uniques : step-1, step-2, etc.
-- Titres concis en français
-- Couvrir : collecte Web si nécessaire, analyse, synthèse
-- Adapte le plan à la complexité de la tâche
+- Titres concis en français, orientés ACTION (verbe + objet)
+- Chaque étape doit être faisable avec des outils (web_search, etc.) ou une analyse explicite — pas de filler (« Comprendre la demande »)
+- Structure typique : collecter → analyser/comparer → synthétiser/répondre
+- La dernière étape = synthèse / recommandation / réponse finale
 - INTERDIT : étapes « fichier / dossier / chemin / document » sauf si l’objectif parle explicitement de fichiers, PDF ou documents locaux
 - INTERDIT : étapes mail / destinataire / brouillon sauf si l’objectif parle de mail / email
-- Pour une question produit, prix, comparaison ou info actuelle : plan recherche web → comparaison → recommandation`;
+- INTERDIT : plans à 6–8 micro-étapes ; fusionne plutôt
+- Pour une question produit, prix, comparaison ou info actuelle : recherche web → comparaison → recommandation`;
 }
 
 export function buildPlannerUserPrompt(
@@ -148,10 +150,12 @@ Règles générales :
 - Préfère 1 recherche ciblée ; 2 maximum si la première est clairement insuffisante
 - Interdit : enchaîner plus de 3 recherches web_search pour une question ordinaire
 - EXÉCUTION DU PLAN (obligatoire) :
-  - Parcours les étapes non-synthèse dans l'ordre : tool_calls et/ou advance_step
+  - Travaille l'étape ACTIVE actuelle : tool_calls puis advance_step "done" — ne saute pas les étapes du milieu
+  - Lis la « réflexion précédente » : elle est l'entrée logique de ce tour ; base ton action dessus
+  - L'étape « analyse / comparer » DOIT produire un travail réel (outil ou advance_step après avoir exploité les sources) — pas de skip silencieux
   - finish est INTERDIT tant qu'une étape hors synthèse reste pending/active SANS action exécutée
   - Si une étape n'est plus utile : advance_step avec status "skipped" (pas finish anticipé)
-  - Ne te contente pas de la première recherche si d'autres étapes demandent analyse/comparaison/approfondissement
+  - Ne te contente PAS de la première recherche si d'autres étapes demandent analyse/comparaison
 - Ne relance PAS une recherche « pour vérifier » si les sources couvrent déjà la question
 - parallel: true pour plusieurs requêtes indépendantes dans le MÊME tour (évite la séquence await)
 - Marque les étapes done/skipped au fur et à mesure via advance_step
@@ -188,10 +192,19 @@ export function buildDeciderUserPrompt(ctx: AgentExecutionContext): string {
       : "";
 
   const appCtx = ctx.applicationContext?.trim();
+  const reflectionBlock = ctx.lastReflection?.trim()
+    ? `\nRéflexion précédente (entrée obligatoire de ce tour) :\n${ctx.lastReflection.trim()}\n`
+    : "";
+  const active = ctx.plan.steps.find((s) => s.status === "active");
+  const activeHint = active
+    ? `\nÉtape ACTIVE à exécuter maintenant : « ${active.title} » (${active.id}) — fais un travail concret pour CETTE étape avant finish.\n`
+    : "";
+
   return `Objectif : ${ctx.goal}${appCtx ? `\n\nContexte applicatif (ressource active / sources web persistées) :\n${appCtx}` : ""}
 ${temporalBlock ? `\n${temporalBlock}\n` : ""}
 ${researchBlock ? `\n${researchBlock}\n` : ""}
 ${freshnessBlock ? `\nPolitique de fraîcheur (serveur) :\n${freshnessBlock}\n` : ""}
+${reflectionBlock}${activeHint}
 Observations accumulées :
 ${observations}
 ${executedQueries}

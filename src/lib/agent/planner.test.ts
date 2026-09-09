@@ -23,9 +23,9 @@ describe("parsePlanDraft", () => {
 
   it("parses JSON inside markdown fence", () => {
     const content =
-      '```json\n{"steps":[{"id":"step-1","title":"A"},{"id":"step-2","title":"B"}]}\n```';
+      '```json\n{"steps":[{"id":"step-1","title":"A"},{"id":"step-2","title":"B"},{"id":"step-3","title":"C"}]}\n```';
     const plan = parsePlanDraft(content);
-    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps).toHaveLength(3);
   });
 });
 

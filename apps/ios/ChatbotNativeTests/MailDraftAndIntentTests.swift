@@ -56,7 +56,33 @@ final class MailDraftAndIntentTests: XCTestCase {
             prompt.range(of: "CURRENT DRAFT:")!.lowerBound
         )
         XCTAssertTrue(prompt.contains("Do not re-apply older instructions"))
+        XCTAssertTrue(prompt.contains("visible change") || prompt.contains("CLEARLY different") || LocalPrompts.mailDraftRewrite.contains("clairement différent"))
         XCTAssertTrue(LocalPrompts.mailDraftRewrite.contains("PRIORITÉ 1 — USER INSTRUCTION"))
+    }
+
+    func testWantsDraftRewriteWhenDraftOpen() {
+        XCTAssertTrue(MailIntentDetector.wantsDraftRewrite("moins formel"))
+        XCTAssertTrue(MailIntentDetector.wantsDraftRewrite("Écris-le en anglais"))
+        XCTAssertTrue(MailIntentDetector.wantsDraftRewrite("plus court et plus direct"))
+        XCTAssertFalse(MailIntentDetector.wantsDraftRewrite("Écris un mail à Jean"))
+        XCTAssertFalse(MailIntentDetector.wantsDraftRewrite("Comment rédiger un mail ?"))
+    }
+
+    func testNearlyIdenticalRewriteDetection() {
+        let body = "Bonjour Jean, je confirme notre rendez-vous mardi à 14h. Cordialement"
+        XCTAssertTrue(MailDraftRewriteWorkflow.isNearlyIdentical(body, body))
+        XCTAssertTrue(
+            MailDraftRewriteWorkflow.isNearlyIdentical(
+                body,
+                "Bonjour Jean, je confirme notre rendez-vous mardi à 14h. Cordialement\n"
+            )
+        )
+        XCTAssertFalse(
+            MailDraftRewriteWorkflow.isNearlyIdentical(
+                body,
+                "Salut Jean,\n\nOn se voit mardi 14h, nickel ?\n\nÀ plus"
+            )
+        )
     }
 
     func testComposeIntentOpensMailAssistantNotAdvice() {

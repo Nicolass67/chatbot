@@ -11,25 +11,20 @@
  *   APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD (or APPLE_PASSWORD)
  *   or Windows Credential Manager target "ChatbotAppleID"
  */
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDeployVenv, venvPythonPath } from "./ensure-deploy-venv.mjs";
 import { ensureAppleMobileDeviceSupport } from "./ensure-amds.mjs";
+import { attachIloader, findIloaderExe } from "./iloader-runtime.mjs";
+import { runSidestorePairingAudit } from "./sidestore-pairing-audit.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "../..");
 const CRED_TARGET = "ChatbotAppleID";
 const SIGNED_DIR = path.join(root, "sidestore-prep", "signed-app");
 const WIFI_SCRIPT = path.join(__dirname, "wifi_rsd_deploy.py");
-
-const ILOADER_CANDIDATES = [
-  process.env.ILOADER_PATH,
-  "C:\\Program Files\\iloader\\iloader.exe",
-  "C:\\Program Files (x86)\\iloader\\iloader.exe",
-  path.join(process.env.LOCALAPPDATA || "", "Programs", "iloader", "iloader.exe"),
-].filter(Boolean);
 
 const CLI_CANDIDATES = [
   process.env.ISIDELOAD_CLI,
@@ -47,10 +42,7 @@ function findCli() {
 }
 
 function findIloader() {
-  for (const p of ILOADER_CANDIDATES) {
-    if (p && fs.existsSync(p)) return p;
-  }
-  return null;
+  return findIloaderExe();
 }
 
 /** Read Apple ID + password from env or Windows Credential Manager. */
@@ -131,19 +123,33 @@ exit 1
 }
 
 function openIloaderFallback(ipaPath) {
-  const iloader = findIloader();
   const abs = path.resolve(ipaPath);
   if (process.platform === "win32") {
     spawnSync("explorer.exe", ["/select,", abs], { shell: false });
   }
-  if (iloader) {
-    spawn(iloader, [], { detached: true, stdio: "ignore" }).unref();
+
+  // Jamais de deuxième instance : iLoader n’a pas d’IPC public (GUI Tauri).
+  const attached = attachIloader({ allowLaunch: false });
+  let action = attached.message;
+  try {
+    const audit = runSidestorePairingAudit({ iloader: attached });
+    console.log(audit.logs);
+    console.log(`[PAIRING] break = ${audit.diagnosis.breakPoint}`);
+    action = audit.diagnosis.userAction;
+  } catch (e) {
+    console.warn(`[PAIRING] audit skipped: ${e instanceof Error ? e.message : e}`);
+  }
+
+  const iloader = findIloader();
+  if (iloader || attached.running) {
     return {
       code: 2,
       humanRequired: true,
-      message: `INSTALL_HUMAN_REQUIRED — iLoader ouvert. Importe ${abs} (Apple ID). Puis: npm.cmd run ios:launch`,
+      message: `INSTALL_HUMAN_REQUIRED — ${action} IPA: ${abs}`,
       backend: "iloader-gui",
       ipa: abs,
+      iloaderReused: attached.reused,
+      iloaderSpawnAttempted: attached.spawnAttempted,
     };
   }
   return {
@@ -374,11 +380,13 @@ function runWifiRsd(signedApp, { noLaunch = false, expectVersion = null, expectB
   };
 }
 
-function runUsbIsideload(ipaPath, transportNorm) {
+function runUsbIsideload(ipaPath, transportNorm, { allowIloaderFallback = true } = {}) {
   const cli = findCli();
   const creds = resolveAppleCredentials();
   if (!cli || !creds) {
-    return openIloaderFallback(ipaPath);
+    return allowIloaderFallback
+      ? openIloaderFallback(ipaPath)
+      : { code: 1, message: "isideload CLI or Apple credentials missing", backend: "none" };
   }
   console.log(
     `[ios:install] isideload CLI (${cli}) via ${creds.source} transport=${transportNorm}`
@@ -399,6 +407,18 @@ function runUsbIsideload(ipaPath, transportNorm) {
       message: out || "installed",
       backend: "isideload",
       transport: transportNorm,
+    };
+  }
+  const noMuxDevice = /no device matching transport/i.test(out);
+  if (!allowIloaderFallback || noMuxDevice) {
+    console.warn(`[ios:install] isideload exit ${r.status}: ${out.slice(0, 400)}`);
+    return {
+      code: r.status === 2 ? 2 : 1,
+      message: out.slice(0, 800) || `isideload exit ${r.status}`,
+      backend: "isideload",
+      transport: transportNorm,
+      detail: out.slice(0, 500),
+      noMuxDevice,
     };
   }
   if (r.status === 2 || /HUMAN_REQUIRED|2FA|two.?factor/i.test(out)) {
@@ -484,9 +504,19 @@ export async function installIpa(ipaPath, opts = {}) {
     }
   }
 
-  // USB (or usbmux Network lockdown) historical path
-  const usbTransport = transportNorm === "wifi" ? "usb" : transportNorm === "auto" ? "usb" : transportNorm;
-  return runUsbIsideload(abs, usbTransport === "auto" ? "auto" : "usb");
+  // isideload via usbmux: USB preferred, Network lockdown as fallback.
+  // Windows often leaves Apple USB PnP as Status=Unknown while usbmux only
+  // exposes ConnectionType=Network — UsbOnly then fails despite a plugged cable.
+  const usbAttempt = runUsbIsideload(abs, "usb", { allowIloaderFallback: false });
+  if (usbAttempt.code === 0) return usbAttempt;
+  if (usbAttempt.noMuxDevice || /no device matching transport|UsbOnly/i.test(usbAttempt.message || "")) {
+    console.warn(
+      "[ios:install] usbmux USB absent (PnP Apple often Status=Unknown) → isideload --transport auto (Network lockdown)"
+    );
+    return runUsbIsideload(abs, "auto");
+  }
+  // Non-mux failure (auth/2FA/etc.): allow iLoader human path once.
+  return runUsbIsideload(abs, "usb");
 }
 
 // CLI entry

@@ -23,6 +23,26 @@ describe("draft-rewrite prompts", () => {
     expect(prompt).toContain("Do not re-apply older instructions");
     expect(MAIL_DRAFT_REWRITE_SYSTEM).toContain("PRIORITÉ 1 — USER INSTRUCTION");
     expect(MAIL_DRAFT_REWRITE_SYSTEM).toMatch(/entièrement dans cette langue/i);
+    expect(MAIL_DRAFT_REWRITE_SYSTEM).toMatch(/clairement différent/i);
+  });
+
+  it("force un 2e passage quand la 1re sortie est trop proche", () => {
+    const prompt = buildRewriteUserPrompt({
+      instruction: "moins formel",
+      body: "Bonjour Monsieur,",
+      forceVisibleChange: true,
+    });
+    expect(prompt).toMatch(/CLEARLY different/i);
+  });
+
+  it("détecte les réécritures quasi identiques", async () => {
+    const { isNearlyIdenticalRewrite } = await import("./draft-rewrite");
+    expect(
+      isNearlyIdenticalRewrite("Hello world today", "Hello world today")
+    ).toBe(true);
+    expect(
+      isNearlyIdenticalRewrite("Hello world today", "Salut tout le monde")
+    ).toBe(false);
   });
 
   it("accepte une instruction libre arbitraire", () => {

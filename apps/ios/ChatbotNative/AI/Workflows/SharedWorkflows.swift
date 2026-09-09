@@ -967,6 +967,8 @@ enum MailDraftRewriteWorkflow {
         var body: String
         var to: String
         var subject: String
+        /// Second passage si la 1ʳᵉ sortie est trop proche de l’original.
+        var forceVisibleChange: Bool = false
     }
 
     @MainActor
@@ -985,7 +987,8 @@ enum MailDraftRewriteWorkflow {
             instruction: instruction,
             body: unsigned,
             to: request.to,
-            subject: request.subject
+            subject: request.subject,
+            forceVisibleChange: request.forceVisibleChange
         )
         let raw: String
         if let onToken {
@@ -1009,8 +1012,50 @@ enum MailDraftRewriteWorkflow {
         return MailSignature.appendOnce(cleaned)
     }
 
-    static func userPrompt(instruction: String, body: String, to: String, subject: String) -> String {
+    /// Réécrit et, si le texte est quasiment identique, force un 2ᵉ passage.
+    @MainActor
+    static func runEnsuringChange(
+        _ request: Request,
+        runtime: any AIRuntime,
+        onToken: (@MainActor (String) -> Void)? = nil
+    ) async throws -> String {
+        let first = try await run(request, runtime: runtime, onToken: onToken)
+        if !isNearlyIdentical(request.body, first) {
+            return first
+        }
+        let forced = Request(
+            instruction: request.instruction,
+            body: request.body,
+            to: request.to,
+            subject: request.subject,
+            forceVisibleChange: true
+        )
+        let second = try await run(forced, runtime: runtime, onToken: onToken)
+        if isNearlyIdentical(request.body, second) {
+            throw LocalMailAssistantError.inference(
+                "La réécriture n’a pas modifié le brouillon. Reformule la consigne (ex. « moins formel », « en anglais »)."
+            )
+        }
+        return second
+    }
+
+    static func userPrompt(
+        instruction: String,
+        body: String,
+        to: String,
+        subject: String,
+        forceVisibleChange: Bool = false
+    ) -> String {
         let consigne = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let force = forceVisibleChange
+            ? """
+
+        CRITICAL:
+        Your previous rewrite was too similar to CURRENT DRAFT.
+        Apply USER INSTRUCTION aggressively so the new body is CLEARLY different
+        (tone, length, wording, or language as requested). Do not return the same text.
+        """
+            : ""
         return """
         USER INSTRUCTION:
         \(consigne.isEmpty ? "Plus clair et naturel." : consigne)
@@ -1025,6 +1070,8 @@ enum MailDraftRewriteWorkflow {
         TASK:
         Rewrite CURRENT DRAFT according to USER INSTRUCTION only.
         The current draft is the source of truth. Do not re-apply older instructions.
+        Output MUST reflect the instruction with a visible change.
+        \(force)
         """
     }
 
@@ -1050,6 +1097,27 @@ enum MailDraftRewriteWorkflow {
             break
         }
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func normalizedForCompare(_ text: String) -> String {
+        text
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    static func isNearlyIdentical(_ a: String, _ b: String) -> Bool {
+        let na = normalizedForCompare(a)
+        let nb = normalizedForCompare(b)
+        if na.isEmpty || nb.isEmpty { return false }
+        if na == nb { return true }
+        let shorter = na.count <= nb.count ? na : nb
+        let longer = na.count <= nb.count ? nb : na
+        if shorter.count >= 40, longer.contains(shorter), longer.count - shorter.count < 48 {
+            return true
+        }
+        return false
     }
 }
 

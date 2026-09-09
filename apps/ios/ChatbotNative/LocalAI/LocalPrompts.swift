@@ -54,6 +54,7 @@ enum LocalPrompts {
     - N’ajoute PAS de signature (Cordialement, Best regards, nom) : l’application la pose.
     - Ne change pas destinataires ni objet (gérés ailleurs).
     - Le brouillon actuel est la seule source ; n’applique pas d’anciennes consignes absentes de USER INSTRUCTION.
+    - Le résultat DOIT être clairement différent du brouillon actuel (ton, longueur, formulation ou langue selon la consigne).
     """
 
     static let mailComposeDraft = """

@@ -1910,7 +1910,7 @@ struct MailThreadView: View {
             }
         }
         do {
-            let raw: String
+            var raw: String
             if usesOnDeviceAI {
                 if !LocalModelManager.shared.isReady {
                     await LocalModelManager.shared.loadIntoEngine()
@@ -1943,9 +1943,31 @@ struct MailThreadView: View {
                     replyDraftId = id
                 }
             }
-            let cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
+            var cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
+            if MailDraftRewriteWorkflow.isNearlyIdentical(previous, cleaned),
+               usesOnDeviceAI {
+                raw = try await MailDraftRewriteWorkflow.run(
+                    .init(
+                        instruction: trimmed,
+                        body: previous,
+                        to: replyDraftTo,
+                        subject: replyDraftSubject,
+                        forceVisibleChange: true
+                    ),
+                    runtime: LocalAIRuntime.shared,
+                    onToken: { _ in
+                        self.aiStatus = nil
+                    }
+                )
+                cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
+            }
             guard cleaned.count >= 8 else {
                 throw LocalMailAssistantError.inference("Réécriture vide.")
+            }
+            if MailDraftRewriteWorkflow.isNearlyIdentical(previous, cleaned) {
+                throw LocalMailAssistantError.inference(
+                    "La réécriture n’a pas modifié le brouillon. Reformule la consigne."
+                )
             }
             guard gen == replyRewriteGeneration else { return }
             replyDraft = cleaned

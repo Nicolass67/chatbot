@@ -217,6 +217,24 @@ enum MailIntentDetector {
         return isCompose(lower) && !mailAdviceMatch(lower)
     }
 
+    /// Consigne de style / réécriture quand un brouillon est déjà ouvert dans le chat.
+    static func wantsDraftRewrite(_ raw: String) -> Bool {
+        let lower = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lower.isEmpty else { return false }
+        if wantsCompose(raw) { return false }
+        if mailAdviceMatch(lower) { return false }
+        let needles = [
+            "moins formel", "plus formel", "moins long", "plus court", "plus long",
+            "plus chaleureux", "plus direct", "plus professionnel", "plus poli",
+            "plus sympa", "plus clair", "moins raide", "moins froid", "autre ton",
+            "change le ton", "change le style", "réécris", "reecris", "ré-écris",
+            "rewrit", "améliore", "ameliore", "raccourci", "allonge",
+            "en anglais", "in english", "en français", "en francais",
+            "moins soutenu", "plus amical",
+        ]
+        return needles.contains { lower.contains($0) }
+    }
+
     static func isMailAdvice(_ raw: String) -> Bool {
         mailAdviceMatch(raw.lowercased())
     }

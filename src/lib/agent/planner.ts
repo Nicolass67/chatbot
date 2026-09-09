@@ -179,15 +179,51 @@ export function sanitizeAgentPlan(goal: string, plan: AgentPlan): AgentPlan {
   const titles = plan.steps.map((s) => s.title).join(" ");
   const expected = goalAwareFallbackSteps(goal);
 
+  let next = plan;
   if (FILEISH_STEP.test(titles)) {
     if (isProductOrWebGoal(g) || (!isFilesGoal(g) && !g.includes("fichier") && !g.includes("dossier"))) {
-      return { steps: expected };
+      next = { steps: expected };
     }
+  } else if (MAILISH_STEP.test(titles) && isProductOrWebGoal(g) && !isMailGoal(g)) {
+    next = { steps: expected };
   }
-  if (MAILISH_STEP.test(titles) && isProductOrWebGoal(g) && !isMailGoal(g)) {
-    return { steps: expected };
+  return clampPlanToExecutableLength(next);
+}
+
+/** Force 3–4 étapes exécutables (couper le bruit des plans trop longs). */
+export function clampPlanToExecutableLength(plan: AgentPlan): AgentPlan {
+  if (plan.steps.length <= 4 && plan.steps.length >= 3) {
+    return plan;
   }
-  return plan;
+  if (plan.steps.length > 4) {
+    const head = plan.steps.slice(0, 3);
+    const last = plan.steps[plan.steps.length - 1]!;
+    const steps = [...head];
+    if (!steps.some((s) => s.id === last.id)) {
+      steps[2] = { ...last, id: "step-3", status: "pending", actions: [] };
+    }
+    return {
+      steps: steps.map((s, i) => ({
+        ...s,
+        id: `step-${i + 1}`,
+        status: i === 0 ? "active" : "pending",
+        actions: [],
+      })),
+    };
+  }
+  // < 3 : compléter avec une synthèse
+  const steps = [...plan.steps];
+  while (steps.length < 3) {
+    const n = steps.length + 1;
+    steps.push({
+      id: `step-${n}`,
+      title: n === 3 ? "Formuler la réponse" : "Collecter les infos utiles",
+      status: "pending",
+      actions: [],
+    });
+  }
+  steps[0] = { ...steps[0]!, status: "active" };
+  return { steps };
 }
 
 export function parsePlanDraft(content: string): AgentPlan {

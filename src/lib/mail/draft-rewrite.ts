@@ -20,6 +20,7 @@ Règles de sortie :
 - N’ajoute PAS de signature (Cordialement, Best regards, nom) : l’application la pose.
 - Ne change pas destinataires ni objet (gérés ailleurs).
 - Le brouillon actuel est la seule source ; n’applique pas d’anciennes consignes absentes de USER INSTRUCTION.
+- Le résultat DOIT être clairement différent du brouillon actuel (ton, longueur, formulation ou langue selon la consigne).
 `;
 
 export const MAIL_COMPOSE_DRAFT_SYSTEM = `Tu rédiges le corps d’un NOUVEL e-mail (pas une réponse de chatbot, pas un conseil).
@@ -35,10 +36,19 @@ export function buildRewriteUserPrompt(input: {
   body: string;
   to?: string;
   subject?: string;
+  forceVisibleChange?: boolean;
 }): string {
   const consigne = input.instruction.trim() || "Plus clair et naturel.";
   const to = (input.to ?? "").trim() || "(inchangé)";
   const subject = (input.subject ?? "").trim() || "(inchangé)";
+  const force = input.forceVisibleChange
+    ? `
+
+CRITICAL:
+Your previous rewrite was too similar to CURRENT DRAFT.
+Apply USER INSTRUCTION aggressively so the new body is CLEARLY different
+(tone, length, wording, or language as requested). Do not return the same text.`
+    : "";
   return `USER INSTRUCTION:
 ${consigne}
 
@@ -51,7 +61,28 @@ Objet (ne pas modifier): ${subject}
 
 TASK:
 Rewrite CURRENT DRAFT according to USER INSTRUCTION only.
-The current draft is the source of truth. Do not re-apply older instructions.`;
+The current draft is the source of truth. Do not re-apply older instructions.
+Output MUST reflect the instruction with a visible change.${force}`;
+}
+
+export function normalizeRewriteForCompare(text: string): string {
+  return text
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function isNearlyIdenticalRewrite(a: string, b: string): boolean {
+  const na = normalizeRewriteForCompare(a);
+  const nb = normalizeRewriteForCompare(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na];
+  if (shorter.length >= 40 && longer.includes(shorter) && longer.length - shorter.length < 48) {
+    return true;
+  }
+  return false;
 }
 
 export function buildComposeUserPrompt(input: {

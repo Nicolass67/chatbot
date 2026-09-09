@@ -87,6 +87,10 @@ import {
   formatObservationsForSynthesis,
 } from "./prompts";
 import {
+  applyStepReflection,
+  generateStepReflection,
+} from "./step-reflection";
+import {
   buildSynthesisContinuationMessages,
   looksTruncated,
   resolveSynthesisMaxTokens,
@@ -121,7 +125,9 @@ export interface AgentLoopInput {
   signal?: AbortSignal;
   onEvent: (event: OrchestratorEvent) => void;
   pendingAttachmentNames?: string[];
-  routeDecision?: RouteDecision;  alreadySavedCount?: number;  userId?: string;
+  routeDecision?: RouteDecision;
+  alreadySavedCount?: number;
+  userId?: string;
   toolCtxBase?: Omit<ToolContext, "signal">;
   emailEnabled?: boolean;
   emailToolCandidates?: string[];
@@ -857,6 +863,46 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         durableWebSourcesBlock =
           evidenceResult.finalApplicationContext || durableWebSourcesBlock;
         rebuildDocumentContext();
+
+        // Marquer l'étape d'analyse comme réellement exécutée (pas un skip cosmétique).
+        const analysisStep =
+          plan.steps.find((s) => s.status === "active") ??
+          plan.steps[Math.min(1, plan.steps.length - 1)];
+        if (analysisStep) {
+          analysisStep.actions.push({
+            id: nanoid(),
+            tool: "web_evidence",
+            input: {
+              packets: evidenceResult.packets.length,
+              evidence: evidenceResult.evidence.length,
+            },
+            status: "done",
+            summary: `Analyse des sources : ${evidenceResult.evidence.length} éléments, ${evidenceResult.packets.length} paquets.`,
+          });
+          if (analysisStep.status === "pending") {
+            applyStepStatusChange(plan, analysisStep.id, "active", input.onEvent);
+          }
+          const reflection = await generateStepReflection({
+            goal: input.userContent,
+            stepId: analysisStep.id,
+            stepTitle: analysisStep.title,
+            previousReflection: execCtx.lastReflection,
+            recentObservations: execCtx.observations,
+            runtime: input.runtime,
+            model: input.settings.selectedModel,
+            signal: input.signal,
+            registerRequestId: (id) => requestTracker.register(id),
+          });
+          applyStepReflection(
+            execCtx,
+            analysisStep.id,
+            analysisStep.title,
+            reflection
+          );
+          tracker.setPlan(plan);
+          input.onEvent({ type: "agent_plan", plan: cloneAgentPlan(plan) });
+        }
+
         if (isContextDebugEnabled() && evidenceResult.metrics) {
           console.info(
             "[web-evidence-v4]",
@@ -1030,6 +1076,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
       }
 
       if (decision.type === "advance_step") {
+        const closedStep = plan.steps.find((s) => s.id === decision.stepId);
         applyStepStatusChange(
           plan,
           decision.stepId,
@@ -1037,6 +1084,27 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           input.onEvent
         );
         tracker.recordStepExecuted(decision.stepId);
+        if (closedStep && decision.status === "done") {
+          const reflection = await generateStepReflection({
+            goal: input.userContent,
+            stepId: closedStep.id,
+            stepTitle: closedStep.title,
+            previousReflection: execCtx.lastReflection,
+            recentObservations: execCtx.observations.filter(
+              (o) => o.stepId === closedStep.id || !o.stepId
+            ),
+            runtime: input.runtime,
+            model: input.settings.selectedModel,
+            signal: input.signal,
+            registerRequestId: (id) => requestTracker.register(id),
+          });
+          applyStepReflection(
+            execCtx,
+            closedStep.id,
+            closedStep.title,
+            reflection
+          );
+        }
         tracker.setPlan(plan);
         continue;
       }
@@ -1444,6 +1512,31 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
           break;
         }
 
+        // Réflexion après outils : entrée du prochain tour décidur.
+        const workedStepId =
+          decision.stepId ??
+          plan.steps.find((s) => s.status === "active")?.id;
+        const workedStep = plan.steps.find((s) => s.id === workedStepId);
+        if (workedStep) {
+          const reflection = await generateStepReflection({
+            goal: input.userContent,
+            stepId: workedStep.id,
+            stepTitle: workedStep.title,
+            previousReflection: execCtx.lastReflection,
+            recentObservations: execCtx.observations.slice(-6),
+            runtime: input.runtime,
+            model: input.settings.selectedModel,
+            signal: input.signal,
+            registerRequestId: (id) => requestTracker.register(id),
+          });
+          applyStepReflection(
+            execCtx,
+            workedStep.id,
+            workedStep.title,
+            reflection
+          );
+        }
+
         tracker.setPlan(plan);
       }
     }
@@ -1491,12 +1584,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
         webStopReason
       );
     } else {
-      // Synthèse en cours : étapes précédentes done, dernière active (pas tout validé d’un coup).
-      for (let i = 0; i < plan.steps.length; i++) {
-        const step = plan.steps[i];
-        if (!step || step.status === "failed") continue;
-        step.status = i === plan.steps.length - 1 ? "active" : "done";
-      }
+      // Synthèse : avancer honnêtement (actions → done, sinon skipped) vers la dernière étape.
+      progressPlanToStepIndex(plan, plan.steps.length - 1, input.onEvent);
       sanitizePlanActiveSteps(plan);
     }
     tracker.setPlan(plan);
@@ -1557,7 +1646,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<void> {
     const assistantId = nanoid();
     let fullContent = "";
 
-    input.onEvent({ type: "assistant_start", messageId: assistantId });    if (!freshnessGate.allowLlmSynthesis) {
+    input.onEvent({ type: "assistant_start", messageId: assistantId });
+    if (!freshnessGate.allowLlmSynthesis) {
       fullContent = buildHonestFailureResponse(temporalContext, {
         detail: webStopReason ?? freshnessGate.blockReason,
       });

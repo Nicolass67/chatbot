@@ -451,6 +451,7 @@ struct ChatScreen: View {
             persistDraftCardSnapshot()
         }
         .onChange(of: draftCardText) { _, _ in
+            guard !draftCardStreaming else { return }
             persistDraftCardSnapshot()
         }
         .onChange(of: draftCardTo) { _, _ in
@@ -1032,6 +1033,8 @@ struct ChatScreen: View {
         draftCardEditing = false
         thinkingKind = .custom("Amélioration du brouillon…")
         let previous = draftCardText
+        // Vide le corps pour afficher le stream dans la carte (pas un chat à côté).
+        draftCardText = ""
         defer {
             if gen == draftRewriteGeneration {
                 isSending = false
@@ -1041,10 +1044,14 @@ struct ChatScreen: View {
                 draftCardStatus = MailDraftCardPolicy.sanitizedRestoreStatus("Brouillon", sent: draftCardSent)
                 suppressAssistantNarration = false
                 thinkingKind = nil
+                if draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).count < 8 {
+                    draftCardText = previous
+                }
+                persistDraftCardSnapshot()
             }
         }
         do {
-            let raw: String
+            let cleaned: String
             if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
                 if !LocalModelManager.shared.isReady {
                     await LocalModelManager.shared.loadIntoEngine()
@@ -1052,18 +1059,37 @@ struct ChatScreen: View {
                 guard LocalModelManager.shared.isReady else {
                     throw LocalMailAssistantError.modelNotReady
                 }
-                raw = try await MailDraftRewriteWorkflow.run(
-                    .init(
-                        instruction: instruction,
-                        body: previous,
-                        to: draftCardTo,
-                        subject: draftCardSubject
-                    ),
-                    runtime: LocalAIRuntime.shared,
-                    onToken: { _ in
-                        if self.thinkingKind != nil { self.thinkingKind = nil }
-                    }
-                )
+                func runPass(force: Bool) async throws -> String {
+                    var streamed = ""
+                    return try await MailDraftRewriteWorkflow.run(
+                        .init(
+                            instruction: instruction,
+                            body: previous,
+                            to: draftCardTo,
+                            subject: draftCardSubject,
+                            forceVisibleChange: force
+                        ),
+                        runtime: LocalAIRuntime.shared,
+                        onToken: { token in
+                            guard gen == self.draftRewriteGeneration else { return }
+                            if self.thinkingKind != nil { self.thinkingKind = nil }
+                            streamed += token
+                            self.draftCardText = MailDraftRewriteWorkflow.stripMeta(streamed)
+                        }
+                    )
+                }
+                var pass = try await runPass(force: false)
+                if MailDraftRewriteWorkflow.isNearlyIdentical(previous, pass) {
+                    self.draftCardText = ""
+                    self.thinkingKind = .custom("Nouvelle tentative…")
+                    pass = try await runPass(force: true)
+                }
+                if MailDraftRewriteWorkflow.isNearlyIdentical(previous, pass) {
+                    throw LocalMailAssistantError.inference(
+                        "La réécriture n’a pas modifié le brouillon. Reformule la consigne (ex. « moins formel », « en anglais »)."
+                    )
+                }
+                cleaned = pass
             } else {
                 let result = try await client.rewriteMailDraft(
                     instruction: instruction,
@@ -1072,18 +1098,24 @@ struct ChatScreen: View {
                     subject: draftCardSubject,
                     draftId: draftCardId
                 )
-                raw = result.bodyText
                 if let id = result.draftId, !id.isEmpty {
                     draftCardId = id
                 }
+                cleaned = MailDraftRewriteWorkflow.stripMeta(result.bodyText)
+                if MailDraftRewriteWorkflow.isNearlyIdentical(previous, cleaned) {
+                    throw LocalMailAssistantError.inference(
+                        "La réécriture n’a pas modifié le brouillon. Reformule la consigne."
+                    )
+                }
             }
-            let cleaned = MailDraftRewriteWorkflow.stripMeta(raw)
             guard cleaned.count >= 8 else {
                 throw LocalMailAssistantError.inference("Réécriture vide.")
             }
             guard gen == draftRewriteGeneration else { return }
             draftCardText = cleaned
             draftCardSent = false
+            draft = ""
+            draftImprovePending = false
             persistDraftCardSnapshot()
             AppHaptics.success()
         } catch is CancellationError {
@@ -1097,6 +1129,18 @@ struct ChatScreen: View {
                 AppHaptics.warning()
             }
         }
+    }
+
+    /// Brouillon ouvert + consigne d’amélioration → réécriture dédiée (jamais l’agent).
+    private func shouldRewriteOpenDraft(
+        rawText: String,
+        rewriteFlag: Bool
+    ) -> Bool {
+        let hasBody = !draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasDraft = hasBody || (draftCardId != nil && !(draftCardId ?? "").isEmpty)
+        guard hasDraft, !draftCardSent else { return false }
+        if rewriteFlag || draftImprovePending { return hasBody }
+        return hasBody && MailIntentDetector.wantsDraftRewrite(rawText)
     }
 
     /// Réécriture on-device (compat appels existants).
@@ -4176,10 +4220,10 @@ private var sendBlockedHint: String {
         // IA locale (avant mail reply produit / SSE distant).
         // Lock synchrone immédiat — un 2ᵉ tap est refusé avant tout `await`.
         if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
-            let wantsRewrite = rewriteDraftCard
-                || (draftImprovePending && (draftCardId != nil || !draftCardText.isEmpty)
-                    && forcedText == nil && options?.regenerate != true)
-            if wantsRewrite, !draftCardText.isEmpty || draftCardId != nil {
+            let wantsRewrite = options?.regenerate != true
+                && forcedText == nil
+                && shouldRewriteOpenDraft(rawText: rawText, rewriteFlag: rewriteDraftCard)
+            if wantsRewrite {
                 guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
                 draftImprovePending = false
                 await rewriteOpenDraftOnDevice(instruction: rawText)
@@ -4202,12 +4246,9 @@ private var sendBlockedHint: String {
         }
 
         // PC Improve : API dédiée (pas l’agent, pas writing-prefs, pas suggest-reply).
-        let wantsRewritePC = rewriteDraftCard
-            || (draftImprovePending
-                && !draftCardText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && forcedText == nil
-                && options?.regenerate != true)
-        if wantsRewritePC {
+        if options?.regenerate != true,
+           forcedText == nil,
+           shouldRewriteOpenDraft(rawText: rawText, rewriteFlag: rewriteDraftCard) {
             guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
             draftImprovePending = false
             await performDraftRewrite(instruction: rawText)
