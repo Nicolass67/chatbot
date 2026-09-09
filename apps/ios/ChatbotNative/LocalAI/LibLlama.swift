@@ -45,6 +45,15 @@ private final class LlamaLogCapture: @unchecked Sendable {
         guard !tail.isEmpty else { return "" }
         return " — " + tail.joined(separator: " · ")
     }
+
+    var reportsMissingGGUF: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.contains { line in
+            line.localizedCaseInsensitiveContains("failed to open GGUF file")
+                || line.localizedCaseInsensitiveContains("no such file or directory")
+        }
+    }
 }
 
 private func llamaInstallLogCapture() {
@@ -110,8 +119,8 @@ final class LlamaContext: @unchecked Sendable {
     deinit {
         llama_sampler_free(sampling)
         llama_batch_free(batch)
-        llama_model_free(model)
         llama_free(context)
+        llama_model_free(model)
         // Ne pas appeler llama_backend_free() ici — une seule fois pour le process.
     }
 
@@ -150,16 +159,25 @@ final class LlamaContext: @unchecked Sendable {
         // Importé en Swift comme `UnsafeMutablePointer<ggml_backend_dev_t?>`.
         model_params.devices = deviceSlots
 
-        let model: OpaquePointer? = path.withCString { cPath in
-            llama_model_load_from_file(cPath, model_params)
-        }
+        let model = loadModel(at: path, params: model_params)
         guard let model else {
             // Fallback sans mmap (certains volumes iOS / data-protection).
             model_params.load_mode = LLAMA_LOAD_MODE_NONE
-            let retry: OpaquePointer? = path.withCString { cPath in
-                llama_model_load_from_file(cPath, model_params)
-            }
+            let retry = loadModel(at: path, params: model_params)
             guard let retry else {
+                // `FileManager` et `FileHandle` ont déjà ouvert le même fichier
+                // avec succès ci-dessus. Certaines builds iOS de llama.cpp échouent
+                // néanmoins à faire `fopen` sur le segment "Application Support".
+                // Ne copions qu'en présence de cet ENOENT précis : un échec mémoire
+                // ou de parsing ne doit pas consommer 1,2 Go supplémentaires.
+                if LlamaLogCapture.shared.reportsMissingGGUF,
+                   let stagedPath = try? stageForLlama(from: path, expectedSize: size) {
+                    LlamaLogCapture.shared.clear()
+                    let stagedModel = loadModel(at: stagedPath, params: model_params)
+                    if let stagedModel {
+                        return try finishContext(model: stagedModel)
+                    }
+                }
                 throw LlamaError.couldNotInitializeContext(
                     "chargement GGUF impossible (\(byteLabel(size))).\(LlamaLogCapture.shared.summary)"
                 )
@@ -168,6 +186,45 @@ final class LlamaContext: @unchecked Sendable {
         }
 
         return try finishContext(model: model)
+    }
+
+    private static func loadModel(at path: String, params: llama_model_params) -> OpaquePointer? {
+        path.withCString { cPath in
+            llama_model_load_from_file(cPath, params)
+        }
+    }
+
+    /// Copie de secours, uniquement quand le runtime C ne sait pas ouvrir un
+    /// GGUF que Foundation vient de lire. `tmp` n'a pas le segment avec espace
+    /// de `Library/Application Support` et n'est jamais la source persistante.
+    private static func stageForLlama(from sourcePath: String, expectedSize: Int64) throws -> String {
+        let fm = FileManager.default
+        let source = URL(fileURLWithPath: sourcePath)
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("chatbot-models", isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let destination = directory.appendingPathComponent(source.lastPathComponent)
+        if fm.fileExists(atPath: destination.path(percentEncoded: false)) {
+            try fm.removeItem(at: destination)
+        }
+        try fm.copyItem(at: source, to: destination)
+
+        let stagedPath = destination.path(percentEncoded: false)
+        let stagedSize = (try fm.attributesOfItem(atPath: stagedPath)[.size] as? NSNumber)?.int64Value ?? 0
+        guard stagedSize == expectedSize else {
+            try? fm.removeItem(at: destination)
+            throw LlamaError.couldNotInitializeContext("copie de secours GGUF incomplète")
+        }
+        guard let handle = try? FileHandle(forReadingFrom: destination) else {
+            throw LlamaError.couldNotInitializeContext("copie de secours GGUF illisible")
+        }
+        defer { try? handle.close() }
+        guard try handle.read(upToCount: 4) == Data("GGUF".utf8) else {
+            try? fm.removeItem(at: destination)
+            throw LlamaError.couldNotInitializeContext("copie de secours GGUF invalide")
+        }
+        return stagedPath
     }
 
     private static func finishContext(model: OpaquePointer) throws -> LlamaContext {
