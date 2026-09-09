@@ -135,7 +135,37 @@ func getDeviceConnectionMode() async -> DeviceConnectionMode {
 
 public func isMinimuxerReady() async -> Result<Bool, MinimuxerError> {
     let isEnabled = CellularRefreshManager.shared.isEnabled
-    return await minimuxer.core.isReady(withNetworkCheck: !isEnabled)
+    for attempt in 1...8 {
+        let result = await minimuxer.core.isReady(withNetworkCheck: !isEnabled)
+        switch result {
+        case .success:
+            return result
+        case .failure(let err):
+            if case .notStarted(let reason) = err, reason.contains("still starting") {
+                debugLog("[refresh] minimuxer still starting — wait \(attempt)/8")
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            if case .notStarted = err, let pairingFile = PairingFileManager.shared.fetchPairingFile() {
+                debugLog("[refresh] minimuxer not started — starting with existing pairing file")
+                do {
+                    try await minimuxerStart(
+                        pairingFile,
+                        mountPath: FileManager.default.documentsDirectory.absoluteString
+                    )
+                    continue
+                } catch {
+                    debugLog("[refresh] minimuxer auto-start failed: \(error)")
+                    if let mx = error as? MinimuxerError {
+                        return .failure(mx)
+                    }
+                    return .failure(.notStarted("Minimuxer start failed: \(error.localizedDescription)"))
+                }
+            }
+            return result
+        }
+    }
+    return .failure(.notStarted("Minimuxer did not finish starting"))
 }
 
 extension MinimuxerError {

@@ -91,6 +91,15 @@ public enum DeviceTransportSelector {
         }
     }
 
+    /// Idevice lockdown talks to 62078 directly. The fake usbmuxd on :27015 is
+    /// only required when that endpoint is down.
+    public static func fakeMuxerRequiredForLockdown(
+        muxerListening: Bool,
+        lockdownReachable: Bool
+    ) -> Bool {
+        !muxerListening && !lockdownReachable
+    }
+
     public static func resolve(
         selected: DeviceTransport,
         operation: DeviceTransportOperation

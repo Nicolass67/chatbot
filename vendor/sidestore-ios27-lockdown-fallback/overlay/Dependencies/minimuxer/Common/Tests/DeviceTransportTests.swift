@@ -51,6 +51,27 @@ final class DeviceTransportTests: XCTestCase {
         XCTAssertEqual(resolution, .use(.lockdown))
     }
 
+    func testFakeMuxerNotRequiredWhenLockdownTCPIsUp() {
+        XCTAssertFalse(
+            DeviceTransportSelector.fakeMuxerRequiredForLockdown(
+                muxerListening: false,
+                lockdownReachable: true
+            )
+        )
+        XCTAssertTrue(
+            DeviceTransportSelector.fakeMuxerRequiredForLockdown(
+                muxerListening: false,
+                lockdownReachable: false
+            )
+        )
+        XCTAssertFalse(
+            DeviceTransportSelector.fakeMuxerRequiredForLockdown(
+                muxerListening: true,
+                lockdownReachable: false
+            )
+        )
+    }
+
     func testOperationRequiringRemotePairingDoesNotLoopOnLockdown() {
         let resolution = DeviceTransportSelector.resolve(
             selected: .lockdown,

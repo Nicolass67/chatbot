@@ -55,6 +55,11 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         self.network.onNetworkChanged = { [weak self] in
             guard let self = self else { return }
             await self.applyTransportFromProbe()
+            let status = await self.state.with { $0.status }
+            guard status == .started else {
+                debugLog("[minimuxer] [net] skip isReady while minimuxer status is not started")
+                return
+            }
             let readyResult = await self.isReady()
             debugLog("[minimuxer] [net] publishing status update to subscribers")
             self.statusSubject.send(readyResult)
@@ -79,6 +84,20 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
     }
     private let profileGate = ProfileOperationGate()
+
+    private actor MuxerRestartGate {
+        func run<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+            try await body()
+        }
+    }
+    private let muxerRestartGate = MuxerRestartGate()
+
+    private actor StartGate {
+        func run(_ body: @Sendable () async throws -> Void) async throws {
+            try await body()
+        }
+    }
+    private let startGate = StartGate()
     
     var pairingFileType: PairingProtocol { self.gateway.pairingFileType }
     
@@ -146,9 +165,25 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
 
         let currentStatus = await state.with { $0.status }
+        if currentStatus == .inprogress {
+            debugLog("[minimuxer] minimuxer not ready: start still in progress")
+            return .failure(.notStarted("Minimuxer is still starting"))
+        }
         if currentStatus != .started {
-            debugLog("[minimuxer] minimuxer not ready: minimuxer has not been started")
-            return .failure(.notStarted("Minimuxer has not been started"))
+            if let pairingData = self.gateway.pairingFileData,
+               let pairingFile = String(data: pairingData, encoding: .utf8),
+               let mountPath = await state.lastDocsPath {
+                debugLog("[minimuxer] status=stopped but pairing is loaded — retrying start()")
+                do {
+                    try await start(pairingFile: pairingFile, mountPath: mountPath)
+                } catch {
+                    debugLog("[minimuxer] start retry failed: \(error)")
+                    return .failure(.notStarted("Minimuxer start failed: \(error.localizedDescription)"))
+                }
+            } else {
+                debugLog("[minimuxer] minimuxer not ready: minimuxer has not been started")
+                return .failure(.notStarted("Minimuxer has not been started"))
+            }
         }
 
         // check connection status first
@@ -217,6 +252,8 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
         
         let peerReachable = testDeviceConnection(ifaddr: deviceIp)
+            || self.gateway.lastLockdownReachable
+            || self.gateway.lastRemotePairingReachable
         if !peerReachable {
             switch connectionMode {
             case .localVPN:
@@ -251,8 +288,15 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
 
         if activeProtocol != .rppairing {
-            guard self.proxyServer.isListening else {
+            let muxerRequired = DeviceTransportSelector.fakeMuxerRequiredForLockdown(
+                muxerListening: self.proxyServer.isListening,
+                lockdownReachable: self.gateway.lastLockdownReachable
+            )
+            if muxerRequired {
                 return .failure(.muxerNotListening("Usbmuxd fake server is not listening"))
+            }
+            if !self.proxyServer.isListening {
+                debugLog("[minimuxer] fake usbmuxd not listening; Lockdown 62078 reachable — continuing")
             }
         }
 
@@ -316,8 +360,17 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     
     
     private func restartMuxerServer() async throws {
+        try await muxerRestartGate.run {
+            try await self.restartMuxerServerUnlocked()
+        }
+    }
+
+    private func restartMuxerServerUnlocked() async throws {
         guard self.gateway.pairingFileType != .rppairing else { return }
-        // restartMuxerServer only applies to the lockdown protocol path
+        if self.proxyServer.isListening {
+            verboseLog("[minimuxer] fake usbmuxd already listening — skip restart")
+            return
+        }
         guard let pairingDict = self.gateway.pairingDataDict else {
             debugLog("[minimuxer] ERROR: Pairing DICT missing...ignoring restart MuxerServer")
             throw MinimuxerError.invalidPairing(protocol: .lockdown, reason: "Pairing dictionary is missing in gateway")
@@ -329,7 +382,6 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             throw MinimuxerError.invalidPairing(protocol: .lockdown, reason: "Pairing file is missing UDID value")
         }
 
-        // restart muxer
         await self.proxyServer.stop()
         try await self.proxyServer.start(udid: deviceUDID)
     }
@@ -337,31 +389,53 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     
     
     func start(pairingFile: String, mountPath: String) async throws {
+        try await startGate.run {
+            try await self.startUnlocked(pairingFile: pairingFile, mountPath: mountPath)
+        }
+    }
+
+    private func startUnlocked(pairingFile: String, mountPath: String) async throws {
+        if await state.with({ $0.status }) == .started && isPairingFileLoaded {
+            debugLog("[minimuxer] start() skipped — already started")
+            return
+        }
         let connectionMode = await getConnectionMode()
         if DeviceConnectionMode.notConfigured == connectionMode {
             throw connectionNotConfiguredError()
         }
         await self.network.start()
 
-        // actor serialization scope
         await state.with{
-            $0.status = .inprogress     // mark inprogress
-            $0.lastDocsPath = mountPath // record the mountPath
+            $0.status = .inprogress
+            $0.lastDocsPath = mountPath
         }
-        // let idevice initialize its state
-        try await matchingPriority {
-            try await self.gateway.start(pairingFileContent: pairingFile)
-        }
-        // retarget usbmuxd to our fake usbmuxd server (over network)
-        retargetUsbmuxdAddr()
-        await self.network.refreshEndpoint()
-        await applyTransportFromProbe()
-        // start our fake usbmuxd server for lockdown protocol based clients if required
-        try await restartMuxerServer()
-        
-        // mark ready!
-        await state.with{
-            $0.status = .started
+        do {
+            debugLog("[minimuxer] start() loading pairing file (\(pairingFile.count) bytes)")
+            try await matchingPriority {
+                try await self.gateway.start(pairingFileContent: pairingFile)
+            }
+            retargetUsbmuxdAddr()
+            await self.network.refreshEndpoint()
+            await applyTransportFromProbe()
+            do {
+                try await restartMuxerServer()
+            } catch {
+                if self.gateway.pairingFileType == .rppairing {
+                    throw error
+                }
+                debugLog("[minimuxer] fake usbmuxd start failed: \(error) — Lockdown TCP path does not require it")
+            }
+
+            await state.with{
+                $0.status = .started
+            }
+            debugLog("[minimuxer] start() completed transport=\(self.gateway.pairingFileType) muxer=\(self.proxyServer.isListening)")
+        } catch {
+            await state.with {
+                $0.status = .stopped
+            }
+            debugLog("[minimuxer] start() failed, status reset to stopped: \(error)")
+            throw error
         }
     }
 
@@ -409,7 +483,12 @@ final internal class MinimuxerImpl: MinimuxerAPI {
     }
   
     func testDeviceConnection(ifaddr: String, timeout: Int) -> Bool {
-        return NetworkUtils.testTCP(ip: ifaddr, port: self.gateway.servicePort, timeoutMs: timeout)
+        let rpPort = self.gateway.getPort(for: .rppairing)
+        let ldPort = self.gateway.getPort(for: .lockdown)
+        let rp = NetworkUtils.testTCP(ip: ifaddr, port: rpPort, timeoutMs: timeout)
+        let ld = NetworkUtils.testTCP(ip: ifaddr, port: ldPort, timeoutMs: timeout)
+        debugLog("[minimuxer] device reachability \(ifaddr) rp:\(rpPort)=\(rp) lockdown:\(ldPort)=\(ld)")
+        return rp || ld
     }
 
     private func ensureDDIMounted() async throws {
