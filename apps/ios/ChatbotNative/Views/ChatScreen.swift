@@ -1660,6 +1660,13 @@ struct ChatScreen: View {
                 self.draftCardCollapsed = true
                 self.persistDraftCardSnapshot()
             }
+        } catch {
+            self.error = error.localizedDescription
+            AppHaptics.warning()
+        }
+    }
+
+    private func sendDraftCardOnDevice(body: String, to: [String]) async throws {
         guard GmailOAuthSession.shared.isConnected else {
             throw LocalMailAssistantError.gmailNotConnected
         }
