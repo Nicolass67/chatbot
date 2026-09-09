@@ -107,15 +107,15 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     var userFacingBlurb: String {
         switch id {
         case "qwen35-2b-q4_k_m":
-            return "Recommandé — polyvalent et rapide au quotidien."
+            return "Polyvalent et rapide"
         case "qwen3-1.7b-q4_k_m":
-            return "Très léger — réponses plus rapides."
+            return "Très léger — plus rapide"
         case "lfm25-1.2b-instruct-q4_k_m":
-            return "Ultra compact — le plus économe."
+            return "Ultra compact · économique"
         case "gemma4-e2b-it-q4_0":
-            return "Plus puissant, plus lourd."
+            return "Plus puissant, plus lourd"
         default:
-            return "Utilisable hors ligne sur cet iPhone."
+            return "Utilisable hors ligne"
         }
     }
 

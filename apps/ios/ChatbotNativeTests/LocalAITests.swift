@@ -70,6 +70,18 @@ final class LocalModelDescriptorTests: XCTestCase {
         XCTAssertEqual(LocalModelComparisonCase.allCases.count, 10)
     }
 
+    func testUserFacingBlurbsStayShortAndDoNotRepeatRecommended() {
+        let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!
+        XCTAssertTrue(qwen.recommended)
+        XCTAssertFalse(qwen.userFacingBlurb.lowercased().contains("recommandé"))
+        XCTAssertEqual(qwen.userFacingBlurb, "Polyvalent et rapide")
+        XCTAssertFalse(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")!.recommended)
+        XCTAssertEqual(
+            LocalModelDescriptor.descriptor(id: "lfm25-1.2b-instruct-q4_k_m")!.userFacingBlurb,
+            "Ultra compact · économique"
+        )
+    }
+
     func testVisionMarkerInsertedOnlyWhenImagesPresent() {
         XCTAssertEqual(LocalVision.userContent("Hello", imageCount: 0), "Hello")
         let withImage = LocalVision.userContent("Décris", imageCount: 1)

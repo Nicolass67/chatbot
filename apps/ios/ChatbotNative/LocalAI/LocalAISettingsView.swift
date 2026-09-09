@@ -21,13 +21,18 @@ enum LocalAISettingsActionGate {
 
 /// Réglages « IA locale » — gestionnaire multi-modèles (sélection **explicite** uniquement).
 struct LocalAISettingsView: View {
+    @AppStorage("localAI.settings.installedModelsExpanded") private var installedModelsExpanded = false
     @ObservedObject private var models = LocalModelManager.shared
     @ObservedObject private var execution = ExecutionModeStore.shared
 
     @State private var busyAction = false
     @State private var showTestSheet = false
+    @State private var showTechnicalError = false
     @State private var pendingLoadWarning: LocalModelDescriptor?
     @State private var confirmLoadExperimental = false
+    @State private var pendingDelete: LocalModelDescriptor?
+    @State private var detailsModel: LocalModelDescriptor?
+    @State private var visionModel: LocalModelDescriptor?
 
     private var mutationsDisabled: Bool {
         !LocalAISettingsActionGate.allowsNewMutationTask(
@@ -37,60 +42,108 @@ struct LocalAISettingsView: View {
         )
     }
 
+    private var installedModels: [LocalModelDescriptor] {
+        LocalModelDescriptor.userFacingCatalog.filter { models.isInstalled($0) }
+    }
+
+    private var availableModels: [LocalModelDescriptor] {
+        LocalModelDescriptor.userFacingCatalog.filter { $0.isDownloadable && !models.isInstalled($0) }
+    }
+
     var body: some View {
-        Group {
+        iaLocaleSection
+            .sheet(isPresented: $showTestSheet) {
+                LocalModelTestSheet()
+            }
+            .sheet(item: $detailsModel) { model in
+                LocalAIModelDetailsSheet(model: model)
+            }
+            .sheet(item: $visionModel) { model in
+                LocalAIVisionManageSheet(
+                    model: model,
+                    mutationsDisabled: mutationsDisabled,
+                    onInstall: { requestInstallVision(model) },
+                    onRemove: { requestRemoveVision(model) }
+                )
+            }
+            .sheet(isPresented: $showTechnicalError) {
+                LocalAITechnicalErrorSheet(message: models.lastError ?? "")
+            }
+            .alert(
+                "Modèle exigeant",
+                isPresented: $confirmLoadExperimental
+            ) {
+                Button("Annuler", role: .cancel) { pendingLoadWarning = nil }
+                Button("Utiliser quand même", role: .destructive) {
+                    if let model = pendingLoadWarning {
+                        runSwitch(to: model)
+                    }
+                    pendingLoadWarning = nil
+                }
+            } message: {
+                Text("Ce modèle peut être instable sur cet iPhone. Le modèle actuel n’est changé que si tu confirmes.")
+            }
+            .alert(
+                "Supprimer le modèle ?",
+                isPresented: Binding(
+                    get: { pendingDelete != nil },
+                    set: { if !$0 { pendingDelete = nil } }
+                ),
+                presenting: pendingDelete
+            ) { model in
+                Button("Annuler", role: .cancel) { pendingDelete = nil }
+                Button("Supprimer", role: .destructive) {
+                    requestDelete(model)
+                    pendingDelete = nil
+                }
+            } message: { model in
+                Text("« \(model.displayName) » sera retiré de l’iPhone. Tu pourras le télécharger à nouveau.")
+            }
+        installedSection
+        availableSection
+    }
+
+    // MARK: - Sections
+
+    private var iaLocaleSection: some View {
         Section {
             executionPicker
             currentModelCard
         } header: {
             Text("IA locale")
         } footer: {
-            Text("Un seul modèle est chargé en mémoire. Télécharger un modèle ne l’active pas tout seul — appuie sur Utiliser.")
+            Text("Un seul modèle local est chargé à la fois.")
         }
         .listRowBackground(AppTheme.surface)
-        .sheet(isPresented: $showTestSheet) {
-            LocalModelTestSheet()
-        }
-        .alert(
-            "Modèle exigeant",
-            isPresented: $confirmLoadExperimental
-        ) {
-            Button("Annuler", role: .cancel) { pendingLoadWarning = nil }
-            Button("Utiliser quand même", role: .destructive) {
-                if let model = pendingLoadWarning {
-                    runSwitch(to: model)
-                }
-                pendingLoadWarning = nil
-            }
-        } message: {
-            Text("Ce modèle peut être instable sur cet iPhone. Le modèle actuel n’est changé que si tu confirmes.")
-        }
+    }
 
+    private var installedSection: some View {
         Section {
-            let installed = LocalModelDescriptor.userFacingCatalog.filter { models.isInstalled($0) }
-            if installed.isEmpty {
-                Text("Aucun modèle installé pour le moment.")
-                    .font(CNFont.callout)
-                    .foregroundStyle(AppTheme.mutedForeground)
-            } else {
-                ForEach(installed) { model in
-                    modelCard(model)
+            installedHeaderRow
+            if installedModelsExpanded {
+                if installedModels.isEmpty {
+                    Text("Aucun modèle installé pour le moment.")
+                        .font(CNFont.callout)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                } else {
+                    ForEach(installedModels) { model in
+                        installedModelRow(model)
+                    }
                 }
             }
-        } header: {
-            Text("Mes modèles")
         }
         .listRowBackground(AppTheme.surface)
+    }
 
+    private var availableSection: some View {
         Section {
-            let available = LocalModelDescriptor.userFacingCatalog.filter { $0.isDownloadable && !models.isInstalled($0) }
-            if available.isEmpty {
+            if availableModels.isEmpty {
                 Text("Tous les modèles disponibles sont installés.")
                     .font(CNFont.callout)
                     .foregroundStyle(AppTheme.mutedForeground)
             } else {
-                ForEach(available) { model in
-                    modelCard(model)
+                ForEach(availableModels) { model in
+                    availableModelRow(model)
                 }
             }
         } header: {
@@ -99,14 +152,45 @@ struct LocalAISettingsView: View {
             Text("Une réinstallation de l’app peut supprimer les fichiers téléchargés.")
         }
         .listRowBackground(AppTheme.surface)
-        }
     }
 
-    private var textInstallCaption: String {
-        let name = LocalModelDescriptor.descriptor(id: models.textInstallModelId ?? "")?.displayName
-            ?? "modèle"
-        return "Téléchargement de \(name)"
+    private var installedHeaderRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: AppTheme.motionStandard)) {
+                installedModelsExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Mes modèles")
+                    .font(CNFont.body.weight(.semibold))
+                    .foregroundStyle(AppTheme.foreground)
+                Text("·")
+                    .foregroundStyle(AppTheme.mutedForeground)
+                Text(installedCountLabel)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                Spacer(minLength: 8)
+                Image(systemName: installedModelsExpanded ? "chevron.up" : "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .frame(width: 22, height: 22)
+            }
+            .frame(minHeight: AppTheme.touchMin)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(A11yID.Settings.localAIInstalledToggle)
+        .accessibilityLabel("Mes modèles, \(installedCountLabel)")
+        .accessibilityValue(installedModelsExpanded ? "Ouvert" : "Fermé")
+        .accessibilityHint(installedModelsExpanded ? "Replier la liste" : "Afficher les modèles installés")
+        .accessibilityAddTraits(.isButton)
     }
+
+    private var installedCountLabel: String {
+        let n = installedModels.count
+        return n <= 1 ? "\(n) installé" : "\(n) installés"
+    }
+
+    // MARK: - Exécution
 
     private var preferenceBinding: Binding<ExecutionModePreference> {
         Binding(
@@ -116,7 +200,7 @@ struct LocalAISettingsView: View {
     }
 
     private var executionPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Picker("Exécution", selection: preferenceBinding) {
                 ForEach(ExecutionModePreference.allCases) { mode in
                     Text(mode.title).tag(mode)
@@ -128,248 +212,399 @@ struct LocalAISettingsView: View {
         }
     }
 
+    // MARK: - Modèle actuel
+
     private var currentModelCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(AppTheme.accent.opacity(0.14))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: models.isReady ? "checkmark.seal.fill" : "cpu")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(AppTheme.accent)
+        let active = models.activeDescriptor
+        let loadingName = active.displayName
+        return VStack(alignment: .leading, spacing: AppTheme.space8) {
+            Text("Modèle actuel")
+                .font(CNFont.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: models.isReady ? "checkmark" : "cpu")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(models.isReady ? AppTheme.accent : AppTheme.mutedForeground)
+                    .frame(width: 16, height: AppTheme.touchMin)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(active.displayName)
+                            .font(CNFont.body.weight(.semibold))
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.85)
+                        if active.recommended, models.isReady {
+                            LocalAIRecommendedBadge()
+                        }
+                    }
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Modèle actuel")
-                        .font(CNFont.caption2.weight(.semibold))
-                        .foregroundStyle(AppTheme.mutedForeground)
-                    Text(models.activeDescriptor.displayName)
-                        .font(CNFont.body.weight(.semibold))
-                    Text(models.isReady ? "Installé · Actif" : humanStateLabel(models.state))
-                        .font(CNFont.caption.weight(.semibold))
-                        .foregroundStyle(models.isReady ? AppTheme.accent : AppTheme.muted)
-                    Text(models.activeDescriptor.userFacingBlurb)
-                        .font(CNFont.caption)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
+                currentStatusMark
+                modelActionsMenu(active, isActive: models.isReady)
             }
 
-            if models.textInstallBusy {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(textInstallCaption)
-                        .font(CNFont.caption.weight(.semibold))
-                    ProgressView(value: models.textInstallProgress)
-                        .tint(AppTheme.accent)
-                    HStack {
-                        Text("\(Int((models.textInstallProgress * 100).rounded())) %")
-                            .font(CNFont.caption)
-                            .foregroundStyle(AppTheme.muted)
-                        Spacer()
-                        Button("Annuler") {
-                            models.cancelDownload()
-                        }
-                        .font(CNFont.callout.weight(.semibold))
-                        .frame(minHeight: 44)
-                    }
-                }
+            if !isTransitioningRuntime {
+                Text(active.userFacingBlurb)
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(currentMetaLine(active))
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
             }
+
             if case .loading = models.state {
-                ProgressView("Chargement du modèle…")
-                    .tint(AppTheme.accent)
+                runtimeProgress("Chargement de \(loadingName)…")
+            } else if case .unloading = models.state {
+                runtimeProgress("Déchargement…")
             }
-            if case .unloading = models.state {
-                ProgressView("Déchargement…")
-                    .tint(AppTheme.accent)
-            }
-            if let err = models.lastError, !err.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    Text(humanLocalAIError(err))
-                        .font(CNFont.caption)
-                        .foregroundStyle(AppTheme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button("Réessayer") {
-                        requestLoad(models.activeDescriptor)
-                    }
-                    .font(CNFont.callout.weight(.semibold))
-                    .frame(minHeight: 44)
-                    .disabled(mutationsDisabled)
-                }
+
+            if let err = visibleError(for: active.id) {
+                compactErrorBlock(err, retry: { requestLoad(active) })
             }
 
             if models.isReady {
                 Button("Tester") { showTestSheet = true }
-                    .font(CNFont.callout.weight(.semibold))
-                    .frame(minHeight: 44)
+                    .font(CNFont.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(minHeight: AppTheme.touchMin, alignment: .leading)
+                    .contentShape(Rectangle())
                     .disabled(mutationsDisabled)
+                    .accessibilityHint("Génère une courte réponse de contrôle")
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
+        .accessibilityIdentifier(A11yID.Settings.localAICurrent)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(currentAccessibilityLabel)
     }
 
-    private func modelCard(_ model: LocalModelDescriptor) -> some View {
-        let installed = models.isInstalled(model)
+    @ViewBuilder
+    private var currentStatusMark: some View {
+        if case .failed = models.state {
+            LocalAIStatusMark(kind: .error)
+        } else if case .loading = models.state {
+            LocalAIStatusMark(kind: .loading)
+        } else if case .unloading = models.state {
+            LocalAIStatusMark(kind: .loading)
+        } else if models.isReady {
+            LocalAIStatusMark(kind: .active)
+        } else if case .notInstalled = models.state {
+            Text("Non chargé")
+                .font(CNFont.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+        } else {
+            LocalAIStatusMark(kind: .installed)
+        }
+    }
+
+    private var isTransitioningRuntime: Bool {
+        switch models.state {
+        case .loading, .unloading:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var currentAccessibilityLabel: String {
+        let name = models.activeDescriptor.displayName
+        if models.isReady { return "Modèle actuel \(name), actif" }
+        if case .loading = models.state { return "Chargement de \(name)" }
+        return "Modèle actuel \(name)"
+    }
+
+    private func currentMetaLine(_ model: LocalModelDescriptor) -> String {
+        var parts = [model.userFacingTextSizeLabel]
+        if let vision = visionCapabilityLabel(model) {
+            parts.append(vision)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func visionCapabilityLabel(_ model: LocalModelDescriptor) -> String? {
+        guard model.mmproj != nil else { return nil }
+        if models.isInstallingVision(model) { return "Vision…" }
+        if models.isVisionProjectorInstalled(model) { return "Vision ✓" }
+        return "Vision"
+    }
+
+    private func runtimeProgress(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(AppTheme.accent)
+            Text(title)
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.foreground)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+    }
+
+    // MARK: - Lignes installées
+
+    private func installedModelRow(_ model: LocalModelDescriptor) -> some View {
         let isActive = models.activeModelId == model.id && models.isReady
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isActive ? "checkmark.circle.fill" : (installed ? "checkmark.circle" : "arrow.down.circle"))
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(isActive ? AppTheme.accent : AppTheme.muted)
-                    .frame(width: 28, height: 44)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
+        let err = visibleError(for: model.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
                         Text(model.displayName)
                             .font(CNFont.callout.weight(.semibold))
-                        if model.recommended {
-                            Text("Recommandé")
-                                .font(CNFont.caption2.weight(.semibold))
-                                .foregroundStyle(AppTheme.accent)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(AppTheme.accent.opacity(0.12), in: Capsule())
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.85)
+                        if isActive {
+                            LocalAIStatusMark(kind: .active)
                         }
                     }
                     Text(model.userFacingBlurb)
                         .font(CNFont.caption)
                         .foregroundStyle(AppTheme.mutedForeground)
-                    Text("~ \(model.userFacingTextSizeLabel)")
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                    if isActive {
-                        Text("Modèle actif")
-                            .font(CNFont.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.accent)
-                    } else if installed {
-                        Text("Installé")
-                            .font(CNFont.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.muted)
-                    }
-                    if models.isInstallingText(model) {
-                        ProgressView(value: models.textInstallProgress)
-                            .tint(AppTheme.accent)
-                    }
-                    if model.mmproj != nil, installed {
-                        visionProjectorRow(model)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: AppTheme.space8) {
-                if installed {
-                    if !isActive {
-                        Button {
-                            requestLoad(model)
-                        } label: {
-                            localAIActionLabel("Utiliser")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(AppTheme.accent)
-                        .disabled(
-                            mutationsDisabled
-                                || !LocalInferenceEngine.isLlamaRuntimeAvailable
-                        )
-                    }
-                    Button {
-                        guard beginUIAction() else { return }
-                        Task {
-                            defer { busyAction = false }
-                            await models.deleteModel(model)
-                            execution.refreshDerived()
-                        }
-                    } label: {
-                        localAIActionLabel("Supprimer")
-                    }
-                    .buttonStyle(.bordered)
-                    .foregroundStyle(AppTheme.danger)
-                    .disabled(mutationsDisabled || models.isInstallingText(model))
-                } else if model.isDownloadable {
-                    Button {
-                        guard beginUIAction() else { return }
-                        Task {
-                            defer { busyAction = false }
-                            await models.install(model: model)
-                        }
-                    } label: {
-                        localAIActionLabel("Télécharger")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.accent)
-                    .disabled(mutationsDisabled || models.textInstallBusy)
-                }
-            }
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(model.displayName)
-    }
-
-    @ViewBuilder
-    private func visionProjectorRow(_ model: LocalModelDescriptor) -> some View {
-        let installedVision = models.isVisionProjectorInstalled(model)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text("Vision")
-                    .font(CNFont.caption.weight(.semibold))
-                if installedVision {
-                    Text("Installée")
-                        .font(CNFont.caption2.weight(.semibold))
-                        .foregroundStyle(AppTheme.accent)
-                } else {
-                    Text("Non installée")
+                        .lineLimit(2)
+                    Text(installedMetaLine(model))
                         .font(CNFont.caption2)
                         .foregroundStyle(AppTheme.mutedForeground)
                 }
+                Spacer(minLength: 4)
+                if !isActive {
+                    LocalAICompactChip(
+                        title: "Utiliser",
+                        enabled: !mutationsDisabled && LocalInferenceEngine.isLlamaRuntimeAvailable
+                    ) {
+                        requestLoad(model)
+                    }
+                    .accessibilityLabel("Utiliser \(model.displayName)")
+                }
+                modelActionsMenu(model, isActive: isActive)
             }
             if models.isInstallingVision(model) {
                 ProgressView(value: models.visionProjectorProgress)
                     .tint(AppTheme.accent)
             }
-            HStack(spacing: AppTheme.space8) {
-                if installedVision {
-                    Button {
-                        guard beginUIAction() else { return }
-                        Task {
-                            defer { busyAction = false }
-                            await models.deleteVisionProjector(for: model)
-                        }
-                    } label: {
-                        localAIActionLabel("Retirer")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(AppTheme.danger)
-                    .disabled(mutationsDisabled || models.visionProjectorBusy)
-                } else {
-                    Button {
-                        guard beginUIAction() else { return }
-                        Task {
-                            defer { busyAction = false }
-                            await models.installVisionProjector(for: model)
-                        }
-                    } label: {
-                        localAIActionLabel("Installer la vision")
-                    }
-                    .buttonStyle(.borderless)
-                    .tint(AppTheme.accent)
-                    .disabled(mutationsDisabled || models.visionProjectorBusy || models.textInstallBusy)
-                }
+            if let err, model.id != models.activeModelId {
+                compactErrorBlock(err, retry: { requestLoad(model) })
             }
         }
+        .padding(.vertical, 2)
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(installedAccessibilityLabel(model, isActive: isActive))
     }
 
-    private func humanStateLabel(_ state: LocalModelInstallState) -> String {
-        switch state {
-        case .ready: return "Actif"
-        case .downloading: return "Téléchargement…"
-        case .verifying: return "Vérification…"
-        case .loading: return "Chargement…"
-        case .unloading: return "Déchargement…"
-        case .generating: return "Génération…"
-        case .installed: return "Installé"
-        case .notInstalled: return "Non chargé"
-        case .failed: return "Erreur"
+    private func installedMetaLine(_ model: LocalModelDescriptor) -> String {
+        var parts = [model.userFacingTextSizeLabel]
+        if let vision = visionCapabilityLabel(model) {
+            parts.append(vision)
         }
+        return parts.joined(separator: " · ")
+    }
+
+    private func installedAccessibilityLabel(_ model: LocalModelDescriptor, isActive: Bool) -> String {
+        var parts = [model.displayName]
+        parts.append(isActive ? "actif" : "installé")
+        if let vision = visionCapabilityLabel(model) {
+            parts.append(vision)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    @ViewBuilder
+    private func modelActionsMenu(_ model: LocalModelDescriptor, isActive: Bool) -> some View {
+        Menu {
+            if isActive {
+                Button("Tester") { showTestSheet = true }
+            } else {
+                Button("Utiliser") { requestLoad(model) }
+                    .disabled(mutationsDisabled || !LocalInferenceEngine.isLlamaRuntimeAvailable)
+            }
+            if model.mmproj != nil {
+                Button("Gérer la vision") { visionModel = model }
+            }
+            Button("Détails") { detailsModel = model }
+            Divider()
+            Button("Supprimer", role: .destructive) {
+                pendingDelete = model
+            }
+            .disabled(mutationsDisabled || models.isInstallingText(model))
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+                .frame(width: AppTheme.touchMin, height: AppTheme.touchMin)
+                .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .disabled(models.isInstallingText(model))
+        .accessibilityLabel("Actions pour \(model.displayName)")
+        .accessibilityHint("Utiliser, vision, détails ou supprimer")
+    }
+
+    // MARK: - Lignes disponibles
+
+    private func availableModelRow(_ model: LocalModelDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.displayName)
+                        .font(CNFont.callout.weight(.semibold))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                    Text(model.userFacingBlurb)
+                        .font(CNFont.caption)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                    if !models.isInstallingText(model) {
+                        availableSizeBlock(model)
+                    }
+                }
+                Spacer(minLength: 4)
+                if !models.isInstallingText(model), visibleError(for: model.id) == nil {
+                    LocalAICompactChip(
+                        title: "Télécharger",
+                        enabled: !mutationsDisabled && !models.textInstallBusy
+                    ) {
+                        requestInstall(model)
+                    }
+                    .accessibilityLabel("Télécharger \(model.displayName)")
+                }
+            }
+
+            if models.isInstallingText(model) {
+                downloadProgressBlock(model)
+            } else if let err = visibleError(for: model.id) {
+                compactErrorBlock(err, retry: { requestInstall(model) })
+            }
+        }
+        .padding(.vertical, 2)
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(model.displayName), disponible, \(model.userFacingTextSizeLabel)")
+    }
+
+    @ViewBuilder
+    private func availableSizeBlock(_ model: LocalModelDescriptor) -> some View {
+        let showFootprint = model.mmproj != nil || model.expectedBytes >= 1_500_000_000
+        VStack(alignment: .leading, spacing: 1) {
+            if showFootprint, let vision = model.userFacingVisionSizeLabel {
+                Text("~\(model.userFacingTextSizeLabel)")
+                Text("+ \(vision) vision")
+                Text("≈ \(model.userFacingPackSizeLabel) au total")
+            } else {
+                Text("~\(model.userFacingTextSizeLabel)")
+            }
+            if showFootprint, let free = LocalDeviceStorageInfo.availableLabel() {
+                let needed = model.expectedBytes
+                let freeBytes = LocalDeviceStorageInfo.availableImportantBytes()
+                Text(free)
+                    .foregroundStyle(
+                        (freeBytes.map { $0 < needed } ?? false) ? AppTheme.danger : AppTheme.mutedForeground
+                    )
+            }
+        }
+        .font(CNFont.caption2)
+        .foregroundStyle(AppTheme.mutedForeground)
+    }
+
+    private func downloadProgressBlock(_ model: LocalModelDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LocalAIStatusMark(kind: .downloading)
+            ProgressView(value: models.textInstallProgress)
+                .tint(AppTheme.accent)
+            HStack {
+                Text(downloadBytesCaption(model: model, fraction: models.textInstallProgress))
+                    .font(CNFont.caption2)
+                    .foregroundStyle(AppTheme.mutedForeground)
+                Spacer()
+                Text("\(Int((models.textInstallProgress * 100).rounded())) %")
+                    .font(CNFont.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.foreground)
+            }
+            Button("Annuler") {
+                models.cancelDownload()
+            }
+            .font(CNFont.caption.weight(.semibold))
+            .foregroundStyle(AppTheme.danger)
+            .frame(minHeight: AppTheme.touchMin, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Téléchargement de \(model.displayName), \(Int((models.textInstallProgress * 100).rounded())) pour cent")
+    }
+
+    private func downloadBytesCaption(model: LocalModelDescriptor, fraction: Double) -> String {
+        let clamped = min(1, max(0, fraction))
+        let done = Int64((Double(model.expectedBytes) * clamped).rounded())
+        return "\(LocalModelByteLabel.decimal(done)) / \(model.userFacingTextSizeLabel)"
+    }
+
+    private func compactErrorBlock(_ raw: String, retry: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(AppTheme.danger)
+                    .font(.caption)
+                    .accessibilityHidden(true)
+                Text(humanLocalAIError(raw))
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 12) {
+                LocalAICompactChip(
+                    title: "Réessayer",
+                    kind: .outline,
+                    enabled: !mutationsDisabled
+                ) {
+                    retry()
+                }
+                Button("Détails de l’erreur") {
+                    showTechnicalError = true
+                }
+                .font(CNFont.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedForeground)
+                .frame(minHeight: AppTheme.touchMin)
+                .contentShape(Rectangle())
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Erreur : \(humanLocalAIError(raw))")
+    }
+
+    // MARK: - Erreurs
+
+    private func visibleError(for modelId: String) -> String? {
+        guard let err = models.lastError, !err.isEmpty, !models.textInstallBusy else { return nil }
+        if case .failed = models.state, modelId == models.activeModelId {
+            return err
+        }
+        return errorTargetModelId() == modelId ? err : nil
+    }
+
+    private func errorTargetModelId() -> String? {
+        guard let err = models.lastError, !err.isEmpty else { return nil }
+        for model in LocalModelDescriptor.userFacingCatalog {
+            if err.contains(model.displayName) || err.contains(model.id) {
+                return model.id
+            }
+        }
+        if models.isReady, availableModels.count == 1, looksLikeDownloadError(err) {
+            return availableModels[0].id
+        }
+        return models.activeModelId
+    }
+
+    private func looksLikeDownloadError(_ raw: String) -> Bool {
+        let lower = raw.lowercased()
+        return lower.contains("télécharg")
+            || lower.contains("download")
+            || lower.contains("réseau")
+            || lower.contains("network")
+            || lower.contains("http")
+            || lower.contains("espace")
+            || lower.contains("disk")
     }
 
     private func humanLocalAIError(_ raw: String) -> String {
@@ -382,13 +617,15 @@ struct LocalAISettingsView: View {
         }
         if lower.contains("memory") || lower.contains("jetsam") || lower.contains("oom")
             || lower.contains("mémoire insuffisante") {
-            return "Mémoire insuffisante pour charger ce modèle. Qwen3.5 2B reste le profil recommandé."
+            return "Mémoire insuffisante pour charger ce modèle."
         }
         if raw.count > 140 {
-            return "Le modèle n’a pas pu être chargé. Réessaie."
+            return "Impossible de charger ce modèle."
         }
         return raw
     }
+
+    // MARK: - Actions (logique inchangée)
 
     private func requestLoad(_ model: LocalModelDescriptor) {
         switch model.compatibilityIPhone14Plus {
@@ -409,6 +646,39 @@ struct LocalAISettingsView: View {
         }
     }
 
+    private func requestInstall(_ model: LocalModelDescriptor) {
+        guard beginUIAction() else { return }
+        Task {
+            defer { busyAction = false }
+            await models.install(model: model)
+        }
+    }
+
+    private func requestDelete(_ model: LocalModelDescriptor) {
+        guard beginUIAction() else { return }
+        Task {
+            defer { busyAction = false }
+            await models.deleteModel(model)
+            execution.refreshDerived()
+        }
+    }
+
+    private func requestInstallVision(_ model: LocalModelDescriptor) {
+        guard beginUIAction() else { return }
+        Task {
+            defer { busyAction = false }
+            await models.installVisionProjector(for: model)
+        }
+    }
+
+    private func requestRemoveVision(_ model: LocalModelDescriptor) {
+        guard beginUIAction() else { return }
+        Task {
+            defer { busyAction = false }
+            await models.deleteVisionProjector(for: model)
+        }
+    }
+
     @discardableResult
     private func beginUIAction() -> Bool {
         guard LocalAISettingsActionGate.allowsNewMutationTask(
@@ -418,13 +688,6 @@ struct LocalAISettingsView: View {
         ) else { return false }
         busyAction = true
         return true
-    }
-
-    private func localAIActionLabel(_ title: String) -> some View {
-        Text(title)
-            .padding(.horizontal, AppTheme.space8)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
     }
 }
 
@@ -567,7 +830,7 @@ private struct LocalModelTestSheet: View {
 
 // MARK: - Comparison sheet (debug)
 
-private struct LocalModelComparisonSheet: View {
+struct LocalModelComparisonSheet: View {
     @ObservedObject private var models = LocalModelManager.shared
     @ObservedObject private var store = LocalModelComparisonStore.shared
     @Environment(\.dismiss) private var dismiss
@@ -655,7 +918,7 @@ private struct LocalModelComparisonSheet: View {
                 }
                 if let ttft = r.timeToFirstTokenMs {
                     Text(String(format: "TTFT %.0f ms", ttft))
-                        .font(CNFont.caption)
+                    .font(CNFont.caption)
                 }
                 if let tps = r.tokensPerSecond {
                     Text(String(format: "%.1f tok/s · %d tokens", tps, r.generatedTokens))

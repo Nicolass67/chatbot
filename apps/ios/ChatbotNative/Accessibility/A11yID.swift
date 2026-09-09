@@ -109,5 +109,7 @@ enum A11yID {
         static let haptics = "settings.haptics"
         static let shutdownPc = "settings.shutdownPc"
         static let systemStatus = "settings.systemStatus"
+        static let localAICurrent = "settings.localAI.current"
+        static let localAIInstalledToggle = "settings.localAI.installed.toggle"
     }
 }
