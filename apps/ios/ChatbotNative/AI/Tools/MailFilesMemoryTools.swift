@@ -25,11 +25,11 @@ struct MailSearchTool: AITool {
         }
         try Task.checkCancellation()
         let client = DirectGmailClient(oauth: .shared)
-        let max = MailIntentDetector.resultLimit(
+        let limitCount = MailIntentDetector.resultLimit(
             for: intent == .none ? .genericMailbox : intent,
             profile: profile
         )
-        let page = try await client.listMessages(query: q, pageToken: nil, maxResults: max)
+        let page = try await client.listMessages(query: q, pageToken: nil, maxResults: limitCount)
         if page.messages.isEmpty {
             return AIToolResult(
                 action: name,
@@ -41,7 +41,7 @@ struct MailSearchTool: AITool {
         let fetchBodies = (arguments["fetchBodies"] ?? "true").lowercased() != "false"
         var blocks: [String] = []
         var firstThread: String?
-        for (idx, m) in page.messages.prefix(max).enumerated() {
+        for (idx, m) in page.messages.prefix(limitCount).enumerated() {
             try Task.checkCancellation()
             if firstThread == nil { firstThread = m.threadId ?? m.id }
             var bodySnippet = m.snippet ?? ""
@@ -50,7 +50,7 @@ struct MailSearchTool: AITool {
                     let raw = MailThreadPromptBuilder.preferredBody(full)
                     bodySnippet = MailThreadPromptBuilder.clipBody(
                         MailThreadPromptBuilder.sanitize(raw),
-                        maxChars: profile.maxMailBodyChars / max(max, 1)
+                        maxChars: profile.maxMailBodyChars / Swift.max(limitCount, 1)
                     )
                 }
             }
