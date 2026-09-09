@@ -42,7 +42,7 @@ struct LocalAISettingsView: View {
             Text("IA locale")
         } footer: {
             Text(
-                "Le modèle tourne sur l’iPhone (Metal). Après Installer, attendez « Installé » puis Charger. Le fichier reste sur l’appareil même si le chargement mémoire échoue."
+                "Le modèle tourne sur l’iPhone. Après Installer, attendez « Installé » (fichier réel présent) puis Charger. Un sideload / réinstall IPA recrée le conteneur app et efface le GGUF — il faut alors réinstaller le modèle."
             )
         }
         .listRowBackground(AppTheme.surface)

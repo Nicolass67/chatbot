@@ -14,9 +14,10 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 ## Modèle
 
 - **Qwen3 1.7B Q4_K_M** (~1,28 Go) — Hugging Face `second-state/Qwen3-1.7B-GGUF` (le dépôt officiel `Qwen/Qwen3-1.7B-GGUF` ne publie plus que Q8_0)
-- Stockage : Application Support `/Models/Qwen3-1.7B-Q4_K_M.gguf`
+- Stockage : sandbox app `Library/Application Support/Models/Qwen3-1.7B-Q4_K_M.gguf`
 - Jamais dans Git ni dans l’IPA par défaut
 - Installation : Réglages → **IA locale** → Installer
+- **Sideload / réinstall IPA** (`ios:install:usb`, isideload) : iOS recrée le conteneur de données de l’app → le GGUF est **supprimé**. Ce n’est pas un App Group ni Documents partagé. Après chaque install IPA, il faut **ré-Installer** le modèle. L’état « Installé » est dérivé uniquement du fichier réel (exists + taille ±5 % + magic `GGUF`), jamais d’un flag UserDefaults.
 
 ## Runtime
 

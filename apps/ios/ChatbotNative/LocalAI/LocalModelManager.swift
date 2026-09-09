@@ -4,6 +4,10 @@ import Metal
 
 /// Gestion téléchargement / installation / chargement du GGUF local.
 /// Ne touche **jamais** aux modèles LM Studio du PC.
+///
+/// Stockage : sandbox app `Library/Application Support/Models/`.
+/// Une réinstallation / sideload IPA **recrée le conteneur** → le GGUF disparaît.
+/// Aucun flag UserDefaults ne peut indiquer « installé » sans fichier réel.
 @MainActor
 final class LocalModelManager: ObservableObject {
     static let shared = LocalModelManager()
@@ -63,13 +67,17 @@ final class LocalModelManager: ObservableObject {
         (try? fileManager.attributesOfItem(atPath: modelFilePath)[.size] as? Int64) ?? 0
     }
 
-    /// Installé = fichier GGUF réellement présent, à la bonne taille et lisible.
+    /// Installé = fichier GGUF réellement présent, taille attendue, magic valide.
     var isInstalled: Bool {
-        guard actualFileExists,
-              actualFileSize > 0,
-              validateSize(actualFileSize, expected: activeDescriptor.expectedBytes),
-              isGGUFMagic(at: modelFileURL) else { return false }
-        return true
+        presence.isFullyInstalled
+    }
+
+    var presence: LocalModelPresence {
+        LocalModelFileAudit.probe(
+            at: modelFileURL,
+            expectedBytes: activeDescriptor.expectedBytes,
+            fileManager: fileManager
+        )
     }
 
     var isReady: Bool {
@@ -81,6 +89,12 @@ final class LocalModelManager: ObservableObject {
     init() {
         refreshMetalAvailability()
         refreshInstalledState()
+        LocalModelFileAudit.log("local-ai:lifecycle", [
+            "event": "init",
+            "path": modelFilePath,
+            "presence": String(describing: presence),
+            "entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+        ])
     }
 
     func refreshMetalAvailability() {
@@ -91,43 +105,30 @@ final class LocalModelManager: ObservableObject {
 #endif
     }
 
+    /// Recalcule l’état strictement depuis le disque.
+    /// Jamais de `.installed` / `.ready` si le fichier n’est pas un GGUF valide.
     func refreshInstalledState() {
-        let path = modelFilePath
-        recordStorageAudit("refresh")
-        guard fileManager.fileExists(atPath: path) else {
-            if case .downloading = state { return }
-            if case .verifying = state { return }
-            if case .loading = state { return }
-            if case .ready = state { return }
-            if case .generating = state { return }
-            state = .notInstalled
-            installedBytes = 0
-            progress = 0
-            return
-        }
-        let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
-        installedBytes = size
-        // Ne jamais supprimer silencieusement un gros téléchargement au refresh :
-        // signaler l’erreur et laisser l’utilisateur réinstaller / supprimer.
-        if !validateSize(size, expected: activeDescriptor.expectedBytes) || !isGGUFMagic(at: modelFileURL) {
-            switch state {
-            case .ready, .generating, .loading, .unloading, .downloading, .verifying:
-                break
-            default:
-                state = .installed
-            }
-            lastError = "Fichier modèle invalide ou incomplet (\(byteLabel(size))). Supprimez puis réinstallez."
-            return
-        }
+        let probe = presence
+        recordStorageAudit("refresh", presence: probe)
+
         switch state {
-        case .ready, .generating, .loading, .unloading, .downloading, .verifying:
-            break
-        default:
-            state = .installed
-            if lastError?.contains("invalide") == true || lastError?.contains("introuvable") == true {
-                lastError = nil
+        case .downloading, .verifying:
+            // Ne pas écraser un téléchargement en cours.
+            return
+        case .loading, .unloading, .generating:
+            // Si le fichier a disparu (ex. sideload pendant l’usage), forcer la correction.
+            if !probe.isFullyInstalled {
+                state = .notInstalled
+                installedBytes = 0
+                progress = 0
+                lastError = missingFileDiagnostic()
             }
+            return
+        default:
+            break
         }
+
+        applyPresenceToState(probe, clearTransientErrors: true)
     }
 
     // MARK: - Install / Download
@@ -152,12 +153,21 @@ final class LocalModelManager: ObservableObject {
         }
 
         activeModelId = model.id
-        _ = modelsDirectory
+        let dir = modelsDirectory
         installGeneration &+= 1
         let generation = installGeneration
         lastError = nil
         progress = 0
         state = .downloading(progress: 0)
+
+        LocalModelFileAudit.log("local-ai:download", [
+            "phase": "start",
+            "url": remoteURL.absoluteString,
+            "expectedBytes": model.expectedBytes,
+            "dest": fileSystemPath(modelFileURL),
+            "partial": fileSystemPath(partialDownloadURL),
+            "models.entries": LocalModelFileAudit.directoryListing(at: dir).joined(separator: "|"),
+        ])
 
         do {
             try await download(from: remoteURL, model: model, generation: generation)
@@ -165,24 +175,45 @@ final class LocalModelManager: ObservableObject {
             state = .verifying
             try validateInstalledFile(model: model)
             guard generation == installGeneration else { return }
-            let size = (try? fileManager.attributesOfItem(atPath: modelFilePath)[.size] as? Int64) ?? model.expectedBytes
+            let probe = LocalModelFileAudit.probe(
+                at: modelFileURL,
+                expectedBytes: model.expectedBytes,
+                fileManager: fileManager
+            )
+            guard case .installed(let size) = probe else {
+                throw LocalInferenceError.modelMissing
+            }
             installedBytes = size
             progress = 1
             state = .installed
             lastError = nil
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "installed-state-set",
+                "exists": true,
+                "size": size,
+                "expectedBytes": model.expectedBytes,
+                "path": modelFilePath,
+                "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+            ])
         } catch is CancellationError {
             guard generation == installGeneration else { return }
-            state = fileManager.fileExists(atPath: modelFilePath) ? .installed : .notInstalled
+            applyPresenceToState(presence, clearTransientErrors: false)
         } catch {
             guard generation == installGeneration else { return }
             lastError = error.localizedDescription
             state = .failed(error.localizedDescription)
-            if fileManager.fileExists(atPath: modelFilePath) {
-                let size = (try? fileManager.attributesOfItem(atPath: modelFilePath)[.size] as? Int64) ?? 0
-                if !validateSize(size, expected: model.expectedBytes) || !isGGUFMagic(at: modelFileURL) {
-                    try? fileManager.removeItem(at: modelFileURL)
-                }
+            let probe = presence
+            if case .invalid = probe {
+                try? fileManager.removeItem(at: modelFileURL)
             }
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "failed",
+                "error": error.localizedDescription,
+                "final.exists": actualFileExists,
+                "final.size": actualFileSize,
+                "path": modelFilePath,
+                "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+            ])
         }
     }
 
@@ -194,8 +225,8 @@ final class LocalModelManager: ObservableObject {
         session = nil
         downloadDelegate = nil
         if case .downloading = state {
-            state = fileManager.fileExists(atPath: modelFilePath) ? .installed : .notInstalled
             progress = 0
+            applyPresenceToState(presence, clearTransientErrors: false)
         }
     }
 
@@ -208,22 +239,29 @@ final class LocalModelManager: ObservableObject {
         progress = 0
         lastError = nil
         state = .notInstalled
+        LocalModelFileAudit.log("local-ai:lifecycle", [
+            "event": "delete",
+            "path": modelFilePath,
+            "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+        ])
     }
 
     // MARK: - Engine
 
     func loadIntoEngine() async {
         refreshInstalledState()
-        let path = modelFilePath
-        guard fileManager.fileExists(atPath: path) else {
+        // Strict : aucun appel llama si le GGUF n’est pas réellement installé.
+        guard isInstalled else {
             lastError = missingFileDiagnostic()
             state = .notInstalled
             installedBytes = 0
-            return
-        }
-        guard isGGUFMagic(at: modelFileURL) else {
-            lastError = "Fichier présent mais ce n’est pas un GGUF valide. Supprimez puis réinstallez."
-            state = .installed
+            LocalModelFileAudit.log("local-ai:lifecycle", [
+                "event": "load-blocked-not-installed",
+                "path": modelFilePath,
+                "exists": actualFileExists,
+                "size": actualFileSize,
+                "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+            ])
             return
         }
         guard LocalInferenceEngine.isLlamaRuntimeAvailable else {
@@ -232,15 +270,22 @@ final class LocalModelManager: ObservableObject {
             return
         }
 
+        let path = modelFilePath
         state = .loading
         lastError = nil
         do {
             try await engine.load(path: path)
-            state = .ready
+            // Re-vérifier après load (TOCTOU / sideload parallèle).
+            if isInstalled {
+                state = .ready
+            } else {
+                await engine.unload()
+                state = .notInstalled
+                lastError = missingFileDiagnostic()
+            }
         } catch {
             lastError = error.localizedDescription
-            // Garder « installé » si le fichier est toujours là — ne pas faire croire qu’il faut retélécharger.
-            state = fileManager.fileExists(atPath: path) ? .installed : .notInstalled
+            applyPresenceToState(presence, clearTransientErrors: false)
         }
     }
 
@@ -248,14 +293,14 @@ final class LocalModelManager: ObservableObject {
         state = .unloading
         await engine.cancel()
         await engine.unload()
-        state = fileManager.fileExists(atPath: modelFilePath) ? .installed : .notInstalled
+        applyPresenceToState(presence, clearTransientErrors: false)
     }
 
     func markGenerating(_ active: Bool) {
         if active {
             if state == .ready { state = .generating }
         } else if state == .generating {
-            state = .ready
+            state = isInstalled ? .ready : .notInstalled
         }
     }
 
@@ -265,11 +310,20 @@ final class LocalModelManager: ObservableObject {
         let destination = modelFileURL
         let partial = partialDownloadURL
 
-        if fileManager.fileExists(atPath: fileSystemPath(destination)) {
-            let size = (try? fileManager.attributesOfItem(atPath: fileSystemPath(destination))[.size] as? Int64) ?? 0
-            if validateSize(size, expected: model.expectedBytes), isGGUFMagic(at: destination) {
-                return
-            }
+        let existing = LocalModelFileAudit.probe(
+            at: destination,
+            expectedBytes: model.expectedBytes,
+            fileManager: fileManager
+        )
+        if case .installed(let size) = existing {
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "skip-already-installed",
+                "size": size,
+                "path": fileSystemPath(destination),
+            ])
+            return
+        }
+        if case .invalid = existing {
             try? fileManager.removeItem(at: destination)
         }
 
@@ -282,6 +336,13 @@ final class LocalModelManager: ObservableObject {
                 existingBytes = 0
             }
         }
+
+        LocalModelFileAudit.log("local-ai:download", [
+            "phase": "perform",
+            "url": remoteURL.absoluteString,
+            "existingPartialBytes": existingBytes,
+            "expectedBytes": model.expectedBytes,
+        ])
 
         do {
             try await performDownload(
@@ -321,6 +382,7 @@ final class LocalModelManager: ObservableObject {
     ) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let delegate = DownloadDelegate(
+                remoteURL: remoteURL,
                 partialURL: partial,
                 destinationURL: destination,
                 expectedBytes: model.expectedBytes,
@@ -363,54 +425,69 @@ final class LocalModelManager: ObservableObject {
     }
 
     private func validateInstalledFile(model: LocalModelDescriptor) throws {
-        let path = modelFilePath
-        guard fileManager.fileExists(atPath: path) else {
+        let probe = LocalModelFileAudit.probe(
+            at: modelFileURL,
+            expectedBytes: model.expectedBytes,
+            fileManager: fileManager
+        )
+        recordStorageAudit("validation après téléchargement/move", presence: probe)
+        switch probe {
+        case .missing:
             throw LocalInferenceError.modelMissing
-        }
-        let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
-        guard validateSize(size, expected: model.expectedBytes) else {
+        case .invalid(let size, let sizeOK, let magicOK):
             try? fileManager.removeItem(at: modelFileURL)
-            let actualMB = Double(size) / 1_048_576.0
-            let expectedMB = Double(model.expectedBytes) / 1_048_576.0
-            throw NSError(
-                domain: "LocalModelManager",
-                code: 1,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        String(
-                            format: "Taille du modèle hors tolérance (±5 %%): %.0f Mo reçus, %.0f Mo attendus.",
-                            actualMB,
-                            expectedMB
-                        )
-                ]
-            )
+            if !sizeOK {
+                let actualMB = Double(size) / 1_048_576.0
+                let expectedMB = Double(model.expectedBytes) / 1_048_576.0
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            String(
+                                format: "Taille du modèle hors tolérance (±5 %%): %.0f Mo reçus, %.0f Mo attendus.",
+                                actualMB,
+                                expectedMB
+                            )
+                    ]
+                )
+            }
+            if !magicOK {
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: 2,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Le fichier téléchargé n’est pas un GGUF (en-tête invalide). Réessaie l’installation."
+                    ]
+                )
+            }
+            throw LocalInferenceError.modelMissing
+        case .installed(let size):
+            installedBytes = size
         }
-        guard isGGUFMagic(at: modelFileURL) else {
-            try? fileManager.removeItem(at: modelFileURL)
-            throw NSError(
-                domain: "LocalModelManager",
-                code: 2,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "Le fichier téléchargé n’est pas un GGUF (en-tête invalide). Réessaie l’installation."
-                ]
-            )
-        }
-        installedBytes = size
-        recordStorageAudit("validation après téléchargement/move")
     }
 
-    private func validateSize(_ actual: Int64, expected: Int64) -> Bool {
-        guard expected > 0, actual > 0 else { return false }
-        let tolerance = Double(expected) * 0.05
-        return abs(Double(actual - expected)) <= tolerance
-    }
-
-    private func isGGUFMagic(at url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return false }
-        return data == Data("GGUF".utf8)
+    private func applyPresenceToState(_ probe: LocalModelPresence, clearTransientErrors: Bool) {
+        switch probe {
+        case .installed(let size):
+            installedBytes = size
+            state = .installed
+            if clearTransientErrors,
+               lastError?.contains("invalide") == true
+                || lastError?.contains("introuvable") == true
+                || lastError?.contains("absent") == true {
+                lastError = nil
+            }
+        case .invalid(let size, _, _):
+            installedBytes = size
+            state = .notInstalled
+            lastError = "Fichier modèle invalide ou incomplet (\(byteLabel(size))). Supprimez puis réinstallez."
+        case .missing:
+            installedBytes = 0
+            progress = 0
+            state = .notInstalled
+        }
     }
 
     private func fileSystemPath(_ url: URL) -> String {
@@ -423,31 +500,35 @@ final class LocalModelManager: ObservableObject {
 
     private func missingFileDiagnostic() -> String {
         let dir = modelsDirectory
-        let contents = (try? fileManager.contentsOfDirectory(atPath: fileSystemPath(dir))) ?? []
+        let contents = LocalModelFileAudit.directoryListing(at: dir)
         if contents.isEmpty {
-            return "Modèle GGUF introuvable dans Models/. Relancez Installer."
+            return "Modèle GGUF introuvable dans Models/ (conteneur app vide — réinstallez après un sideload IPA). Relancez Installer."
         }
         return "Modèle GGUF introuvable (\(activeDescriptor.filename)). Dossier Models: \(contents.joined(separator: ", ")). Relancez Installer."
     }
 
     /// Trace de cycle de vie sans contenu de fichier ni donnée utilisateur.
-    private func recordStorageAudit(_ event: String) {
+    private func recordStorageAudit(_ event: String, presence: LocalModelPresence) {
         let path = modelFilePath
         let partial = partialDownloadURL
-        let size = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
-        let magic = fileManager.fileExists(atPath: path) && isGGUFMagic(at: modelFileURL)
-        print(
-            "[local-ai:storage] event=\(event), final.exists=\(fileManager.fileExists(atPath: path)), " +
-            "final.readable=\(fileManager.isReadableFile(atPath: path)), final.size=\(size), " +
-            "final.ggufMagic=\(magic), partial.exists=\(fileManager.fileExists(atPath: fileSystemPath(partial))), " +
-            "final.path=\(path)"
-        )
+        LocalModelFileAudit.log("local-ai:storage", [
+            "event": event,
+            "presence": String(describing: presence),
+            "final.exists": actualFileExists,
+            "final.readable": actualFileIsReadable,
+            "final.size": actualFileSize,
+            "expectedBytes": activeDescriptor.expectedBytes,
+            "partial.exists": fileManager.fileExists(atPath: fileSystemPath(partial)),
+            "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
+            "final.path": path,
+        ])
     }
 }
 
 // MARK: - URLSession download delegate
 
 private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let remoteURL: URL
     private let partialURL: URL
     private let destinationURL: URL
     private let expectedBytes: Int64
@@ -458,6 +539,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     private let lock = NSLock()
 
     init(
+        remoteURL: URL,
         partialURL: URL,
         destinationURL: URL,
         expectedBytes: Int64,
@@ -465,6 +547,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         onProgress: @escaping @Sendable (Double) -> Void,
         onComplete: @escaping @Sendable (Result<Void, Error>) -> Void
     ) {
+        self.remoteURL = remoteURL
         self.partialURL = partialURL
         self.destinationURL = destinationURL
         self.expectedBytes = expectedBytes
@@ -500,7 +583,29 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     ) {
         do {
             let fm = FileManager.default
-            let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 200
+            let http = downloadTask.response as? HTTPURLResponse
+            let status = http?.statusCode ?? -1
+            let headerLength = http?.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init)
+            let responseLength = http?.expectedContentLength ?? -1
+            let tempPath = location.path(percentEncoded: false)
+            let tempExists = fm.fileExists(atPath: tempPath)
+            let tempSize = (try? fm.attributesOfItem(atPath: tempPath)[.size] as? Int64) ?? 0
+            let parent = destinationURL.deletingLastPathComponent()
+
+            LocalModelFileAudit.log("local-ai:download", [
+                "phase": "http-finished",
+                "url": remoteURL.absoluteString,
+                "httpStatus": status,
+                "contentLengthHeader": headerLength.map(String.init) ?? "nil",
+                "expectedContentLength": responseLength,
+                "bytesReceivedTemp": tempSize,
+                "expectedBytes": expectedBytes,
+                "temp.path": tempPath,
+                "temp.exists": tempExists,
+                "temp.readable": fm.isReadableFile(atPath: tempPath),
+                "models.entries.before": LocalModelFileAudit.directoryListing(at: parent).joined(separator: "|"),
+            ])
+
             guard (200...299).contains(status) else {
                 try? fm.removeItem(at: location)
                 throw NSError(
@@ -512,6 +617,17 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                     ]
                 )
             }
+            guard tempExists, tempSize > 0 else {
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Téléchargement terminé sans fichier temporaire (exists=\(tempExists), size=\(tempSize))."
+                    ]
+                )
+            }
+
             let shouldAppend = existingBytes > 0 && status == 206 && fm.fileExists(atPath: partialURL.path(percentEncoded: false))
 
             if shouldAppend {
@@ -524,18 +640,44 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
                 try Self.moveOrCopy(location, to: partialURL)
             }
 
+            let partialPath = partialURL.path(percentEncoded: false)
+            let partialExists = fm.fileExists(atPath: partialPath)
+            let partialSize = (try? fm.attributesOfItem(atPath: partialPath)[.size] as? Int64) ?? 0
+            LocalModelFileAudit.log("local-ai:download-move", [
+                "phase": "after-temp-to-partial",
+                "partial.exists": partialExists,
+                "partial.size": partialSize,
+                "partial.path": partialPath,
+            ])
+            guard partialExists, partialSize > 0 else {
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "Fichier partiel absent après move depuis le temp URLSession."]
+                )
+            }
+
             if fm.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
                 try fm.removeItem(at: destinationURL)
             }
             try Self.moveOrCopy(partialURL, to: destinationURL)
             let destinationPath = destinationURL.path(percentEncoded: false)
             let destinationExists = fm.fileExists(atPath: destinationPath)
+            let destinationReadable = fm.isReadableFile(atPath: destinationPath)
             let destinationSize = (try? fm.attributesOfItem(atPath: destinationPath)[.size] as? Int64) ?? 0
-            let partialExists = fm.fileExists(atPath: partialURL.path(percentEncoded: false))
-            print(
-                "[local-ai:download-move] partial.exists=\(partialExists), final.exists=\(destinationExists), " +
-                "final.size=\(destinationSize), final.path=\(destinationPath)"
-            )
+            let partialExistsAfter = fm.fileExists(atPath: partialPath)
+            let magicOK = LocalModelFileAudit.isGGUFMagic(at: destinationURL, fileManager: fm)
+            LocalModelFileAudit.log("local-ai:download-move", [
+                "phase": "after-partial-to-final",
+                "partial.exists": partialExistsAfter,
+                "final.exists": destinationExists,
+                "final.readable": destinationReadable,
+                "final.size": destinationSize,
+                "expectedBytes": expectedBytes,
+                "final.ggufMagic": magicOK,
+                "final.path": destinationPath,
+                "models.entries.after": LocalModelFileAudit.directoryListing(at: parent).joined(separator: "|"),
+            ])
             guard destinationExists, destinationSize > 0 else {
                 throw NSError(
                     domain: "LocalModelManager",
@@ -545,6 +687,10 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
             }
             finish(.success(()))
         } catch {
+            LocalModelFileAudit.log("local-ai:download-move", [
+                "phase": "error",
+                "error": error.localizedDescription,
+            ])
             finish(.failure(error))
         }
     }
@@ -559,6 +705,11 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         if let response = task.response as? HTTPURLResponse, response.statusCode == 416 {
             try? FileManager.default.removeItem(at: partialURL)
         }
+        LocalModelFileAudit.log("local-ai:download", [
+            "phase": "session-error",
+            "error": error.localizedDescription,
+            "errno": ns.code,
+        ])
         finish(.failure(error))
     }
 
@@ -578,6 +729,14 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         do {
             try fm.moveItem(at: from, to: to)
         } catch {
+            let ns = error as NSError
+            LocalModelFileAudit.log("local-ai:download-move", [
+                "phase": "move-failed-copy-fallback",
+                "error": error.localizedDescription,
+                "errno": ns.code,
+                "from": from.path(percentEncoded: false),
+                "to": to.path(percentEncoded: false),
+            ])
             try fm.copyItem(at: from, to: to)
             try? fm.removeItem(at: from)
         }
