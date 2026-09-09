@@ -77,6 +77,7 @@ enum NativeMailShare {
     }
 }
 
+@MainActor
 final class MailComposeRelayer: NSObject, MFMailComposeViewControllerDelegate {
     static let shared = MailComposeRelayer()
 
