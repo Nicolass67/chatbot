@@ -17,6 +17,43 @@ enum LlamaError: Error, LocalizedError {
     }
 }
 
+/// Capture les logs C de llama.cpp pour diagnostiquer un load GGUF nil.
+private final class LlamaLogCapture: @unchecked Sendable {
+    static let shared = LlamaLogCapture()
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func clear() {
+        lock.lock()
+        lines.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    func append(_ line: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        lock.lock()
+        lines.append(trimmed)
+        if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+        lock.unlock()
+    }
+
+    var summary: String {
+        lock.lock()
+        defer { lock.unlock() }
+        let tail = lines.suffix(6)
+        guard !tail.isEmpty else { return "" }
+        return " — " + tail.joined(separator: " · ")
+    }
+}
+
+private func llamaInstallLogCapture() {
+    llama_log_set({ _, text, _ in
+        guard let text else { return }
+        LlamaLogCapture.shared.append(String(cString: text))
+    }, nil)
+}
+
 func llama_batch_clear(_ batch: inout llama_batch) {
     batch.n_tokens = 0
 }
@@ -39,7 +76,7 @@ func llama_batch_add(
 }
 
 /// Contexte llama.cpp — budget Qwen3 1.7B : `n_ctx = 2048` (KV cache iPhone).
-/// CPU-first sur appareil (Metal en secours) ; `n_gpu_layers = 0` sur simulateur.
+/// Backend **CPU forcé** (Metal via `devices=NULL` fait échouer le load sur iPhone).
 /// Classe `@unchecked Sendable` (pointeurs C) : accès sérialisé via `LocalInferenceEngine` (actor).
 final class LlamaContext: @unchecked Sendable {
     private var model: OpaquePointer
@@ -75,11 +112,10 @@ final class LlamaContext: @unchecked Sendable {
         llama_batch_free(batch)
         llama_model_free(model)
         llama_free(context)
-        llama_backend_free()
+        // Ne pas appeler llama_backend_free() ici — une seule fois pour le process.
     }
 
     static func create_context(path: String) throws -> LlamaContext {
-        // Vérifs avant d’appeler le C (évite un échec opaque).
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else {
             throw LlamaError.couldNotInitializeContext("fichier absent: \(path)")
@@ -89,43 +125,67 @@ final class LlamaContext: @unchecked Sendable {
             throw LlamaError.couldNotInitializeContext("fichier trop petit (\(size) octets)")
         }
 
+        LlamaLogCapture.shared.clear()
+        llamaInstallLogCapture()
+
+        // Charge les backends dynamiques (CPU / Metal) puis force CPU pour le modèle.
+        ggml_backend_load_all()
         llama_backend_init()
 
-        // Sur iPhone, Metal (n_gpu_layers > 0) fait souvent échouer / crasher l’init.
-        // CPU-only = fiable pour Qwen3 1.7B Q4 (~1,2 Go).
-        let layerAttempts: [Int32] = [0]
-
-        var lastDetail = "échec inconnu"
-        for layers in layerAttempts {
-            var model_params = llama_model_default_params()
-            model_params.n_gpu_layers = layers
-
-            let model: OpaquePointer? = path.withCString { cPath in
-                llama_model_load_from_file(cPath, model_params)
-            }
-            guard let model else {
-                lastDetail = "chargement GGUF impossible (gpu_layers=\(layers), \(byteLabel(size)))"
-                continue
-            }
-
-            let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
-            var ctx_params = llama_context_default_params()
-            ctx_params.n_ctx = 2048
-            ctx_params.n_batch = 512
-            ctx_params.n_ubatch = 512
-            ctx_params.n_threads = Int32(n_threads)
-            ctx_params.n_threads_batch = Int32(n_threads)
-
-            guard let context = llama_init_from_model(model, ctx_params) else {
-                llama_model_free(model)
-                lastDetail = "init contexte impossible (gpu_layers=\(layers)). Mémoire insuffisante ou backend Metal HS."
-                continue
-            }
-
-            return LlamaContext(model: model, context: context)
+        guard let cpuDev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) else {
+            throw LlamaError.couldNotInitializeContext(
+                "backend CPU introuvable.\(LlamaLogCapture.shared.summary)"
+            )
         }
 
-        throw LlamaError.couldNotInitializeContext(lastDetail)
+        // Liste NULL-terminée exigée par llama_model_params.devices.
+        let deviceSlots = UnsafeMutablePointer<ggml_backend_dev_t?>.allocate(capacity: 2)
+        defer { deviceSlots.deallocate() }
+        deviceSlots[0] = cpuDev
+        deviceSlots[1] = nil
+
+        var model_params = llama_model_default_params()
+        model_params.n_gpu_layers = 0
+        model_params.load_mode = LLAMA_LOAD_MODE_MMAP
+        model_params.devices = UnsafeMutableRawPointer(deviceSlots)
+            .assumingMemoryBound(to: ggml_backend_dev_t.self)
+
+        let model: OpaquePointer? = path.withCString { cPath in
+            llama_model_load_from_file(cPath, model_params)
+        }
+        guard let model else {
+            // Fallback sans mmap (certains volumes iOS / data-protection).
+            model_params.load_mode = LLAMA_LOAD_MODE_NONE
+            let retry: OpaquePointer? = path.withCString { cPath in
+                llama_model_load_from_file(cPath, model_params)
+            }
+            guard let retry else {
+                throw LlamaError.couldNotInitializeContext(
+                    "chargement GGUF impossible (\(byteLabel(size))).\(LlamaLogCapture.shared.summary)"
+                )
+            }
+            return try finishContext(model: retry)
+        }
+
+        return try finishContext(model: model)
+    }
+
+    private static func finishContext(model: OpaquePointer) throws -> LlamaContext {
+        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+        var ctx_params = llama_context_default_params()
+        ctx_params.n_ctx = 2048
+        ctx_params.n_batch = 512
+        ctx_params.n_ubatch = 512
+        ctx_params.n_threads = Int32(n_threads)
+        ctx_params.n_threads_batch = Int32(n_threads)
+
+        guard let context = llama_init_from_model(model, ctx_params) else {
+            llama_model_free(model)
+            throw LlamaError.couldNotInitializeContext(
+                "init contexte impossible (mémoire ?).\(LlamaLogCapture.shared.summary)"
+            )
+        }
+        return LlamaContext(model: model, context: context)
     }
 
     private static func byteLabel(_ bytes: Int64) -> String {
