@@ -14,18 +14,40 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 ## Modèle
 
 - **Qwen3 1.7B Q4_K_M** (~1,28 Go) — Hugging Face `second-state/Qwen3-1.7B-GGUF` (le dépôt officiel `Qwen/Qwen3-1.7B-GGUF` ne publie plus que Q8_0)
-- Stockage : sandbox app `Library/Application Support/Models/Qwen3-1.7B-Q4_K_M.gguf`
+- **Qwen3.5 2B Q4_K_M** (~1,18 Go / 1 270 808 032 octets) — `lmstudio-community/Qwen3.5-2B-GGUF` / `Qwen3.5-2B-Q4_K_M.gguf`
+  - Architecture GGUF `qwen35` (hybride attention + SSM), `embedding_length` 2048, 24 couches, contexte 262 144 (runtime iPhone : `n_ctx` 2048)
+  - Fichier **texte seul** (`general.type=model`) — la vision native Qwen3.5 n’est pas dans ce GGUF
+  - **Ne pas remplacer** par le Q4_K_M bartowski (`Qwen_Qwen3.5-2B-Q4_K_M.gguf`, ~1,40 Go, couches MTP)
+- **mmproj vision optionnel** (même dépôt LM Studio) : `mmproj-Qwen3.5-2B-BF16.gguf` (671 372 416 octets, ~640 Mo)
+  - `clip.projector_type=qwen3vl_merger`, `projection_dim=2048` (compatible embedding texte)
+  - Installation séparée : Réglages → Qwen3.5 2B → **Installer vision**
+  - Chargé **à la demande** (image jointe) ; le GGUF texte n’est jamais écrasé
+- Stockage : sandbox app `Library/Application Support/Models/`
 - Jamais dans Git ni dans l’IPA par défaut
 - Installation : Réglages → **IA locale** → Installer
-- **Sideload / réinstall IPA** (`ios:install:usb`, isideload) : iOS recrée le conteneur de données de l’app → le GGUF est **supprimé**. Ce n’est pas un App Group ni Documents partagé. Après chaque install IPA, il faut **ré-Installer** le modèle. L’état « Installé » est dérivé uniquement du fichier réel (exists + taille ±5 % + magic `GGUF`), jamais d’un flag UserDefaults.
+- **Sideload / réinstall IPA** (`ios:install:usb`, isideload) : iOS recrée le conteneur de données de l’app → le GGUF **et** le mmproj sont **supprimés**. Ce n’est pas un App Group ni Documents partagé. Après chaque install IPA, il faut **ré-Installer** le modèle. L’état « Installé » est dérivé uniquement du fichier réel (exists + taille ±5 % + magic `GGUF`), jamais d’un flag UserDefaults.
 
 ## Runtime
 
-- llama.cpp XCFramework (Metal **compilé** dans le framework arm64 device)
+- llama.cpp XCFramework tag **b10809** (`apps/ios/Vendor/LLAMA_XCFRAMEWORK_SOURCE.json`)
+- Headers + binaire : `mtmd.h` / `mtmd-helper.h` et symboles `mtmd_init_from_file`, `mtmd_tokenize`, `mtmd_helper_eval_chunks` **présents**
 - Fetch : `npm.cmd run ios:fetch-llama`
 - Load : tentative **Metal + `n_gpu_layers`** via `LlamaInferenceConfig` (ExecutionProfile), **fallback CPU** automatique si le load Metal échoue
-- Diagnostics : log `[local-ai:load]` + écran Réglages IA locale (backend effectif, ctx, batch, threads)
+- Vision : Flash Attention **désactivée** sur le graphe CLIP ; `image_max_tokens=192` sur A15 / 6 Go
+- Diagnostics : log `[local-ai:load]` / `[local-ai:vision]` / `[local-ai:llama] version=` + écran Réglages IA locale
 - `n_ctx` / batch / threads : paramétrés par modèle (pas de gating features)
+
+## Gemma 4 E2B (étudié, non catalogué)
+
+Non équivalent mémoire à Qwen3.5 2B. Ne pas télécharger automatiquement.
+
+| Source | GGUF texte | mmproj | Total disque |
+|--------|------------|--------|--------------|
+| `google/gemma-4-E2B-it-qat-q4_0-gguf` | 3,35 Go | 0,99 Go | ~4,3 Go |
+| `ggml-org/gemma-4-E2B-it-GGUF` Q4_0 | 2,84 Go | BF16 0,99 Go ou Q8_0 0,56 Go | ~3,4–3,8 Go |
+| `gguf-org/gemma-4-e2b-it-gguf` | 3,04 Go | Q4_0 0,34 Go | ~3,4 Go |
+
+Qwen3.5 2B Q4_K_M + mmproj BF16 ≈ **1,18 + 0,64 = 1,82 Go** disque. Gemma 4 E2B reste hors cible 6 Go tant que le mmproj Qwen n’a pas été mesuré.
 
 ## Modes d’exécution (Réglages)
 

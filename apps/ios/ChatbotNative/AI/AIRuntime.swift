@@ -81,7 +81,10 @@ final class LocalAIRuntime: AIRuntime {
     var applicationCapabilities: ApplicationCapabilities { .full }
 
     var nativeCapabilities: ModelNativeCapabilities {
-        models.activeDescriptor.nativeCapabilities
+        var caps = models.activeDescriptor.nativeCapabilities
+        caps.supportsVision = models.activeDescriptor.capabilities.vision
+            && models.isVisionProjectorInstalled
+        return caps
     }
 
     var executionProfile: LocalModelExecutionProfile {
@@ -108,6 +111,22 @@ final class LocalAIRuntime: AIRuntime {
         maxTokens: Int?,
         onToken: @escaping @MainActor (String) -> Void
     ) async throws -> String {
+        try await generateStream(
+            system: system,
+            messages: messages,
+            maxTokens: maxTokens,
+            images: [],
+            onToken: onToken
+        )
+    }
+
+    func generateStream(
+        system: String,
+        messages: [LLMChatMessage],
+        maxTokens: Int?,
+        images: [Data],
+        onToken: @escaping @MainActor (String) -> Void
+    ) async throws -> String {
         if !models.isReady {
             await models.loadIntoEngine()
         }
@@ -118,6 +137,15 @@ final class LocalAIRuntime: AIRuntime {
         let requested = maxTokens ?? profile.maxOutputTokens
         let budget = GenerationContextBudget.make(profile: profile, requestedOutput: requested)
         var working = messages
+        let visionImages = Array(images.prefix(LocalVision.maxImagesPerTurn))
+        if !visionImages.isEmpty, let idx = working.lastIndex(where: { $0.role == .user }) {
+            working[idx].content = LocalVision.userContent(working[idx].content, imageCount: visionImages.count)
+        }
+        let mmprojPath: String? = {
+            guard !visionImages.isEmpty else { return nil }
+            return models.visionProjectorURL(for: models.activeDescriptor)?
+                .path(percentEncoded: false)
+        }()
         var lastError: Error?
 
         for attempt in 0..<3 {
@@ -154,7 +182,7 @@ final class LocalAIRuntime: AIRuntime {
                 "backend": profile.inference.preferMetal ? "metal" : "cpu",
             ])
 
-            if promptTokens > budget.promptBudget {
+            if visionImages.isEmpty, promptTokens > budget.promptBudget {
                 lastError = AIRuntimeError.contextOverflow
                 continue
             }
@@ -163,7 +191,12 @@ final class LocalAIRuntime: AIRuntime {
             let engineRef = engine
             let emitted = StreamEmitCounter()
             do {
-                try await engineRef.generate(prompt: prompt, maxTokens: output) { piece in
+                try await engineRef.generate(
+                    prompt: prompt,
+                    maxTokens: output,
+                    images: visionImages,
+                    mmprojPath: mmprojPath
+                ) { piece in
                     accumulator.append(piece)
                     let step = LocalChatTemplate.streamingSafeEmit(
                         accumulated: accumulator.value,
@@ -219,7 +252,7 @@ enum AIRuntimeResolver {
         execution: ExecutionModeStore = .shared
     ) -> any AIRuntime {
         // Mode local / offline → toujours runtime local.
-        if sessionLocalOnly || execution.prefersOnDeviceAssistant {
+        if sessionLocalOnly || execution.routesLocalCapableOnDevice {
             return LocalAIRuntime.shared
         }
         // PC : les workflows lourds restent sur SSE `/api/chat` (non dupliqués ici).

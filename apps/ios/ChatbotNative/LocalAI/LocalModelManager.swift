@@ -19,6 +19,9 @@ final class LocalModelManager: ObservableObject {
     /// Modèle **sélectionné** par l’utilisateur (persisté). Un seul chargé à la fois.
     @Published private(set) var activeModelId: String = LocalModelDescriptor.primary.id
     @Published private(set) var installedBytes: Int64 = 0
+    /// Téléchargement mmproj — n’altère pas l’état du GGUF texte.
+    @Published private(set) var visionProjectorProgress: Double = 0
+    @Published private(set) var visionProjectorBusy: Bool = false
 
     private static let selectedModelIdKey = "localAI.selectedModelId"
 
@@ -71,6 +74,25 @@ final class LocalModelManager: ObservableObject {
 
     func filePath(for model: LocalModelDescriptor) -> String {
         fileSystemPath(fileURL(for: model))
+    }
+
+    func visionProjectorURL(for model: LocalModelDescriptor) -> URL? {
+        guard let mmproj = model.mmproj else { return nil }
+        return modelsDirectory.appendingPathComponent(mmproj.filename)
+    }
+
+    func isVisionProjectorInstalled(_ model: LocalModelDescriptor) -> Bool {
+        guard let mmproj = model.mmproj, let url = visionProjectorURL(for: model) else { return false }
+        let probe = LocalModelFileAudit.probe(
+            at: url,
+            expectedBytes: mmproj.expectedBytes,
+            fileManager: fileManager
+        )
+        return probe.isFullyInstalled
+    }
+
+    var isVisionProjectorInstalled: Bool {
+        isVisionProjectorInstalled(activeDescriptor)
     }
 
     func presence(for model: LocalModelDescriptor) -> LocalModelPresence {
@@ -413,6 +435,9 @@ final class LocalModelManager: ObservableObject {
         }
         try? fileManager.removeItem(at: url)
         try? fileManager.removeItem(at: partial)
+        if let mmproj = model.mmproj {
+            removeVisionProjectorFiles(for: mmproj)
+        }
         if activeModelId == model.id {
             installedBytes = 0
             progress = 0
@@ -426,6 +451,172 @@ final class LocalModelManager: ObservableObject {
             "models.entries": LocalModelFileAudit.directoryListing(at: modelsDirectory).joined(separator: "|"),
         ])
         refreshInstalledState()
+    }
+
+    /// Télécharge le mmproj compagnon. Ne touche **jamais** au GGUF texte.
+    func installVisionProjector(for model: LocalModelDescriptor) async {
+        guard let mmproj = model.mmproj else {
+            lastError = "Ce modèle n’a pas de projecteur vision."
+            return
+        }
+        guard mmproj.filename.hasPrefix("mmproj") else {
+            lastError = "Nom mmproj invalide — installation refusée."
+            return
+        }
+        guard mmproj.filename != model.filename else {
+            lastError = "Le mmproj ne peut pas remplacer le GGUF texte."
+            return
+        }
+        guard beginExclusive(.install) else { return }
+        defer { endExclusive(.install) }
+
+        visionProjectorBusy = true
+        visionProjectorProgress = 0
+        defer {
+            visionProjectorBusy = false
+        }
+
+        var remoteURL = mmproj.downloadURL
+        if var comps = URLComponents(url: remoteURL, resolvingAgainstBaseURL: false) {
+            var items = comps.queryItems ?? []
+            if !items.contains(where: { $0.name == "download" }) {
+                items.append(URLQueryItem(name: "download", value: "true"))
+            }
+            comps.queryItems = items
+            if let u = comps.url { remoteURL = u }
+        }
+
+        let destination = modelsDirectory.appendingPathComponent(mmproj.filename)
+        let partial = modelsDirectory.appendingPathComponent(mmproj.filename + ".download")
+        installGeneration &+= 1
+        let generation = installGeneration
+        lastError = nil
+
+        if isVisionProjectorInstalled(model) {
+            visionProjectorProgress = 1
+            return
+        }
+
+        do {
+            try await performCompanionDownload(
+                remoteURL: remoteURL,
+                expectedBytes: mmproj.expectedBytes,
+                generation: generation,
+                destination: destination,
+                partial: partial
+            )
+            let probe = LocalModelFileAudit.probe(
+                at: destination,
+                expectedBytes: mmproj.expectedBytes,
+                fileManager: fileManager
+            )
+            guard case .installed = probe else {
+                throw LocalInferenceError.modelMissing
+            }
+            visionProjectorProgress = 1
+            LocalModelFileAudit.log("local-ai:vision", [
+                "event": "mmproj-installed",
+                "model": model.id,
+                "filename": mmproj.filename,
+                "textGGUFUntouched": model.filename,
+            ])
+        } catch is CancellationError {
+            applyPresenceToState(presence, clearTransientErrors: false)
+        } catch {
+            lastError = error.localizedDescription
+            LocalModelFileAudit.log("local-ai:vision", [
+                "event": "mmproj-failed",
+                "error": error.localizedDescription,
+                "model": model.id,
+            ])
+        }
+    }
+
+    /// Retire uniquement le mmproj. Le GGUF texte n’est pas supprimé.
+    func deleteVisionProjector(for model: LocalModelDescriptor) async {
+        guard let mmproj = model.mmproj else { return }
+        guard mmproj.filename.hasPrefix("mmproj"), mmproj.filename != model.filename else { return }
+        guard beginExclusive(.delete) else { return }
+        defer { endExclusive(.delete) }
+        await engine.unloadVisionProjector()
+        removeVisionProjectorFiles(for: mmproj)
+        visionProjectorProgress = 0
+        LocalModelFileAudit.log("local-ai:vision", [
+            "event": "mmproj-deleted",
+            "model": model.id,
+            "filename": mmproj.filename,
+            "textGGUFUntouched": model.filename,
+        ])
+    }
+
+    private func removeVisionProjectorFiles(for mmproj: LocalMmprojDescriptor) {
+        guard mmproj.filename.hasPrefix("mmproj") else { return }
+        let url = modelsDirectory.appendingPathComponent(mmproj.filename)
+        let partial = modelsDirectory.appendingPathComponent(mmproj.filename + ".download")
+        if fileManager.fileExists(atPath: fileSystemPath(url)) {
+            LocalModelFileAudit.logFileDelete(
+                path: fileSystemPath(url),
+                caller: "LocalModelManager.removeVisionProjectorFiles"
+            )
+        }
+        try? fileManager.removeItem(at: url)
+        try? fileManager.removeItem(at: partial)
+    }
+
+    private func performCompanionDownload(
+        remoteURL: URL,
+        expectedBytes: Int64,
+        generation: UInt64,
+        destination: URL,
+        partial: URL
+    ) async throws {
+        var existingBytes: Int64 = 0
+        if fileManager.fileExists(atPath: fileSystemPath(partial)) {
+            existingBytes = (try? fileManager.attributesOfItem(atPath: fileSystemPath(partial))[.size] as? Int64) ?? 0
+            if existingBytes > 0, existingBytes < 1_000_000, expectedBytes > 100_000_000 {
+                try? fileManager.removeItem(at: partial)
+                existingBytes = 0
+            }
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let delegate = DownloadDelegate(
+                remoteURL: remoteURL,
+                partialURL: partial,
+                destinationURL: destination,
+                expectedBytes: expectedBytes,
+                existingBytes: existingBytes,
+                onProgress: { [weak self] fraction in
+                    Task { @MainActor in
+                        guard let self, generation == self.installGeneration else { return }
+                        self.visionProjectorProgress = fraction
+                    }
+                },
+                onComplete: { [weak self] result in
+                    Task { @MainActor in
+                        self?.downloadTask = nil
+                        self?.session = nil
+                        self?.downloadDelegate = nil
+                        continuation.resume(with: result)
+                    }
+                }
+            )
+            self.downloadDelegate = delegate
+            let config = URLSessionConfiguration.default
+            config.allowsCellularAccess = true
+            config.timeoutIntervalForRequest = 60
+            config.timeoutIntervalForResource = 60 * 60 * 2
+            let urlSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+            self.session = urlSession
+            var request = URLRequest(url: remoteURL)
+            request.timeoutInterval = 60 * 60 * 2
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+            if existingBytes > 0 {
+                request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
+            }
+            let task = urlSession.downloadTask(with: request)
+            self.downloadTask = task
+            task.resume()
+        }
     }
 
     // MARK: - Engine

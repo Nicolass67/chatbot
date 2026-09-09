@@ -35,6 +35,24 @@ struct LocalModelCapabilities: Equatable, Sendable, Hashable {
     )
 }
 
+/// Projecteur vision (`mmproj`) optionnel — fichier **séparé**, jamais un remplacement du GGUF texte.
+struct LocalMmprojDescriptor: Equatable, Hashable, Sendable {
+    let filename: String
+    let downloadURL: URL
+    let expectedBytes: Int64
+    let quant: String
+    let sourceRepo: String
+    let compatibilityNote: String
+
+    var expectedSizeLabel: String {
+        let mb = Double(expectedBytes) / 1_048_576.0
+        if mb >= 1024 {
+            return String(format: "%.2f Go", mb / 1024.0)
+        }
+        return String(format: "%.0f Mo", mb)
+    }
+}
+
 /// Descripteur d’un modèle GGUF installable.
 /// L’IA locale est **indépendante** de LM Studio PC — jamais de bascule auto.
 struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
@@ -62,8 +80,11 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     let compatibilityIPhone14Plus: LocalModelCompatibility
     let compatibilityNote: String
     let statusNote: String
+    /// `mmproj` compagnon. `nil` = texte seul. Ne jamais substituer ce fichier au GGUF texte.
+    let mmproj: LocalMmprojDescriptor? = nil
 
     var isDownloadable: Bool { downloadURL != nil && expectedBytes > 0 }
+    var hasOptionalVisionProjector: Bool { mmproj != nil }
 
     var expectedSizeLabel: String {
         guard expectedBytes > 0 else { return "—" }
@@ -77,6 +98,25 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
     var estimatedRAMLabel: String {
         String(format: "~%.1f Go RAM", estimatedRuntimeMemoryGB)
     }
+
+    var userFacingBlurb: String {
+        switch id {
+        case "qwen35-2b-q4_k_m":
+            return "Rapide · recommandé"
+        case "qwen3-1.7b-q4_k_m":
+            return "Très rapide · léger"
+        case "lfm25-1.2b-instruct-q4_k_m":
+            return "Ultra léger · rapide"
+        default:
+            return "Local"
+        }
+    }
+
+    var nativeVision: Bool { capabilities.vision && mmproj != nil }
+    var nativeAudio: Bool { capabilities.audio }
+    var nativeToolCalling: Bool { false }
+    var runtimeSupport: String { "llama.cpp · Metal" }
+    var recommended: Bool { id == "qwen35-2b-q4_k_m" }
 
     /// Modèle principal recommandé (Qwen3 1.7B Q4_K_M) — inchangé / validé.
     static var primary: LocalModelDescriptor {
@@ -143,16 +183,26 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             version: "1.0",
             license: "Apache-2.0",
             contextLength: 32_768,
-            capabilities: LocalModelCapabilities(vision: false, audio: false, reasoning: true, multilingual: true),
+            capabilities: LocalModelCapabilities(vision: true, audio: false, reasoning: true, multilingual: true),
             runtimeProfile: .chatmlQwen,
             minimumRecommendedRAMGB: 4,
             estimatedRuntimeMemoryGB: 2.8,
             compatibilityIPhone14Plus: .recommended,
-            compatibilityNote: "Prioritaire qualité/taille — à benchmarker vs Qwen3 1.7B.",
-            statusNote: "À tester"
+            compatibilityNote: "Texte Q4_K_M (~1,18 Go) conservé. Vision = mmproj compagnon du même dépôt (~640 Mo), chargée seulement à la demande.",
+            statusNote: "Référence",
+            mmproj: LocalMmprojDescriptor(
+                filename: "mmproj-Qwen3.5-2B-BF16.gguf",
+                downloadURL: URL(string: "https://huggingface.co/lmstudio-community/Qwen3.5-2B-GGUF/resolve/main/mmproj-Qwen3.5-2B-BF16.gguf")!,
+                expectedBytes: 671_372_416,
+                quant: "BF16",
+                sourceRepo: "lmstudio-community/Qwen3.5-2B-GGUF",
+                compatibilityNote: "Même dépôt que le GGUF texte (projection_dim 2048 = embedding 2048, clip.projector_type=qwen3vl_merger). Ne pas substituer le Q4_K_M bartowski (~1,40 Go, MTP)."
+            )
         ),
+    ]
 
-        // MARK: Orange — expérimental sur 6 Go
+    /// Hors UI utilisateur : trop lourds, sans URL, ou Gemma 4 E2B (~3,35 Go + KV, trop juste sur 6 Go).
+    static let experimentalInternal: [LocalModelDescriptor] = [
         LocalModelDescriptor(
             id: "qwen3-4b-q4_k_m",
             displayName: "Qwen3 4B",
@@ -221,10 +271,32 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             compatibilityNote: "Intéressant raisonnement/code mais lourd pour A15 / 6 Go.",
             statusNote: "Non recommandé"
         ),
+        LocalModelDescriptor(
+            id: "gemma4-e2b-it-q4_0",
+            displayName: "Gemma 4 E2B",
+            provider: "Google",
+            architecture: "gemma4",
+            parameterCountLabel: "E2B",
+            quant: "Q4_0",
+            expectedBytes: 3_349_516_256,
+            filename: "gemma-4-E2B_q4_0-it.gguf",
+            downloadURL: nil,
+            sha256: nil,
+            version: "0",
+            license: "Gemma",
+            contextLength: 32_768,
+            capabilities: LocalModelCapabilities(vision: true, audio: true, reasoning: false, multilingual: true),
+            runtimeProfile: .chatmlInstruct,
+            minimumRecommendedRAMGB: 8,
+            estimatedRuntimeMemoryGB: 5.4,
+            compatibilityIPhone14Plus: .notRecommended,
+            compatibilityNote: "Étudié seulement. Q4_0 officiel ~3,35 Go + mmproj 0,34–0,99 Go. Pas équivalent mémoire à Qwen3.5 2B (1,18+0,64 Go). Non téléchargeable.",
+            statusNote: "Expérimental interne — hors UI"
+        ),
     ]
 
     static func descriptor(id: String) -> LocalModelDescriptor? {
-        catalog.first { $0.id == id }
+        catalog.first { $0.id == id } ?? experimentalInternal.first { $0.id == id }
     }
 
     static var downloadable: [LocalModelDescriptor] {

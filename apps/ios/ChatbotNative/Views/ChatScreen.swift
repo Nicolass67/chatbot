@@ -30,7 +30,7 @@ struct ChatScreen: View {
     var forcedScope: ConversationScope? = nil
 
     private var usesOnDeviceAI: Bool {
-        session.localOnlyMode || executionMode.prefersOnDeviceAssistant
+        session.localOnlyMode || executionMode.routesLocalCapableOnDevice
     }
     var forcedActiveContext: ActiveContextHint? = nil
     /// Clé de persistance folder:/file:/… (sinon on tombait sur `__global__` et on écrasait la conv).
@@ -355,7 +355,7 @@ struct ChatScreen: View {
             isLoadingOlderMessages = false
             scrollAnchorAfterPrepend = nil
             Task { await streamingService.cancel() }
-            if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+            if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
                 Task { await LocalInferenceEngine.shared.cancel() }
             }
             if forcedScope == .mail, !nav.mailStickyAttachSources.isEmpty {
@@ -477,11 +477,9 @@ struct ChatScreen: View {
                                 onRegenerate: {},
                                 onOpenImage: { lightbox = $0 },
                                 onMailHandoff: {
-                                    nav.openMail(
-                                        threadId: streamMailHandoff?.threadId,
-                                        query: streamMailHandoff?.query,
-                                        label: streamMailHandoff?.label
-                                    )
+                                    if let ref = streamMailHandoff {
+                                        MailNavigationCoordinator.open(ref, nav: nav)
+                                    }
                                 },
                                 onFilesHandoff: {
                                     nav.openFiles(
@@ -812,11 +810,9 @@ struct ChatScreen: View {
             onRegenerate: { Task { await regenerate() } },
             onOpenImage: { lightbox = $0 },
             onMailHandoff: {
-                nav.openMail(
-                    threadId: chrome.mailHandoff?.threadId,
-                    query: chrome.mailHandoff?.query,
-                    label: chrome.mailHandoff?.label
-                )
+                if let ref = chrome.mailHandoff {
+                    MailNavigationCoordinator.open(ref, nav: nav)
+                }
             },
             onFilesHandoff: {
                 nav.openFiles(
@@ -956,7 +952,7 @@ struct ChatScreen: View {
         }
 
         // Mode local : Gmail pour le contenu, modèle local pour le résumé — pas de PC.
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             do {
                 if !LocalModelManager.shared.isReady {
                     await LocalModelManager.shared.loadIntoEngine()
@@ -1084,7 +1080,7 @@ struct ChatScreen: View {
         }
 
         // Mode local : brouillon via LocalMailAssistant (Gmail direct + modèle local).
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             do {
                 if !LocalModelManager.shared.isReady {
                     await LocalModelManager.shared.loadIntoEngine()
@@ -1402,6 +1398,26 @@ struct ChatScreen: View {
             )
         )
         do {
+            if fileId.hasPrefix("local:") {
+                let url = try LocalFilesStore.exportableURL(fileId: fileId)
+                let mime = LocalFileTypeDetector.mimeType(for: url)
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
+                    pendingAttachments[idx] = UploadedAttachment(
+                        id: tempId,
+                        filename: filename,
+                        mimeType: mime,
+                        sizeBytes: size,
+                        isUploading: false,
+                        sourceFileId: fileId,
+                        localFileURL: url
+                    )
+                }
+                return
+            }
+            if usesOnDeviceAI {
+                throw APIClientError.http(503, "Pièce jointe distante indisponible en mode local.")
+            }
             let (data, resolvedName, mime) = try await client.downloadFileBytes(fileId: fileId)
             var uploaded = try await client.uploadAttachment(
                 conversationId: conversation.id,
@@ -1958,7 +1974,7 @@ Corps actuel:
 
     private var assistantReadyForSend: Bool {
         // Mode local : indépendant du runtime LM Studio PC.
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             return LocalModelManager.shared.isInstalled || LocalModelManager.shared.isReady
         }
         switch runtimeStatus.uppercased() {
@@ -2042,7 +2058,7 @@ Corps actuel:
 
 
 private var sendBlockedHint: String {
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             if LocalModelManager.shared.isInstalled || LocalModelManager.shared.isReady {
                 return "IA locale"
             }
@@ -2058,7 +2074,7 @@ private var sendBlockedHint: String {
 
     private func refreshRuntimeStatus() async {
         guard !modelSwitching else { return }
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             runtimeStatus = LocalModelManager.shared.isReady ? "READY" : (LocalModelManager.shared.isInstalled ? "READY" : "OFFLINE")
             return
         }
@@ -2093,7 +2109,7 @@ private var sendBlockedHint: String {
     }
 
     private func loadMessages(preserveAssistantId: String? = nil) async {
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             let local = LocalChatStore.shared.messages(for: conversation.id)
             messages = local.map { $0.asMessageDTO() }
             hasMoreOlderMessages = false
@@ -2144,6 +2160,10 @@ private var sendBlockedHint: String {
                     chromeById = stored
                 }
             }
+            chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
+                conversationId: conversation.id,
+                messages: messages
+            )
             chromeById = ConversationSessionStore.reattachOrphanFilesFound(
                 conversationId: conversation.id,
                 messages: messages
@@ -2193,6 +2213,10 @@ private var sendBlockedHint: String {
             scrollAnchorAfterPrepend = oldestId
             messages = Self.withoutLeakedDraftControlMessages(older + messages)
             hydrateChromeSources(from: older)
+            chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
+                conversationId: conversation.id,
+                messages: messages
+            )
             chromeById = ConversationSessionStore.reattachOrphanFilesFound(
                 conversationId: conversation.id,
                 messages: messages
@@ -2678,6 +2702,29 @@ private var sendBlockedHint: String {
                 ImagePipeline.thumbnail(data: picked.data, maxPixelSize: 280)
             }.value
             let thumbData = thumb?.jpegData(compressionQuality: 0.78)
+            let onDevice = session.localOnlyMode || executionMode.routesLocalCapableOnDevice
+            if onDevice {
+                let (compressed, mime) = await Task.detached(priority: .userInitiated) {
+                    ImagePipeline.compressForUpload(
+                        picked.data,
+                        maxDimension: LocalVision.maxPixelDimension,
+                        quality: 0.72
+                    )
+                }.value
+                let filename = "photo-\(UUID().uuidString.prefix(8)).jpg"
+                pendingAttachments.append(
+                    UploadedAttachment(
+                        id: tempId,
+                        filename: filename,
+                        mimeType: mime,
+                        sizeBytes: compressed.count,
+                        previewData: thumbData ?? compressed,
+                        fileData: compressed,
+                        isUploading: false
+                    )
+                )
+                return
+            }
             pendingAttachments.append(
                 UploadedAttachment(
                     id: tempId,
@@ -2693,6 +2740,21 @@ private var sendBlockedHint: String {
                 ImagePipeline.compressForUpload(picked.data)
             }.value
             let filename = "photo-\(UUID().uuidString.prefix(8)).jpg"
+            if usesOnDeviceAI {
+                if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
+                    pendingAttachments[idx] = UploadedAttachment(
+                        id: tempId,
+                        filename: filename,
+                        mimeType: mime,
+                        sizeBytes: compressed.count,
+                        previewData: thumbData ?? compressed,
+                        fileData: compressed,
+                        isUploading: false,
+                        localData: compressed
+                    )
+                }
+                return
+            }
             let uploaded = try await client.uploadAttachment(
                 conversationId: conversation.id,
                 filename: filename,
@@ -2753,6 +2815,25 @@ private var sendBlockedHint: String {
                         isUploading: true
                     )
                 )
+                if usesOnDeviceAI {
+                    let dir = LocalFilesStore.documentsDirectory.appendingPathComponent("LocalAttachments", isDirectory: true)
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    let dest = dir.appendingPathComponent("\(UUID().uuidString)-\(name)")
+                    try payload.write(to: dest, options: .atomic)
+                    if let idx = pendingAttachments.firstIndex(where: { $0.id == tempId }) {
+                        pendingAttachments[idx] = UploadedAttachment(
+                            id: tempId,
+                            filename: name,
+                            mimeType: outMime,
+                            sizeBytes: payload.count,
+                            previewData: preview,
+                            isUploading: false,
+                            localFileURL: dest,
+                            localData: isImage ? nil : payload
+                        )
+                    }
+                    return
+                }
                 let uploaded = try await client.uploadAttachment(
                     conversationId: conversation.id,
                     filename: name,
@@ -2833,6 +2914,50 @@ private var sendBlockedHint: String {
         var effectiveText = rawText
         if effectiveText.isEmpty, options?.regenerate == true {
             effectiveText = messages.last(where: { $0.role == "user" })?.content ?? ""
+        }
+        let localPayloads = pendingAttachments.filter { !$0.isUploading && $0.isLocalOnly }
+        let canNativeVision = LocalModelManager.shared.isVisionProjectorInstalled
+            && LocalModelManager.shared.activeDescriptor.nativeVision
+        let visionImages: [Data] = canNativeVision ? localPayloads.compactMap { att in
+            guard att.isImage else { return nil }
+            return att.fileData ?? att.localData ?? att.previewData
+        } : []
+        if effectiveText.isEmpty, !localPayloads.isEmpty {
+            effectiveText = visionImages.isEmpty
+                ? "Analyse cette pièce jointe."
+                : "Décris cette image précisément. Transcris tout le texte visible."
+        }
+        if !localPayloads.isEmpty {
+            var blocks: [String] = []
+            for att in localPayloads {
+                if att.isImage {
+                    if canNativeVision { continue }
+                    if let url = att.localFileURL {
+                        blocks.append("Image \(att.filename):\n\(LocalDocumentExtractor.extract(url: url, mimeType: att.mimeType))")
+                    } else if let data = att.fileData ?? att.localData {
+                        blocks.append("Image \(att.filename):\n\(LocalDocumentExtractor.extract(data: data, filename: att.filename, mimeType: att.mimeType))")
+                    }
+                    continue
+                }
+                if let url = att.localFileURL {
+                    blocks.append("Fichier \(att.filename):\n\(LocalDocumentExtractor.extract(url: url, mimeType: att.mimeType))")
+                } else if let data = att.localData ?? att.fileData {
+                    blocks.append("Fichier \(att.filename):\n\(LocalDocumentExtractor.extract(data: data, filename: att.filename, mimeType: att.mimeType))")
+                } else if let fileId = att.sourceFileId, fileId.hasPrefix("local:"),
+                          let text = LocalDocumentExtractor.extract(fileId: fileId) {
+                    blocks.append("Fichier \(att.filename):\n\(text)")
+                }
+            }
+            if !blocks.isEmpty {
+                effectiveText += "\n\n--- Documents joints (extraction locale) ---\n" + blocks.joined(separator: "\n\n")
+            }
+            pendingAttachments.removeAll { att in
+                localPayloads.contains(where: { $0.id == att.id })
+            }
+        }
+        if let fileId = forcedActiveContext?.fileId, fileId.hasPrefix("local:"),
+           let extracted = LocalDocumentExtractor.extract(fileId: fileId) {
+            effectiveText += "\n\n--- Fichier ouvert ---\n\(extracted)"
         }
         guard !effectiveText.isEmpty else {
             // `send()` a déjà posé `isSending` pour la course double-tap.
@@ -2949,7 +3074,8 @@ private var sendBlockedHint: String {
 
             // Agent mode : mêmes événements / même AgentActivityView que le PC.
             let effectiveMode = options?.mode ?? chatMode
-            if effectiveMode == "agent" {
+            let useVisionTurn = !visionImages.isEmpty
+            if !useVisionTurn, effectiveMode == "agent" {
                 activeGeneration.workflow = "agent"
                 activeGeneration.log("start", extra: ["workflow": "agent"])
                 let runtime = LocalAIRuntime.shared
@@ -3030,20 +3156,19 @@ private var sendBlockedHint: String {
             )
             let preferMailOverWeb = GmailOAuthSession.shared.isConnected
                 && (forcedScope == .mail || mailIntentForRoute.needsGmailSearch || MailIntentDetector.looksLikeMail(effectiveText))
-            if (toolChannel == .web || webSearchEnabled), forcedScope == nil, !preferMailOverWeb {
+            let interaction = ConversationInteractionMode(stored: options?.mode ?? chatMode)
+            let workflowKind = ConversationWorkflowRouter.kind(
+                interaction: interaction,
+                filesScope: false,
+                preferMail: preferMailOverWeb && forcedScope != .files,
+                webEnabled: (toolChannel == .web || webSearchEnabled) && forcedScope == nil
+            )
+            // Agent uniquement si l’utilisateur a choisi Agent — jamais parce que Web est actif.
+            if !useVisionTurn, workflowKind == .web {
                 activeGeneration.workflow = "web"
                 activeGeneration.query = effectiveText
-                activeGeneration.log("start", extra: ["workflow": "web"])
-                thinkingKind = nil
-                applyLocalAgentEvent(.started)
-                applyLocalAgentEvent(.plan(steps: [
-                    AgentPlanStep(id: "understand", title: "Analyser ce que tu demandes", status: "pending"),
-                    AgentPlanStep(id: "act", title: "Rechercher sur le web", status: "pending"),
-                    AgentPlanStep(id: "answer", title: "Rédiger la réponse", status: "pending"),
-                ]))
-                applyLocalAgentEvent(.stepStarted(id: "understand", title: "Analyser ce que tu demandes"))
-                applyLocalAgentEvent(.stepCompleted(id: "understand"))
-                applyLocalAgentEvent(.stepStarted(id: "act", title: "Rechercher sur le web"))
+                activeGeneration.log("start", extra: ["workflow": "web", "mode": "chat"])
+                thinkingKind = .searching
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let web = try await WebSearchWorkflow.run(
@@ -3051,20 +3176,26 @@ private var sendBlockedHint: String {
                     runtime: runtime,
                     tools: tools,
                     onEvent: { event in
-                        applyLocalAgentEvent(event)
+                        switch event {
+                        case .webSearch, .toolStarted:
+                            thinkingKind = .searching
+                        case .sources, .sourceOpened:
+                            thinkingKind = .custom("Lecture des sources…")
+                        case .synthesizing:
+                            thinkingKind = .custom("Rédaction…")
+                        default:
+                            break
+                        }
                     },
                     onToken: { token in
                         self.appendLocalStreamToken(token)
                     }
                 )
                 guard gen == sendGeneration, !Task.isCancelled else {
-                    applyLocalAgentEvent(.cancelled)
                     thinkingKind = nil
                     isSending = false
                     return
                 }
-                applyLocalAgentEvent(.stepCompleted(id: "act"))
-                applyLocalAgentEvent(.stepStarted(id: "answer", title: "Rédiger la réponse"))
                 let content = web.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if content.isEmpty { throw AIRuntimeError.emptyGeneration }
                 thinkingKind = nil
@@ -3090,8 +3221,6 @@ private var sendBlockedHint: String {
                 activeGeneration.messageId = asstId
                 streamSources = web.sources
                 attachLocalChrome(sources: web.sources, mailThreadId: nil, finalize: true)
-                applyLocalAgentEvent(.stepCompleted(id: "answer"))
-                applyLocalAgentEvent(.completed)
                 streamingAssistantId = nil
                 streamingText = ""
                 streamAccum.text = ""
@@ -3108,7 +3237,7 @@ private var sendBlockedHint: String {
             }
 
             // Mail : fil ouvert OU boîte (liste) — Gmail device, jamais « pas d’accès ».
-            if forcedScope == .mail, GmailOAuthSession.shared.isConnected {
+            if !useVisionTurn, forcedScope == .mail, GmailOAuthSession.shared.isConnected {
                 activeGeneration.workflow = "mail"
                 activeGeneration.log("start", extra: ["workflow": "mail"])
                 let assistant = LocalMailAssistant()
@@ -3119,6 +3248,7 @@ private var sendBlockedHint: String {
                 )
                 let answer: String
                 var mailThreadHandoff: String?
+                var mailboxHandoff: MailHandoffDTO?
                 if intent == .threadReply, let threadId, !threadId.isEmpty {
                     thinkingKind = .custom("Préparation de la réponse…")
                     let confirmation = try await assistant.draftReply(
@@ -3164,6 +3294,7 @@ private var sendBlockedHint: String {
                     )
                     answer = mailbox.text
                     mailThreadHandoff = mailbox.mailThreadId
+                    mailboxHandoff = mailbox.mailHandoff
                 } else {
                     thinkingKind = .custom("Consultation Gmail…")
                     answer = try await assistant.searchAndAnswer(effectiveText)
@@ -3188,7 +3319,12 @@ private var sendBlockedHint: String {
                     )
                 )
                 streamingAssistantId = asstId
-                attachLocalChrome(sources: [], mailThreadId: mailThreadHandoff, finalize: true)
+                attachLocalChrome(
+                    sources: [],
+                    mailThreadId: mailThreadHandoff,
+                    mailHandoff: mailboxHandoff,
+                    finalize: true
+                )
                 streamingAssistantId = nil
                 _ = LocalChatStore.shared.appendMessage(
                     conversationId: conversation.id,
@@ -3200,7 +3336,7 @@ private var sendBlockedHint: String {
                 return
             }
 
-            if forcedScope != .files, GmailOAuthSession.shared.isConnected {
+            if !useVisionTurn, forcedScope != .files, GmailOAuthSession.shared.isConnected {
                 let intent = MailIntentDetector.detect(effectiveText, hasOpenThread: false)
                 if intent.needsGmailSearch || MailIntentDetector.looksLikeMail(effectiveText) {
                     activeGeneration.workflow = "mail"
@@ -3229,7 +3365,12 @@ private var sendBlockedHint: String {
                         MessageDTO(id: asstId, role: "assistant", content: mailbox.text, createdAt: nil)
                     )
                     streamingAssistantId = asstId
-                    attachLocalChrome(sources: [], mailThreadId: mailbox.mailThreadId, finalize: true)
+                    attachLocalChrome(
+                        sources: [],
+                        mailThreadId: mailbox.mailThreadId,
+                        mailHandoff: mailbox.mailHandoff,
+                        finalize: true
+                    )
                     streamingAssistantId = nil
                     _ = LocalChatStore.shared.appendMessage(
                         conversationId: conversation.id,
@@ -3254,7 +3395,8 @@ private var sendBlockedHint: String {
             let finalText = try await streamLocalChatReply(
                 userText: effectiveText,
                 promptKind: promptKind,
-                generation: gen
+                generation: gen,
+                images: visionImages
             )
 
             guard gen == sendGeneration, !Task.isCancelled else {
@@ -3311,7 +3453,8 @@ private var sendBlockedHint: String {
     private func streamLocalChatReply(
         userText: String,
         promptKind: LocalPromptKind,
-        generation: UInt64
+        generation: UInt64,
+        images: [Data] = []
     ) async throws -> String {
         var history: [LLMChatMessage] = messages.compactMap { msg in
             guard msg.role == "user" || msg.role == "assistant" else { return nil }
@@ -3329,6 +3472,34 @@ private var sendBlockedHint: String {
 
         streamAccum.text = ""
         streamingText = ""
+        if !images.isEmpty {
+            thinkingKind = .custom("Lecture de l’image…")
+            let text = try await LocalAIRuntime.shared.generateStream(
+                system: LocalPrompts.systemPrompt(for: promptKind),
+                messages: history,
+                maxTokens: LocalModelManager.shared.activeDescriptor.executionProfile.maxOutputTokens,
+                images: images,
+                onToken: { token in
+                    guard generation == self.sendGeneration else { return }
+                    self.streamAccum.text += token
+                    if self.thinkingKind != nil { self.thinkingKind = nil }
+                    if self.tokenFlushTask == nil {
+                        self.tokenFlushTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 40_000_000)
+                            self.tokenFlushTask = nil
+                            self.streamingText = self.streamAccum.text
+                        }
+                    }
+                }
+            )
+            tokenFlushTask?.cancel()
+            tokenFlushTask = nil
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            streamAccum.text = trimmed
+            streamingText = trimmed
+            guard !trimmed.isEmpty else { throw AIRuntimeError.emptyGeneration }
+            return trimmed
+        }
         let result = try await ChatWorkflow.run(
             .init(
                 userText: userText,
@@ -3364,13 +3535,14 @@ private var sendBlockedHint: String {
     private func send(options: ChatSendOptions? = nil, forcedText: String? = nil, hideUserMessage: Bool = false, rewriteDraftCard: Bool = false) async {
         guard !isSending else { return }
         let rawText = (forcedText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        let ids = pendingAttachments.filter { !$0.isUploading && !$0.id.hasPrefix("local-") }.map(\.id)
+        let ids = pendingAttachments.filter { !$0.isUploading && !$0.isLocalOnly }.map(\.id)
+        let hasLocalPayload = pendingAttachments.contains { !$0.isUploading && $0.isLocalOnly }
         let isEdit = editingMessageId != nil
-        guard !rawText.isEmpty || !ids.isEmpty || options?.regenerate == true else { return }
+        guard !rawText.isEmpty || !ids.isEmpty || hasLocalPayload || options?.regenerate == true else { return }
 
         // IA locale (avant mail reply produit / SSE distant).
         // Lock synchrone immédiat — un 2ᵉ tap est refusé avant tout `await`.
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             guard ChatSendGate.tryBegin(isSending: &isSending) else { return }
             await sendViaLocalLLM(
                 rawText: rawText,
@@ -3705,6 +3877,10 @@ private var sendBlockedHint: String {
             }
             suppressAssistantNarration = false
             // Hydrate toutes les bulles (réouverture mid-session / SSE perdu).
+            chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
+                conversationId: conversation.id,
+                messages: messages
+            )
             chromeById = ConversationSessionStore.reattachOrphanFilesFound(
                 conversationId: conversation.id,
                 messages: messages
@@ -3763,7 +3939,11 @@ private var sendBlockedHint: String {
                         messageId: last.id
                     )
                 }
-                chromeById = ConversationSessionStore.reattachOrphanFilesFound(
+                chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
+                conversationId: conversation.id,
+                messages: messages
+            )
+            chromeById = ConversationSessionStore.reattachOrphanFilesFound(
                     conversationId: conversation.id,
                     messages: messages
                 )
@@ -4223,7 +4403,12 @@ private var sendBlockedHint: String {
     }
 
     /// `finalize: true` → sources finales sur CE run/message. Sinon : pas de pastilles message.
-    private func attachLocalChrome(sources: [SearchSourceDTO], mailThreadId: String?, finalize: Bool = false) {
+    private func attachLocalChrome(
+        sources: [SearchSourceDTO],
+        mailThreadId: String?,
+        mailHandoff: MailHandoffDTO? = nil,
+        finalize: Bool = false
+    ) {
         let id = streamingAssistantId ?? activeGeneration.messageId
         guard let id else { return }
         activeGeneration.messageId = id
@@ -4232,22 +4417,24 @@ private var sendBlockedHint: String {
         } else if !sources.isEmpty {
             activeGeneration.discoveredSources = sources
         }
-        if let mailThreadId {
-            activeGeneration.mailThreadId = mailThreadId
-            activeGeneration.mailContext = !mailThreadId.isEmpty
+        let resolvedHandoff: MailHandoffDTO? = {
+            if let mailHandoff { return mailHandoff }
+            if let mailThreadId, !mailThreadId.isEmpty {
+                return MailHandoffDTO(intent: "open", threadId: mailThreadId)
+            }
+            return nil
+        }()
+        if let tid = resolvedHandoff?.threadId ?? mailThreadId {
+            activeGeneration.mailThreadId = tid
+            activeGeneration.mailContext = !tid.isEmpty
         }
         var chrome = chromeById[id] ?? MessageChromeMeta()
         if finalize {
             chrome.sources = sources
         }
-        if let mailThreadId, !mailThreadId.isEmpty {
-            chrome.mailHandoff = MailHandoffDTO(
-                intent: "open",
-                reason: nil,
-                query: nil,
-                threadId: mailThreadId,
-                label: nil
-            )
+        if let resolvedHandoff {
+            chrome.mailHandoff = resolvedHandoff
+            streamMailHandoff = resolvedHandoff
         }
         if agentActivity.visible || !agentActivity.planSteps.isEmpty || agentActivity.completed {
             var snap = agentActivity.snapshot()
@@ -4348,7 +4535,7 @@ private var sendBlockedHint: String {
     private func finalizeStoppedStream() {
         isSending = false
         thinkingKind = nil
-        if session.localOnlyMode || executionMode.prefersOnDeviceAssistant {
+        if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             Task { await LocalInferenceEngine.shared.cancel() }
         }
         if agentActivity.visible || agentActivity.webPhase != .idle || !agentActivity.planSteps.isEmpty {

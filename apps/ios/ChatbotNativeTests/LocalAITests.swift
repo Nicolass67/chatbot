@@ -16,10 +16,45 @@ final class LocalModelDescriptorTests: XCTestCase {
     }
 
     func testCatalogHasMultiModelsAndOnlyOnePrimary() {
-        XCTAssertGreaterThanOrEqual(LocalModelDescriptor.catalog.count, 5)
+        XCTAssertGreaterThanOrEqual(LocalModelDescriptor.catalog.count, 3)
         XCTAssertEqual(LocalModelDescriptor.catalog.filter { $0.id == LocalModelDescriptor.primary.id }.count, 1)
         XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "lfm25-1.2b-instruct-q4_k_m" })
         XCTAssertTrue(LocalModelDescriptor.downloadable.contains { $0.id == "qwen35-2b-q4_k_m" })
+        XCTAssertTrue(LocalModelDescriptor.catalog.allSatisfy(\.isDownloadable))
+    }
+
+    func testQwen35KeepsLmstudioGGUFAndOptionalMmproj() {
+        let m = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!
+        XCTAssertEqual(m.filename, "Qwen3.5-2B-Q4_K_M.gguf")
+        XCTAssertEqual(m.expectedBytes, 1_270_808_032)
+        XCTAssertEqual(m.architecture, "qwen35")
+        XCTAssertTrue(m.downloadURL!.absoluteString.contains("lmstudio-community/Qwen3.5-2B-GGUF"))
+        XCTAssertTrue(m.downloadURL!.absoluteString.contains("Qwen3.5-2B-Q4_K_M.gguf"))
+        XCTAssertFalse(m.downloadURL!.absoluteString.contains("bartowski"))
+        XCTAssertFalse(m.downloadURL!.absoluteString.contains("Qwen_Qwen3.5-2B-Q4_K_M"))
+        let mmproj = m.mmproj
+        XCTAssertNotNil(mmproj)
+        XCTAssertEqual(mmproj?.filename, "mmproj-Qwen3.5-2B-BF16.gguf")
+        XCTAssertEqual(mmproj?.expectedBytes, 671_372_416)
+        XCTAssertTrue(mmproj!.filename.hasPrefix("mmproj"))
+        XCTAssertNotEqual(mmproj?.filename, m.filename)
+        XCTAssertTrue(mmproj!.downloadURL.absoluteString.contains("lmstudio-community/Qwen3.5-2B-GGUF"))
+        XCTAssertFalse(mmproj!.downloadURL.absoluteString.contains("bartowski"))
+        XCTAssertTrue(m.capabilities.vision)
+    }
+
+    func testGemma4RemainsAbsentFromCatalog() {
+        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_k_m"), "Gemma 4 retire du catalogue")
+        XCTAssertNil(LocalModelDescriptor.descriptor(id: "gemma4-e4b-it"))
+        XCTAssertFalse(LocalModelDescriptor.catalog.contains { $0.id.localizedCaseInsensitiveContains("gemma") })
+    }
+
+    func testVisionMarkerInsertedOnlyWhenImagesPresent() {
+        XCTAssertEqual(LocalVision.userContent("Hello", imageCount: 0), "Hello")
+        let withImage = LocalVision.userContent("Décris", imageCount: 1)
+        XCTAssertTrue(withImage.contains(LocalVision.mediaMarker))
+        XCTAssertTrue(withImage.contains("Décris"))
+        XCTAssertEqual(LocalVision.userContent("", imageCount: 1).components(separatedBy: LocalVision.mediaMarker).count - 1, 1)
     }
 
     func testCompatibilityTiersForIPhone14Plus() {
@@ -31,11 +66,15 @@ final class LocalModelDescriptorTests: XCTestCase {
     }
 
     func testFutureStubModelsNotDownloadableYet() {
-        let stubs = LocalModelDescriptor.catalog.filter { !$0.isDownloadable }
+        let stubs = LocalModelDescriptor.experimentalInternal.filter { !$0.isDownloadable }
         XCTAssertFalse(stubs.isEmpty)
         for stub in stubs {
             XCTAssertNil(stub.downloadURL, stub.id)
         }
+        let gemma = LocalModelDescriptor.descriptor(id: "gemma4-e2b-it-q4_0")
+        XCTAssertNotNil(gemma)
+        XCTAssertFalse(gemma!.isDownloadable, "Gemma 4 E2B reste hors téléchargement — trop lourd vs Qwen3.5 2B")
+        XCTAssertFalse(LocalModelDescriptor.downloadable.contains { $0.id == "gemma4-e2b-it-q4_0" })
     }
 }
 
@@ -1281,6 +1320,103 @@ final class WorkflowSyncTests: XCTestCase {
         XCTAssertEqual(back.path.count, 1)
         XCTAssertEqual(FilesPathOps.breadcrumb(back.path), "Documents")
         XCTAssertEqual(FilesPathOps.dedupe([root, root, a, a, b]).count, 3)
+    }
+
+    func testMailReferenceParsesSearchHit() {
+        let tool = """
+        [1] messageId=msgSPA threadId=thrSPA
+        De: SPA <spa@example.org>
+        Objet: Don
+        Date: 2026-04-01
+        Merci pour votre don.
+        """
+        let ref = MailReference.first(fromToolText: tool)
+        XCTAssertEqual(ref?.messageId, "msgSPA")
+        XCTAssertEqual(ref?.threadId, "thrSPA")
+        XCTAssertEqual(ref?.subject, "Don")
+        XCTAssertTrue(ref?.sender?.contains("SPA") == true)
+        let encoded = try! JSONEncoder().encode(ref!)
+        let decoded = try! JSONDecoder().decode(MailHandoffDTO.self, from: encoded)
+        XCTAssertEqual(decoded.messageId, "msgSPA")
+        XCTAssertEqual(decoded.threadId, "thrSPA")
+    }
+
+    @MainActor
+    func testMailChromeSliceSurvivesReloadWithoutFilesFound() {
+        let handoff = MailReference.make(
+            messageId: "m1",
+            threadId: "t1",
+            subject: "SPA",
+            sender: "SPA",
+            date: "hier"
+        )
+        ConversationSessionStore.setChrome(
+            MessageChromeMeta(mailHandoff: handoff),
+            conversationId: "conv-mail-tile-test",
+            messageId: "asst-1"
+        )
+        ConversationSessionStore.replaceChrome(conversationId: "conv-mail-tile-test", chrome: [:])
+        ConversationSessionStore.setChrome(
+            MessageChromeMeta(mailHandoff: handoff),
+            conversationId: "conv-mail-tile-test",
+            messageId: "asst-1"
+        )
+        let map = ConversationSessionStore.chrome(for: "conv-mail-tile-test")
+        XCTAssertEqual(map["asst-1"]?.mailHandoff?.messageId, "m1")
+        ConversationSessionStore.clear(conversationId: "conv-mail-tile-test", scope: .general)
+    }
+
+    func testChatModeNeverRoutesToAgentWorkflow() {
+        XCTAssertEqual(
+            ConversationWorkflowRouter.kind(
+                interaction: .chat,
+                filesScope: false,
+                preferMail: false,
+                webEnabled: true
+            ),
+            .web
+        )
+        XCTAssertEqual(
+            ConversationWorkflowRouter.kind(
+                interaction: .agent,
+                filesScope: false,
+                preferMail: false,
+                webEnabled: true
+            ),
+            .agent
+        )
+        XCTAssertEqual(
+            ConversationWorkflowRouter.kind(
+                interaction: .chat,
+                filesScope: false,
+                preferMail: true,
+                webEnabled: true
+            ),
+            .mail
+        )
+    }
+
+    func testLocalPreviewKindDetectsPdfAndImages() {
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.pdf")), .pdf)
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.png")), .image)
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.jpg")), .image)
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.heic")), .image)
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.webp")), .image)
+        XCTAssertEqual(LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/a.txt")), .text)
+        let pdfMagic = Data([0x25, 0x50, 0x44, 0x46, 0x2D])
+        XCTAssertEqual(
+            LocalFileTypeDetector.kind(for: URL(fileURLWithPath: "/tmp/unknown.bin"), sniffing: pdfMagic),
+            .pdf
+        )
+    }
+
+    func testGmailMutationResultCases() {
+        XCTAssertEqual(MailMutationResult.success, .success)
+        if case .failure(let msg) = MailMutationResult.failure("boom") {
+            XCTAssertEqual(msg, "boom")
+        } else {
+            XCTFail("expected failure")
+        }
     }
 
     func testScrollFollowsBottomUnlessUserReleased() {

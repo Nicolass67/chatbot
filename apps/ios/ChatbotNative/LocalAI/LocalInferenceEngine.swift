@@ -225,9 +225,17 @@ actor LocalInferenceEngine {
     func generate(
         prompt: String,
         maxTokens: Int = 256,
+        images: [Data] = [],
+        mmprojPath: String? = nil,
         onToken: @escaping @Sendable (String) async -> Void
     ) async throws {
-        try await runGeneration(prompt: prompt, maxTokens: maxTokens, onToken: onToken)
+        try await runGeneration(
+            prompt: prompt,
+            maxTokens: maxTokens,
+            images: images,
+            mmprojPath: mmprojPath,
+            onToken: onToken
+        )
     }
 
     /// Nombre de tokens llama du prompt (nil si moteur non chargé).
@@ -244,6 +252,8 @@ actor LocalInferenceEngine {
     private func runGeneration(
         prompt: String,
         maxTokens: Int,
+        images: [Data] = [],
+        mmprojPath: String? = nil,
         onToken: @escaping @Sendable (String) async -> Void
     ) async throws {
 #if canImport(llama)
@@ -256,9 +266,20 @@ actor LocalInferenceEngine {
 
         let started = Date()
         let counter = GenerationCounter()
+        let bitmaps: [LocalVision.RGBBitmap] = images.prefix(LocalVision.maxImagesPerTurn).compactMap {
+            LocalVision.rgbBitmap(from: $0)
+        }
+        if !images.isEmpty && bitmaps.isEmpty {
+            throw LocalInferenceError.generatingFailed("Impossible de décoder l’image jointe.")
+        }
 
         do {
-            try await llama.generate(prompt: prompt, maxTokens: Int32(maxTokens)) { piece in
+            try await llama.generate(
+                prompt: prompt,
+                maxTokens: Int32(maxTokens),
+                images: bitmaps,
+                mmprojPath: mmprojPath
+            ) { piece in
                 if Task.isCancelled {
                     llama.stop()
                     return
@@ -345,14 +366,23 @@ actor LocalInferenceEngine {
 #else
         _ = prompt
         _ = maxTokens
+        _ = images
+        _ = mmprojPath
         _ = onToken
         throw LocalInferenceError.notAvailable
+#endif
+    }
+
+    func unloadVisionProjector() {
+#if canImport(llama)
+        llama?.unloadVision()
 #endif
     }
 
 #if canImport(llama)
     private func unloadInternal() async {
         llama?.clear()
+        llama?.unloadVision()
         llama = nil
         isLoaded = false
         loadedPath = nil

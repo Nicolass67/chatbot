@@ -24,9 +24,8 @@ struct LocalAISettingsView: View {
     @ObservedObject private var models = LocalModelManager.shared
     @ObservedObject private var execution = ExecutionModeStore.shared
 
-    @State private var showTestSheet = false
-    @State private var showBenchmarkSheet = false
     @State private var busyAction = false
+    @State private var showTestSheet = false
     @State private var pendingLoadWarning: LocalModelDescriptor?
     @State private var confirmLoadExperimental = false
 
@@ -47,7 +46,7 @@ struct LocalAISettingsView: View {
                     .tint(AppTheme.accent)
             }
             if case .loading = models.state {
-                ProgressView("Chargement du modèle en mémoire…")
+                ProgressView("Chargement…")
                     .tint(AppTheme.accent)
             }
             if case .unloading = models.state {
@@ -55,17 +54,14 @@ struct LocalAISettingsView: View {
                     .tint(AppTheme.accent)
             }
             if let err = models.lastError, !err.isEmpty {
-                Text(err)
+                Text(humanLocalAIError(err))
                     .font(CNFont.caption)
                     .foregroundStyle(AppTheme.danger)
             }
             installedModelsBlock
             availableModelsBlock
-            catalogHintsBlock
             HStack {
                 Button("Tester") { showTestSheet = true }
-                    .disabled(!models.isReady || mutationsDisabled)
-                Button("Benchmark") { showBenchmarkSheet = true }
                     .disabled(!models.isReady || mutationsDisabled)
             }
             .font(CNFont.callout.weight(.semibold))
@@ -73,15 +69,12 @@ struct LocalAISettingsView: View {
             Text("IA locale")
         } footer: {
             Text(
-                "Un seul modèle chargé à la fois. Le changement de modèle est toujours manuel. Un sideload IPA efface les GGUF du conteneur."
+                "Un seul modèle chargé à la fois. Qwen3.5 2B : installer la vision (mmproj) sans remplacer le GGUF texte. Un sideload IPA efface les GGUF du conteneur."
             )
         }
         .listRowBackground(AppTheme.surface)
         .sheet(isPresented: $showTestSheet) {
             LocalModelTestSheet()
-        }
-        .sheet(isPresented: $showBenchmarkSheet) {
-            LocalModelBenchmarkSheet()
         }
         .alert(
             "Modèle exigeant",
@@ -125,39 +118,38 @@ struct LocalAISettingsView: View {
 
     private var activeModelHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Modèle actif")
+            Text("Modèle local")
                 .font(CNFont.caption)
                 .foregroundStyle(AppTheme.muted)
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(models.activeDescriptor.displayName)
-                        .font(CNFont.body.weight(.semibold))
-                    Text("\(models.activeDescriptor.quant) · \(models.activeDescriptor.expectedSizeLabel) · \(models.activeDescriptor.estimatedRAMLabel)")
-                        .font(CNFont.caption)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                }
-                Spacer()
-                Text(models.isReady ? "Chargé" : models.state.statusLabel)
+            Text(models.activeDescriptor.displayName)
+                .font(CNFont.body.weight(.semibold))
+            Text("\(models.activeDescriptor.quant) · \(models.activeDescriptor.expectedSizeLabel)")
+                .font(CNFont.caption)
+                .foregroundStyle(AppTheme.mutedForeground)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(models.isReady ? AppTheme.accent : AppTheme.muted)
+                    .frame(width: 8, height: 8)
+                Text(models.isReady ? "Chargé" : humanStateLabel(models.state))
                     .font(CNFont.caption.weight(.semibold))
                     .foregroundStyle(models.isReady ? AppTheme.accent : AppTheme.muted)
             }
-            LabeledContent("Metal", value: models.isMetalAvailable ? "Disponible" : "Indisponible")
-            LabeledContent(
-                "Runtime llama",
-                value: LocalInferenceEngine.isLlamaRuntimeAvailable ? "Lié" : "Non lié (stub)"
-            )
-            InferenceDiagnosticsLine()
+            if models.activeDescriptor.recommended {
+                Text(models.activeDescriptor.userFacingBlurb)
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
+            }
         }
     }
 
     private var installedModelsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Installés")
+            Text("Modèles installés")
                 .font(CNFont.caption)
                 .foregroundStyle(AppTheme.muted)
             let installed = models.installedModels
             if installed.isEmpty {
-                Text("Aucun modèle installé — télécharge Qwen3 1.7B pour commencer.")
+                Text("Aucun modèle installé.")
                     .font(CNFont.caption)
                     .foregroundStyle(AppTheme.mutedForeground)
             } else {
@@ -170,30 +162,17 @@ struct LocalAISettingsView: View {
 
     private var availableModelsBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Disponibles au téléchargement")
+            Text("Disponibles")
                 .font(CNFont.caption)
                 .foregroundStyle(AppTheme.muted)
-            ForEach(LocalModelDescriptor.downloadable.filter { !models.isInstalled($0) }) { model in
-                modelRow(model, installed: false)
-            }
-        }
-    }
-
-    private var catalogHintsBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Catalogue (pas encore téléchargeable)")
-                .font(CNFont.caption)
-                .foregroundStyle(AppTheme.muted)
-            ForEach(LocalModelDescriptor.catalog.filter { !$0.isDownloadable }) { model in
-                HStack(alignment: .top) {
-                    compatibilityBadge(model.compatibilityIPhone14Plus)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.displayName)
-                            .font(CNFont.callout.weight(.medium))
-                        Text(model.compatibilityNote)
-                            .font(CNFont.caption2)
-                            .foregroundStyle(AppTheme.mutedForeground)
-                    }
+            let available = LocalModelDescriptor.downloadable.filter { !models.isInstalled($0) }
+            if available.isEmpty {
+                Text("Tous les modèles disponibles sont installés.")
+                    .font(CNFont.caption)
+                    .foregroundStyle(AppTheme.mutedForeground)
+            } else {
+                ForEach(available) { model in
+                    modelRow(model, installed: false)
                 }
             }
         }
@@ -203,24 +182,22 @@ struct LocalAISettingsView: View {
     private func modelRow(_ model: LocalModelDescriptor, installed: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
-                compatibilityBadge(model.compatibilityIPhone14Plus)
+                Text(models.activeModelId == model.id && models.isReady ? "✓" : "○")
+                    .font(CNFont.callout.weight(.semibold))
+                    .foregroundStyle(models.activeModelId == model.id && models.isReady ? AppTheme.accent : AppTheme.muted)
+                    .frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(model.displayName)
-                            .font(CNFont.callout.weight(.semibold))
-                        if models.activeModelId == model.id, models.isReady {
-                            Text("Chargé")
-                                .font(CNFont.caption2.weight(.bold))
-                                .foregroundStyle(AppTheme.accent)
-                        }
+                    Text(model.displayName)
+                        .font(CNFont.callout.weight(.semibold))
+                    Text(model.userFacingBlurb)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                    Text(model.expectedSizeLabel)
+                        .font(CNFont.caption2)
+                        .foregroundStyle(AppTheme.mutedForeground)
+                    if let mmproj = model.mmproj, installed {
+                        visionProjectorRow(model, mmproj: mmproj)
                     }
-                    Text("\(model.quant) · \(model.expectedSizeLabel) · \(model.estimatedRAMLabel)")
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                    Text(model.compatibilityNote)
-                        .font(CNFont.caption2)
-                        .foregroundStyle(AppTheme.mutedForeground)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
@@ -285,16 +262,84 @@ struct LocalAISettingsView: View {
         .padding(.vertical, 4)
     }
 
-    private func compatibilityBadge(_ level: LocalModelCompatibility) -> some View {
-        Image(systemName: level.symbolName)
-            .foregroundStyle({
-                switch level {
-                case .recommended: return AppTheme.accent
-                case .experimental: return Color.orange
-                case .notRecommended: return AppTheme.danger
+    @ViewBuilder
+    private func visionProjectorRow(_ model: LocalModelDescriptor, mmproj: LocalMmprojDescriptor) -> some View {
+        let installedVision = models.isVisionProjectorInstalled(model)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Vision (mmproj \(mmproj.quant) · \(mmproj.expectedSizeLabel))")
+                .font(CNFont.caption.weight(.semibold))
+            Text(mmproj.compatibilityNote)
+                .font(CNFont.caption2)
+                .foregroundStyle(AppTheme.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+            if models.visionProjectorBusy, models.activeModelId == model.id {
+                ProgressView(value: models.visionProjectorProgress)
+                    .tint(AppTheme.accent)
+            }
+            HStack(spacing: AppTheme.space8) {
+                if installedVision {
+                    Text("Installé")
+                        .font(CNFont.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                    Button {
+                        guard beginUIAction() else { return }
+                        Task {
+                            defer { busyAction = false }
+                            await models.deleteVisionProjector(for: model)
+                        }
+                    } label: {
+                        localAIActionLabel("Retirer vision")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(AppTheme.danger)
+                    .disabled(mutationsDisabled || models.visionProjectorBusy)
+                } else {
+                    Button {
+                        guard beginUIAction() else { return }
+                        Task {
+                            defer { busyAction = false }
+                            await models.installVisionProjector(for: model)
+                        }
+                    } label: {
+                        localAIActionLabel("Installer vision")
+                    }
+                    .buttonStyle(.borderless)
+                    .tint(AppTheme.accent)
+                    .disabled(mutationsDisabled || models.visionProjectorBusy)
                 }
-            }())
-            .accessibilityLabel(level.label)
+            }
+        }
+    }
+
+    private func humanStateLabel(_ state: LocalModelInstallState) -> String {
+        switch state {
+        case .ready: return "Chargé"
+        case .downloading: return "Téléchargement…"
+        case .verifying: return "Vérification…"
+        case .loading: return "Chargement…"
+        case .unloading: return "Déchargement…"
+        case .generating: return "Génération…"
+        case .installed: return "Installé"
+        case .notInstalled: return "Non chargé"
+        case .failed: return "Erreur"
+        }
+    }
+
+    private func humanLocalAIError(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("disk") || lower.contains("espace") {
+            return "Espace disque insuffisant pour ce modèle."
+        }
+        if lower.contains("network") || lower.contains("offline") || lower.contains("internet") {
+            return "Téléchargement impossible (réseau)."
+        }
+        if lower.contains("memory") || lower.contains("jetsam") || lower.contains("oom") {
+            return "Mémoire insuffisante pour charger ce modèle."
+        }
+        if raw.count > 140 {
+            return "Le modèle n’a pas pu être chargé. Réessaie."
+        }
+        return raw
     }
 
     private func requestLoad(_ model: LocalModelDescriptor) {
@@ -381,6 +426,14 @@ private struct LocalModelTestSheet: View {
                     }
                     .disabled(!models.isReady || running)
                 }
+                if models.isVisionProjectorInstalled {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Vision") {
+                            Task { await runVisionTest() }
+                        }
+                        .disabled(!models.isReady || running)
+                    }
+                }
             }
         }
     }
@@ -398,6 +451,33 @@ private struct LocalModelTestSheet: View {
         output = ChatMLPromptBuilder.stripControlTokens(result.outputPreview)
         if !result.success {
             errorText = result.errorMessage
+        }
+    }
+
+    private func runVisionTest() async {
+        running = true
+        errorText = nil
+        output = ""
+        defer { running = false }
+        guard let jpeg = LocalVision.solidColorJPEG(red: 0.86, green: 0.12, blue: 0.12) else {
+            errorText = "Impossible de créer l’image de test."
+            return
+        }
+        do {
+            let text = try await LocalAIRuntime.shared.generateStream(
+                system: "Tu es un assistant visuel. Réponds en une phrase.",
+                messages: [
+                    LLMChatMessage(role: .user, content: "Quelle couleur domine cette image ?"),
+                ],
+                maxTokens: 64,
+                images: [jpeg],
+                onToken: { token in
+                    output += token
+                }
+            )
+            output = ChatMLPromptBuilder.stripControlTokens(text)
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 }
@@ -478,21 +558,3 @@ private struct LocalModelBenchmarkSheet: View {
     }
 }
 
-/// Affiche le dernier snapshot de load (Metal réel vs demandé).
-private struct InferenceDiagnosticsLine: View {
-    @State private var line: String = "—"
-
-    var body: some View {
-        Text(line)
-            .font(CNFont.caption2)
-            .foregroundStyle(AppTheme.mutedForeground)
-            .task {
-                if let diag = await LocalInferenceEngine.shared.lastLoadDiagnostics {
-                    line = diag.summaryLine
-                } else {
-                    let infer = LocalModelManager.shared.activeDescriptor.executionProfile.inference
-                    line = "Pas encore chargé — config prévue: metal=\(infer.preferMetal) ngl=\(infer.nGpuLayers) ctx=\(infer.nCtx) batch=\(infer.nBatch)/\(infer.nUbatch)"
-                }
-            }
-    }
-}

@@ -37,10 +37,19 @@ struct UploadedAttachment: Identifiable, Hashable {
     let mimeType: String
     let sizeBytes: Int
     var previewData: Data?
+    /// JPEG compressé conservé pour la vision on-device (pas d’upload PC).
+    var fileData: Data? = nil
     var isUploading: Bool = false
     var error: String? = nil
     /// Origine Files → Mail : conserve la source pour réhydrater après « Nouveau chat ».
     var sourceFileId: String? = nil
+    /// Pièce jointe restée sur l’iPhone (pas d’upload PC).
+    var localFileURL: URL? = nil
+    var localData: Data? = nil
+
+    var isLocalOnly: Bool {
+        id.hasPrefix("local-") || localFileURL != nil || localData != nil || fileData != nil
+    }
 
     var isImage: Bool {
         mimeType.hasPrefix("image/") || typeHint == "image"
@@ -119,19 +128,62 @@ struct SearchSourceDTO: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct MailHandoffDTO: Hashable {
-    let intent: String?
-    let reason: String?
-    let query: String?
-    let threadId: String?
-    let label: String?
+struct MailHandoffDTO: Hashable, Codable, Sendable {
+    var intent: String?
+    var reason: String?
+    var query: String?
+    var threadId: String?
+    var messageId: String?
+    var mailboxId: String?
+    var label: String?
+    var subject: String?
+    var sender: String?
+    var date: String?
+
+    init(
+        intent: String? = nil,
+        reason: String? = nil,
+        query: String? = nil,
+        threadId: String? = nil,
+        messageId: String? = nil,
+        mailboxId: String? = nil,
+        label: String? = nil,
+        subject: String? = nil,
+        sender: String? = nil,
+        date: String? = nil
+    ) {
+        self.intent = intent
+        self.reason = reason
+        self.query = query
+        self.threadId = threadId
+        self.messageId = messageId
+        self.mailboxId = mailboxId
+        self.label = label
+        self.subject = subject
+        self.sender = sender
+        self.date = date
+    }
+
+    var bannerTitle: String {
+        let value = subject?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "Ouvrir le mail" : value
+    }
+
+    var bannerSubtitle: String {
+        let parts = [sender, date]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !parts.isEmpty { return parts.joined(separator: " · ") }
+        let fallback = (reason ?? query)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return fallback.isEmpty ? "Ouvrir ce message" : fallback
+    }
 }
 
-struct FilesHandoffDTO: Hashable {
-    let intent: String?
-    let reason: String?
-    let query: String?
-    let rootId: String?
+struct FilesHandoffDTO: Hashable, Codable, Sendable {
+    var intent: String?
+    var reason: String?
+    var query: String?
+    var rootId: String?
 }
 
 enum APIClientError: LocalizedError {

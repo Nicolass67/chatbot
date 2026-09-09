@@ -176,6 +176,8 @@ final class LlamaContext: @unchecked Sendable {
     private var temporary_invalid_cchars: [CChar]
     private var cancelRequested = false
     private let inferenceConfig: LlamaInferenceConfig
+    /// Projecteur vision — chargé à la demande, jamais à la place du GGUF texte.
+    private var mtmdCtx: OpaquePointer?
 
     /// Dernier diagnostic de load (protégé par `diagLock`).
     private static let diagLock = NSLock()
@@ -212,6 +214,9 @@ final class LlamaContext: @unchecked Sendable {
     }
 
     deinit {
+        if let mtmdCtx {
+            mtmd_free(mtmdCtx)
+        }
         llama_sampler_free(sampling)
         llama_batch_free(batch)
         llama_free(context)
@@ -283,6 +288,8 @@ final class LlamaContext: @unchecked Sendable {
         let loadStarted = Date()
         ggml_backend_load_all()
         llama_backend_init()
+        let llamaVer = String(cString: llama_version())
+        print("[local-ai:llama] version=\(llamaVer)")
         let probe = probeBackends()
         print("[local-ai:backends] \(probe.deviceSummaries.joined(separator: ", "))")
 
@@ -760,10 +767,172 @@ final class LlamaContext: @unchecked Sendable {
     func generate(
         prompt: String,
         maxTokens: Int32,
+        images: [LocalVision.RGBBitmap] = [],
+        mmprojPath: String? = nil,
         onToken: @Sendable (String) async -> Void
     ) async throws {
         // Prompt ChatML/Gemma déjà complet → pas de BOS supplémentaire (sinon EOS immédiat fréquent).
-        try await generateOnce(prompt: prompt, maxTokens: maxTokens, addBos: false, onToken: onToken)
+        if images.isEmpty {
+            try await generateOnce(prompt: prompt, maxTokens: maxTokens, addBos: false, onToken: onToken)
+            return
+        }
+        guard let mmprojPath, !mmprojPath.isEmpty else {
+            throw LlamaError.couldNotInitializeContext(
+                "mmproj absent — le GGUF texte Qwen3.5 2B n’embarque pas le projecteur vision."
+            )
+        }
+        try await generateWithVision(
+            prompt: prompt,
+            images: images,
+            mmprojPath: mmprojPath,
+            maxTokens: maxTokens,
+            addBos: false,
+            onToken: onToken
+        )
+    }
+
+    func unloadVision() {
+        if let mtmdCtx {
+            mtmd_free(mtmdCtx)
+            self.mtmdCtx = nil
+        }
+    }
+
+    private func ensureVision(mmprojPath: String) throws {
+        if mtmdCtx != nil { return }
+        LlamaLogCapture.shared.clear()
+        llamaInstallLogCapture()
+        var params = mtmd_context_params_default()
+        params.use_gpu = inferenceConfig.preferMetal
+        params.warmup = false
+        params.print_timings = true
+        params.n_threads = LlamaInferenceConfig.resolvedThreads(explicit: inferenceConfig.nThreads)
+        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
+        params.image_min_tokens = LocalVision.imageMinTokens
+        params.image_max_tokens = LocalVision.imageMaxTokens
+        let loaded = mmprojPath.withCString { cPath in
+            mtmd_init_from_file(cPath, model, params)
+        }
+        guard let loaded else {
+            throw LlamaError.couldNotInitializeContext(
+                "chargement mmproj impossible.\(LlamaLogCapture.shared.summary)"
+            )
+        }
+        if !mtmd_support_vision(loaded) {
+            mtmd_free(loaded)
+            throw LlamaError.couldNotInitializeContext("ce mmproj ne déclare pas de vision")
+        }
+        mtmdCtx = loaded
+        print("[local-ai:vision] mmproj loaded path=\(mmprojPath)")
+    }
+
+    private func generateWithVision(
+        prompt: String,
+        images: [LocalVision.RGBBitmap],
+        mmprojPath: String,
+        maxTokens: Int32,
+        addBos: Bool,
+        onToken: @Sendable (String) async -> Void
+    ) async throws {
+        try ensureVision(mmprojPath: mmprojPath)
+        guard let mctx = mtmdCtx else {
+            throw LlamaError.couldNotInitializeContext("context mtmd nil")
+        }
+
+        cancelRequested = false
+        is_done = false
+        temporary_invalid_cchars = []
+        n_decode = 0
+        llama_memory_clear(llama_get_memory(context), true)
+        llama_sampler_reset(sampling)
+
+        var bitmaps: [OpaquePointer] = []
+        defer {
+            for bitmap in bitmaps { mtmd_bitmap_free(bitmap) }
+        }
+        for image in images.prefix(LocalVision.maxImagesPerTurn) {
+            let bmp: OpaquePointer? = image.rgb.withUnsafeBytes { raw in
+                guard let pixels = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+                return mtmd_bitmap_init(UInt32(image.width), UInt32(image.height), pixels)
+            }
+            guard let bmp else {
+                throw LlamaError.couldNotInitializeContext("bitmap RGB impossible")
+            }
+            bitmaps.append(bmp)
+        }
+        guard !bitmaps.isEmpty else {
+            throw LlamaError.couldNotInitializeContext("aucune image décodable")
+        }
+
+        guard let chunks = mtmd_input_chunks_init() else {
+            throw LlamaError.couldNotInitializeContext("mtmd_input_chunks_init")
+        }
+        defer { mtmd_input_chunks_free(chunks) }
+
+        let tokenRc: Int32 = prompt.withCString { cPrompt in
+            var textIn = mtmd_input_text(
+                text: cPrompt,
+                text_len: strlen(cPrompt),
+                add_special: addBos,
+                parse_special: true
+            )
+            var ptrs = bitmaps
+            return ptrs.withUnsafeBufferPointer { buf in
+                mtmd_tokenize(
+                    mctx,
+                    chunks,
+                    &textIn,
+                    buf.baseAddress,
+                    buf.count
+                )
+            }
+        }
+        if tokenRc != 0 {
+            throw LlamaError.couldNotInitializeContext("mtmd_tokenize rc=\(tokenRc)")
+        }
+
+        let nTokens = Int(mtmd_helper_get_n_tokens(chunks))
+        let nCtx = Int(llama_n_ctx(context))
+        if nTokens >= nCtx {
+            throw LlamaError.promptExceedsContext(promptTokens: nTokens, nCtx: nCtx)
+        }
+        let maxGen = min(Int(max(1, maxTokens)), max(1, nCtx - nTokens - 1))
+        n_len = Int32(nTokens + maxGen)
+        promptTokenCount = nTokens
+
+        let promptStarted = Date()
+        var nPast: llama_pos = 0
+        let evalRc = mtmd_helper_eval_chunks(
+            mctx,
+            context,
+            chunks,
+            0,
+            0,
+            Int32(inferenceConfig.nBatch),
+            true,
+            &nPast
+        )
+        lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
+        if evalRc != 0 {
+            throw LlamaError.couldNotInitializeContext("mtmd_helper_eval_chunks rc=\(evalRc)")
+        }
+        n_cur = nPast
+        print(
+            "[local-ai:vision] n_tokens=\(nTokens) n_past=\(nPast) encode=\(Int(lastPromptEvalSeconds * 1000))ms"
+        )
+
+        var generatedPieces = 0
+        while !is_done {
+            if cancelRequested { throw LlamaError.cancelled }
+            let piece = try completion_loop()
+            if !piece.isEmpty {
+                generatedPieces += 1
+                await onToken(piece)
+            }
+        }
+        if generatedPieces == 0 {
+            throw LlamaError.couldNotInitializeContext("génération vision vide")
+        }
     }
 
     private func generateOnce(
