@@ -316,10 +316,19 @@ final class LocalModelManager: ObservableObject {
         let size = (try? fileManager.attributesOfItem(atPath: modelFileURL.path)[.size] as? Int64) ?? 0
         guard validateSize(size, expected: model.expectedBytes) else {
             try? fileManager.removeItem(at: modelFileURL)
+            let actualMB = Double(size) / 1_048_576.0
+            let expectedMB = Double(model.expectedBytes) / 1_048_576.0
             throw NSError(
                 domain: "LocalModelManager",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Taille du modèle hors tolérance (±5 %)."]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        String(
+                            format: "Taille du modèle hors tolérance (±5 %%): %.0f Mo reçus, %.0f Mo attendus.",
+                            actualMB,
+                            expectedMB
+                        )
+                ]
             )
         }
         installedBytes = size
@@ -388,6 +397,17 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
         do {
             let fm = FileManager.default
             let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 200
+            guard (200...299).contains(status) else {
+                try? fm.removeItem(at: location)
+                throw NSError(
+                    domain: "LocalModelManager",
+                    code: status,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Téléchargement du modèle refusé (HTTP \(status)). Vérifiez l’URL Hugging Face."
+                    ]
+                )
+            }
             // 206 = reprise Range ; 200 = fichier complet (ignorer le partiel existant).
             let shouldAppend = existingBytes > 0 && status == 206 && fm.fileExists(atPath: partialURL.path)
 

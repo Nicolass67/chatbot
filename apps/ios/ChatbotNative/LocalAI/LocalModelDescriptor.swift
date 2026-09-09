@@ -32,11 +32,12 @@ struct LocalModelDescriptor: Identifiable, Hashable, Sendable {
             id: "qwen3-1.7b-q4_k_m",
             displayName: "Qwen3 1.7B",
             quant: "Q4_K_M",
-            expectedBytes: 1_374_389_535, // ~1.28 Go
+            // Taille LFS exacte (second-state). Le dépôt officiel Qwen ne publie plus que Q8_0.
+            expectedBytes: 1_282_439_264, // ~1.19 Gio / ~1.28 Go
             filename: "Qwen3-1.7B-Q4_K_M.gguf",
-            downloadURL: URL(string: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf"),
+            downloadURL: URL(string: "https://huggingface.co/second-state/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf"),
             sha256: nil,
-            version: "1.0"
+            version: "1.1"
         ),
         LocalModelDescriptor(
             id: "gemma2-2b",

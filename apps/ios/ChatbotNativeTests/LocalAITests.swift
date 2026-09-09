@@ -9,8 +9,8 @@ final class LocalModelDescriptorTests: XCTestCase {
         XCTAssertTrue(m.isDownloadable)
         XCTAssertNotNil(m.downloadURL)
         XCTAssertTrue(m.downloadURL!.absoluteString.contains("Qwen3-1.7B-Q4_K_M.gguf"))
-        XCTAssertGreaterThan(m.expectedBytes, 1_000_000_000)
-        XCTAssertLessThan(m.expectedBytes, 1_600_000_000)
+        XCTAssertTrue(m.downloadURL!.absoluteString.contains("second-state"))
+        XCTAssertEqual(m.expectedBytes, 1_282_439_264)
     }
 
     func testFutureModelsNotDownloadableYet() {

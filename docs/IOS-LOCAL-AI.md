@@ -13,7 +13,7 @@ Runtime LLM **séparé** du pipeline PC / LM Studio. Aucune bascule automatique 
 
 ## Modèle
 
-- **Qwen3 1.7B Q4_K_M** (~1,28 Go) — Hugging Face `Qwen/Qwen3-1.7B-GGUF`
+- **Qwen3 1.7B Q4_K_M** (~1,28 Go) — Hugging Face `second-state/Qwen3-1.7B-GGUF` (le dépôt officiel `Qwen/Qwen3-1.7B-GGUF` ne publie plus que Q8_0)
 - Stockage : Application Support `/Models/Qwen3-1.7B-Q4_K_M.gguf`
 - Jamais dans Git ni dans l’IPA par défaut
 - Installation : Réglages → **IA locale** → Installer
