@@ -15,6 +15,8 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
     var stopSequences: [String]
     /// Suffixe optionnel pour désactiver le « thinking » (ex. Qwen3 `/no_think`).
     var disableThinkingSuffix: String?
+    /// Texte déjà « généré » après le header assistant (Qwen3 : think vide).
+    var assistantGenerationPrefill: String
     var defaultContextLength: Int
     var defaultMaxOutputTokens: Int
     var defaultTemperature: Double
@@ -34,6 +36,7 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
             "<|endoftext|>",
         ],
         disableThinkingSuffix: " /no_think",
+        assistantGenerationPrefill: "<think>\n\n</think>\n\n",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7
@@ -54,6 +57,7 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
             "<start_of_turn>",
         ],
         disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7
@@ -64,6 +68,7 @@ struct LocalModelRuntimeProfile: Equatable, Hashable, Sendable {
         controlTokens: ["<|im_start|>", "<|im_end|>", "<|endoftext|>"],
         stopSequences: ["<|im_end|>", "<|im_start|>", "\nUser:", "\nAssistant:"],
         disableThinkingSuffix: nil,
+        assistantGenerationPrefill: "",
         defaultContextLength: 2048,
         defaultMaxOutputTokens: 512,
         defaultTemperature: 0.7
@@ -134,7 +139,7 @@ enum LocalChatTemplate {
         for message in selected {
             blocks.append("\(imStart)\(message.role.rawValue)\n\(message.content)\n\(imEnd)")
         }
-        blocks.append("\(imStart)assistant\n")
+        blocks.append("\(imStart)assistant\n\(profile.assistantGenerationPrefill)")
         return blocks.joined(separator: "\n")
     }
 

@@ -55,7 +55,8 @@ final class LocalLLMProviderPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("SYS"))
         XCTAssertTrue(prompt.contains("<|im_end|>"))
         XCTAssertTrue(prompt.contains("<|im_start|>user\nTest"))
-        XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
+        XCTAssertTrue(prompt.contains("<|im_start|>assistant\n"))
+        XCTAssertTrue(prompt.hasSuffix("<think>\n\n</think>\n\n"))
         XCTAssertFalse(prompt.hasPrefix("System:"))
         // /no_think injecté pour Qwen3 non-thinking mobile
         XCTAssertTrue(prompt.contains("/no_think"))
@@ -73,7 +74,8 @@ final class LocalLLMProviderPromptTests: XCTestCase {
             charBudget: 800
         )
         XCTAssertTrue(prompt.contains("<|im_start|>system"))
-        XCTAssertTrue(prompt.hasSuffix("<|im_start|>assistant\n"))
+        XCTAssertTrue(prompt.contains("<|im_start|>assistant\n"))
+        XCTAssertTrue(prompt.hasSuffix("<think>\n\n</think>\n\n"))
         XCTAssertLessThan(prompt.count, 2500)
         XCTAssertTrue(prompt.contains("u19") || prompt.contains("a19"))
     }

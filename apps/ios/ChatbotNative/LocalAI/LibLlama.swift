@@ -203,7 +203,6 @@ final class LlamaContext: @unchecked Sendable {
         let sparams = llama_sampler_chain_default_params()
         self.sampling = llama_sampler_chain_init(sparams)
         llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(config.temperature))
-        // top-p si disponible dans la chaîne (meilleure qualité sans coût mesurable).
         llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(config.topP, 1))
         llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
         vocab = llama_model_get_vocab(model)
@@ -669,7 +668,7 @@ final class LlamaContext: @unchecked Sendable {
         cancelRequested = false
         is_done = false
         let promptStarted = Date()
-        tokens_list = tokenize(text: text, add_bos: true)
+        tokens_list = tokenize(text: text, add_bos: false)
         temporary_invalid_cchars = []
         promptTokenCount = tokens_list.count
 
@@ -706,8 +705,9 @@ final class LlamaContext: @unchecked Sendable {
             throw LlamaError.cancelled
         }
 
-        var new_token_id: llama_token = 0
-        new_token_id = llama_sampler_sample(sampling, context, batch.n_tokens - 1)
+        // -1 = dernier logit produit (n_outputs), PAS batch.n_tokens-1 :
+        // après un prefill de N tokens, un seul a logits=true → idx N-1 est hors bornes → EOS.
+        let new_token_id = llama_sampler_sample(sampling, context, -1)
 
         // EOG / EOS : ne jamais décoder le token de contrôle en texte utilisateur.
         if llama_vocab_is_eog(vocab, new_token_id) || n_cur == n_len {
@@ -776,6 +776,7 @@ final class LlamaContext: @unchecked Sendable {
 
         // Critique : vider le KV entre tours — sinon positions 0..n écrasent un cache sale → EOS / vide.
         llama_memory_clear(llama_get_memory(context), true)
+        llama_sampler_reset(sampling)
 
         let promptTokens = tokenize(text: prompt, add_bos: addBos)
         guard !promptTokens.isEmpty else {
@@ -807,11 +808,18 @@ final class LlamaContext: @unchecked Sendable {
         lastPromptEvalSeconds = Date().timeIntervalSince(promptStarted)
 
         var generatedPieces = 0
+        var sampledTokens = 0
         while !is_done {
             if cancelRequested {
                 throw LlamaError.cancelled
             }
             let piece = try completion_loop()
+            sampledTokens += 1
+            if sampledTokens == 1 {
+                print(
+                    "[local-ai:gen] promptTok=\(promptTokens.count) firstPiece=\(piece.prefix(40).debugDescription) empty=\(piece.isEmpty)"
+                )
+            }
             if !piece.isEmpty {
                 generatedPieces += 1
                 await onToken(piece)
@@ -826,6 +834,7 @@ final class LlamaContext: @unchecked Sendable {
             temporary_invalid_cchars = []
             n_decode = 0
             llama_memory_clear(llama_get_memory(context), true)
+            llama_sampler_reset(sampling)
             let retryTokens = tokenize(text: prompt, add_bos: !addBos)
             guard !retryTokens.isEmpty else {
                 throw LlamaError.couldNotInitializeContext("génération vide (EOG immédiat)")
@@ -870,18 +879,23 @@ final class LlamaContext: @unchecked Sendable {
 
     private func tokenize(text: String, add_bos: Bool) -> [llama_token] {
         let utf8Count = text.utf8.count
-        let n_tokens = utf8Count + (add_bos ? 1 : 0) + 1
-        let tokens = UnsafeMutablePointer<llama_token>.allocate(capacity: n_tokens)
-        defer { tokens.deallocate() }
-        let tokenCount = llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, false)
-
-        var swiftTokens: [llama_token] = []
-        if tokenCount > 0 {
-            for i in 0..<tokenCount {
-                swiftTokens.append(tokens[Int(i)])
+        // parse_special=true : <|im_start|> / <think> deviennent des tokens spéciaux, pas du texte brut.
+        return text.utf8CString.withUnsafeBufferPointer { buffer -> [llama_token] in
+            guard let base = buffer.baseAddress else { return [] }
+            let cText = UnsafePointer<CChar>(base)
+            var cap = utf8Count + (add_bos ? 1 : 0) + 16
+            var tokens = UnsafeMutablePointer<llama_token>.allocate(capacity: cap)
+            var count = llama_tokenize(vocab, cText, Int32(utf8Count), tokens, Int32(cap), add_bos, true)
+            if count < 0 {
+                tokens.deallocate()
+                cap = Int(-count)
+                tokens = UnsafeMutablePointer<llama_token>.allocate(capacity: cap)
+                count = llama_tokenize(vocab, cText, Int32(utf8Count), tokens, Int32(cap), add_bos, true)
             }
+            defer { tokens.deallocate() }
+            guard count > 0 else { return [] }
+            return Array(UnsafeBufferPointer(start: tokens, count: Int(count)))
         }
-        return swiftTokens
     }
 
     /// - note: Le résultat ne contient pas de null-terminator.
@@ -889,13 +903,13 @@ final class LlamaContext: @unchecked Sendable {
         let result = UnsafeMutablePointer<Int8>.allocate(capacity: 8)
         result.initialize(repeating: Int8(0), count: 8)
         defer { result.deallocate() }
-        let nTokens = llama_token_to_piece(vocab, token, result, 8, 0, false)
+        let nTokens = llama_token_to_piece(vocab, token, result, 8, 0, true)
 
         if nTokens < 0 {
             let newResult = UnsafeMutablePointer<Int8>.allocate(capacity: Int(-nTokens))
             newResult.initialize(repeating: Int8(0), count: Int(-nTokens))
             defer { newResult.deallocate() }
-            let nNewTokens = llama_token_to_piece(vocab, token, newResult, -nTokens, 0, false)
+            let nNewTokens = llama_token_to_piece(vocab, token, newResult, -nTokens, 0, true)
             let bufferPointer = UnsafeBufferPointer(start: newResult, count: Int(nNewTokens))
             return Array(bufferPointer)
         } else {
