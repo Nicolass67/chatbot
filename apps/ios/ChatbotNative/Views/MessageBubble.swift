@@ -36,12 +36,25 @@ struct MessageBubble: View {
         isLiveStreaming || message.id == "streaming" || message.id.hasPrefix("streaming")
     }
 
-    private var hasUserText: Bool {
-        !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     private var userAttachments: [MessageAttachmentDTO] {
         message.attachments ?? []
+    }
+
+    private var visibleUserText: String? {
+        ChatAttachmentPresentation.visibleUserText(
+            message.content,
+            hasAttachments: !userAttachments.isEmpty
+        )
+    }
+
+    private var userBubbleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: AppTheme.radiusXl,
+            bottomLeadingRadius: AppTheme.radiusXl,
+            bottomTrailingRadius: AppTheme.radiusSm,
+            topTrailingRadius: AppTheme.radiusXl,
+            style: .continuous
+        )
     }
 
     var body: some View {
@@ -57,36 +70,25 @@ struct MessageBubble: View {
             }
 
             if isUser {
-                HStack(alignment: .top, spacing: 0) {
-                    Spacer(minLength: 48)
-                    VStack(alignment: .trailing, spacing: AppTheme.space8) {
-                        if hasUserText {
-                            userContent
-                        }
-                        if !userAttachments.isEmpty {
-                            AttachmentStrip(
-                                attachments: userAttachments,
-                                token: token,
-                                baseURL: baseURL,
-                                alignment: .trailing,
-                                onOpen: onOpenImage,
-                                onOpenDocument: onOpenDocument
-                            )
-                        }
+                if visibleUserText != nil || !userAttachments.isEmpty {
+                    HStack(alignment: .top, spacing: 0) {
+                        Spacer(minLength: 48)
+                        userBubble
+                            .frame(maxWidth: 320, alignment: .trailing)
                     }
-                    .frame(maxWidth: 320, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 assistantCanvas
 
                 if let attachments = message.attachments, !attachments.isEmpty {
-                    AttachmentStrip(
+                    ChatMessageAttachmentsView(
                         attachments: attachments,
                         token: token,
                         baseURL: baseURL,
                         alignment: .leading,
-                        onOpen: onOpenImage,
+                        embeddedInBubble: false,
+                        onOpenImage: onOpenImage,
                         onOpenDocument: onOpenDocument
                     )
                 }
@@ -125,41 +127,48 @@ struct MessageBubble: View {
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 
-    private var userContent: some View {
-        Text(message.content)
-            .font(.body)
-            .foregroundStyle(AppTheme.foreground)
-            .textSelection(.enabled)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(AppTheme.userMessage)
-            .clipShape(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: AppTheme.radiusXl,
-                    bottomLeadingRadius: AppTheme.radiusXl,
-                    bottomTrailingRadius: AppTheme.radiusSm,
-                    topTrailingRadius: AppTheme.radiusXl,
-                    style: .continuous
+    private var userBubble: some View {
+        let text = visibleUserText
+        let hasAttachments = !userAttachments.isEmpty
+        return VStack(alignment: .leading, spacing: AppTheme.space8) {
+            if let text {
+                Text(text)
+                    .font(.body)
+                    .foregroundStyle(AppTheme.foreground)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 11)
+                    .padding(.bottom, hasAttachments ? 0 : 11)
+            }
+            if hasAttachments {
+                ChatMessageAttachmentsView(
+                    attachments: userAttachments,
+                    token: token,
+                    baseURL: baseURL,
+                    alignment: .leading,
+                    embeddedInBubble: true,
+                    onOpenImage: onOpenImage,
+                    onOpenDocument: onOpenDocument
                 )
-            )
-            .overlay(
-                UnevenRoundedRectangle(
-                    topLeadingRadius: AppTheme.radiusXl,
-                    bottomLeadingRadius: AppTheme.radiusXl,
-                    bottomTrailingRadius: AppTheme.radiusSm,
-                    topTrailingRadius: AppTheme.radiusXl,
-                    style: .continuous
-                )
+                .padding(.horizontal, 14)
+                .padding(.top, text == nil ? 12 : 0)
+                .padding(.bottom, 12)
+            }
+        }
+        .background(AppTheme.userMessage)
+        .clipShape(userBubbleShape)
+        .overlay(
+            userBubbleShape
                 .stroke(
                     isEditing ? AppTheme.accent.opacity(0.55) : Color.clear,
                     lineWidth: isEditing ? 1 : 0
                 )
-            )
-            .contextMenu {
-                Button("Copier", systemImage: "doc.on.doc", action: onCopy)
-                Button("Modifier", systemImage: "pencil", action: onEdit)
-            }
-            .accessibilityHint("Appui long pour copier ou modifier")
+        )
+        .contextMenu {
+            Button("Copier", systemImage: "doc.on.doc", action: onCopy)
+            Button("Modifier", systemImage: "pencil", action: onEdit)
+        }
+        .accessibilityHint("Appui long pour copier ou modifier")
     }
 
     /// Canvas lecture assistant — pas de bulle web, actions uniquement via context menu.
@@ -604,154 +613,3 @@ struct SourcesSheet: View {
     }
 }
 
-struct AttachmentStrip: View {
-    let attachments: [MessageAttachmentDTO]
-    let token: String?
-    let baseURL: URL
-    var alignment: HorizontalAlignment = .leading
-    let onOpen: (LightboxItem) -> Void
-    var onOpenDocument: ((URL, String) -> Void)? = nil
-
-    var body: some View {
-        let cards = HStack(spacing: AppTheme.space12) {
-            ForEach(attachments) { att in
-                RemoteAttachmentCard(
-                    attachment: att,
-                    token: token,
-                    baseURL: baseURL,
-                    onOpen: onOpen,
-                    onOpenDocument: onOpenDocument
-                )
-            }
-        }
-
-        Group {
-            if attachments.count <= 2 {
-                cards
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    cards
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
-    }
-}
-
-struct RemoteAttachmentCard: View {
-    let attachment: MessageAttachmentDTO
-    let token: String?
-    let baseURL: URL
-    let onOpen: (LightboxItem) -> Void
-    var onOpenDocument: ((URL, String) -> Void)? = nil
-
-    @State private var image: UIImage?
-    @State private var loading = true
-    @State private var failed = false
-    @State private var openingDoc = false
-
-    private var isImage: Bool {
-        (attachment.mimeType ?? "").hasPrefix("image/") || attachment.type == "image"
-    }
-
-    private var sizeLabel: String {
-        guard let bytes = attachment.sizeBytes else { return isImage ? "Image" : "Document" }
-        let kind = isImage ? "Image" : "Document"
-        return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
-    }
-
-    var body: some View {
-        Button {
-            if isImage, let image {
-                onOpen(LightboxItem(id: attachment.id, image: image, filename: attachment.filename))
-            } else if !isImage {
-                Task { await openDocument() }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
-                        .fill(AppTheme.surfaceHover.opacity(0.7))
-                        .frame(height: 72)
-
-                    if let image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 72)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-                    } else if (loading && isImage) || openingDoc {
-                        ProgressView().tint(AppTheme.secondary)
-                    } else {
-                        Image(systemName: failed ? "exclamationmark.triangle" : (isImage ? "photo" : "doc.fill"))
-                            .font(.title3)
-                            .foregroundStyle(AppTheme.secondary.opacity(0.85))
-                    }
-                }
-
-                Text(attachment.filename ?? "Fichier")
-                    .font(CNFont.caption2.weight(.medium))
-                    .foregroundStyle(AppTheme.foreground)
-                    .lineLimit(1)
-                Text(sizeLabel)
-                    .font(.system(size: 10))
-                    .foregroundStyle(AppTheme.muted)
-                    .lineLimit(1)
-            }
-            .padding(8)
-            .frame(width: 124, alignment: .leading)
-            .background(AppTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                    .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(isImage && image == nil)
-        .accessibilityLabel(attachment.filename ?? (isImage ? "Image" : "Document"))
-        .task(id: attachment.id) {
-            await load()
-        }
-    }
-
-    private func load() async {
-        guard isImage else {
-            loading = false
-            return
-        }
-        loading = true
-        failed = false
-        let client = APIClient(baseURL: baseURL, token: token)
-        do {
-            let img = try await client.loadAttachmentImage(id: attachment.id, maxPixelSize: 360)
-            await MainActor.run {
-                image = img
-                loading = false
-            }
-        } catch {
-            await MainActor.run {
-                failed = true
-                loading = false
-            }
-        }
-    }
-
-    private func openDocument() async {
-        openingDoc = true
-        defer { openingDoc = false }
-        do {
-            let url = try await AttachmentFileCache.localURL(
-                attachmentId: attachment.id,
-                filename: attachment.filename ?? "document",
-                baseURL: baseURL,
-                token: token
-            )
-            onOpenDocument?(url, attachment.filename ?? "document")
-        } catch {
-            failed = true
-        }
-    }
-}

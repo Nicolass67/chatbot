@@ -863,7 +863,11 @@ struct ChatScreen: View {
                 Task { await forgetSavedMemory(memory, messageId: msg.id) }
             },
             onCopy: {
-                UIPasteboard.general.string = msg.content
+                let copied = ChatAttachmentPresentation.visibleUserText(
+                    msg.content,
+                    hasAttachments: !(msg.attachments ?? []).isEmpty
+                ) ?? msg.content
+                UIPasteboard.general.string = copied
                 AppHaptics.light()
             },
             onEdit: { beginEdit(msg) },
@@ -2382,7 +2386,10 @@ private var sendBlockedHint: String {
         defer { didFinishInitialLoad = true }
         if session.localOnlyMode || executionMode.routesLocalCapableOnDevice {
             let local = LocalChatStore.shared.messages(for: conversation.id)
-            messages = local.map { $0.asMessageDTO() }
+            messages = local.map { msg in
+                ChatAttachmentPreviewStore.hydrate(from: msg)
+                return msg.asMessageDTO()
+            }
             chromeById = ConversationSessionStore.reattachOrphanMailHandoff(
                 conversationId: conversation.id,
                 messages: messages
@@ -2452,9 +2459,10 @@ private var sendBlockedHint: String {
             pruneChromeOutsideWindow()
             error = nil
             let ids = messages.flatMap { $0.attachments ?? [] }
-                .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
+                .filter { ChatAttachmentPresentation.isImage($0) }
                 .map(\.id)
-            client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 360)
+                .filter { !$0.hasPrefix("local-") }
+            client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 224)
             contextSnapshot = try? await client.conversationContext(conversationId: conversation.id)
             // Ne pas écraser un pin « message user en haut » juste après envoi.
             if pinToTopMessageId == nil {
@@ -2502,9 +2510,10 @@ private var sendBlockedHint: String {
             )
             pruneChromeOutsideWindow()
             let ids = older.flatMap { $0.attachments ?? [] }
-                .filter { ($0.mimeType ?? "").hasPrefix("image/") || $0.type == "image" }
+                .filter { ChatAttachmentPresentation.isImage($0) }
                 .map(\.id)
-            client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 360)
+                .filter { !$0.hasPrefix("local-") }
+            client.prefetchAttachmentThumbs(ids: ids, maxPixelSize: 224)
             if let anchor = scrollAnchorAfterPrepend {
                 // Restaure la position visuelle après prepend.
                 proxy.scrollTo(anchor, anchor: .top)
@@ -3243,6 +3252,28 @@ private var sendBlockedHint: String {
             effectiveText = messages.last(where: { $0.role == "user" })?.content ?? ""
         }
         let localPayloads = pendingAttachments.filter { !$0.isUploading && $0.isLocalOnly }
+        for att in localPayloads {
+            ChatAttachmentPreviewStore.remember(from: att)
+        }
+        let localMessageAtts: [MessageAttachmentDTO]? = localPayloads.isEmpty ? nil : localPayloads.map {
+            MessageAttachmentDTO(
+                id: $0.id,
+                filename: $0.filename,
+                mimeType: $0.mimeType,
+                sizeBytes: $0.sizeBytes,
+                type: $0.typeHint
+            )
+        }
+        let localStoredAtts: [LocalStoredAttachment]? = localPayloads.isEmpty ? nil : localPayloads.map {
+            LocalStoredAttachment(
+                id: $0.id,
+                filename: $0.filename,
+                mimeType: $0.mimeType,
+                sizeBytes: $0.sizeBytes,
+                type: $0.typeHint,
+                localRelativePath: $0.localFileURL.map { ($0.lastPathComponent as NSString).lastPathComponent }
+            )
+        }
         let canNativeVision = LocalModelManager.shared.isVisionProjectorInstalled
             && LocalModelManager.shared.activeDescriptor.nativeVision
         let visionImages: [Data] = canNativeVision ? localPayloads.compactMap { att in
@@ -3292,7 +3323,7 @@ private var sendBlockedHint: String {
             sendTask = nil
             return
         }
-        let shownText = displayText.isEmpty ? effectiveText : displayText
+        let bubbleText = displayText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // `isSending` est posé dans `send()` avant cet appel (anti double-tap).
         sendGeneration &+= 1
@@ -3312,11 +3343,17 @@ private var sendBlockedHint: String {
                 let userMsg = MessageDTO(
                     id: "local-\(UUID().uuidString)",
                     role: "user",
-                    content: shownText,
-                    createdAt: nil
+                    content: bubbleText,
+                    createdAt: nil,
+                    attachments: localMessageAtts
                 )
                 messages.append(userMsg)
-                persistLocalMessage(id: userMsg.id, role: .user, content: shownText)
+                persistLocalMessage(
+                    id: userMsg.id,
+                    role: .user,
+                    content: bubbleText,
+                    attachments: localStoredAtts
+                )
             }
             thinkingKind = .custom("Files…")
             activeGeneration.workflow = "files"
@@ -3364,11 +3401,17 @@ private var sendBlockedHint: String {
                 MessageDTO(
                     id: userId,
                     role: "user",
-                    content: shownText,
-                    createdAt: nil
+                    content: bubbleText,
+                    createdAt: nil,
+                    attachments: localMessageAtts
                 )
             )
-            persistLocalMessage(id: userId, role: .user, content: shownText)
+            persistLocalMessage(
+                id: userId,
+                role: .user,
+                content: bubbleText,
+                attachments: localStoredAtts
+            )
         }
 
         thinkingKind = .reflecting
@@ -3937,17 +3980,9 @@ private var sendBlockedHint: String {
            !ids.isEmpty {
             let attached = await syncAttachmentsToOpenDraft(ids)
             if attached {
-                let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : pendingAttachments
-                    .filter { ids.contains($0.id) }
-                    .map {
-                        MessageAttachmentDTO(
-                            id: $0.id,
-                            filename: $0.filename,
-                            mimeType: $0.mimeType,
-                            sizeBytes: $0.sizeBytes,
-                            type: $0.typeHint
-                        )
-                    }
+                let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : rememberPendingAsMessageAttachments(
+                    pendingAttachments.filter { ids.contains($0.id) }
+                )
                 let names = (localAtts ?? []).compactMap(\.filename).filter { !$0.isEmpty }
                 if options?.regenerate != true, !hideUserMessage {
                     messages.append(
@@ -4027,17 +4062,9 @@ private var sendBlockedHint: String {
         if options?.regenerate != true {
             draft = ""
             if !isEdit && !hideUserMessage {
-                let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : pendingAttachments
-                    .filter { ids.contains($0.id) }
-                    .map {
-                        MessageAttachmentDTO(
-                            id: $0.id,
-                            filename: $0.filename,
-                            mimeType: $0.mimeType,
-                            sizeBytes: $0.sizeBytes,
-                            type: $0.typeHint
-                        )
-                    }
+                let localAtts: [MessageAttachmentDTO]? = ids.isEmpty ? nil : rememberPendingAsMessageAttachments(
+                    pendingAttachments.filter { ids.contains($0.id) }
+                )
                 messages.append(
                     MessageDTO(
                         id: "local-\(UUID().uuidString)",
@@ -4774,12 +4801,34 @@ private var sendBlockedHint: String {
         ConversationSessionStore.setChrome(chrome, conversationId: conversation.id, messageId: id)
     }
 
-    private func persistLocalMessage(id: String, role: LocalMessage.Role, content: String) {
+    private func rememberPendingAsMessageAttachments(_ pending: [UploadedAttachment]) -> [MessageAttachmentDTO]? {
+        guard !pending.isEmpty else { return nil }
+        for att in pending {
+            ChatAttachmentPreviewStore.remember(from: att)
+        }
+        return pending.map {
+            MessageAttachmentDTO(
+                id: $0.id,
+                filename: $0.filename,
+                mimeType: $0.mimeType,
+                sizeBytes: $0.sizeBytes,
+                type: $0.typeHint
+            )
+        }
+    }
+
+    private func persistLocalMessage(
+        id: String,
+        role: LocalMessage.Role,
+        content: String,
+        attachments: [LocalStoredAttachment]? = nil
+    ) {
         _ = LocalChatStore.shared.appendMessage(
             conversationId: conversation.id,
             role: role,
             content: content,
-            id: id
+            id: id,
+            attachments: attachments
         )
     }
 
@@ -5534,90 +5583,111 @@ struct PendingAttachmentCard: View {
     let attachment: UploadedAttachment
     let onRemove: () -> Void
 
-    private let cardWidth: CGFloat = 120
-    private let previewHeight: CGFloat = 64
-    private var previewWidth: CGFloat { cardWidth - 16 } // padding horizontal 8+8
-
-    private var sizeLabel: String {
-        let kind = attachment.isImage ? "Image" : "Document"
-        return "\(kind) · \(ByteCountFormatter.string(fromByteCount: Int64(attachment.sizeBytes), countStyle: .file))"
-    }
+    private let imageSide: CGFloat = 72
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .topTrailing) {
-                attachmentPreview
-                    .frame(width: previewWidth, height: previewHeight)
-
-                // Croix inset dans la preview (jamais en offset hors tile).
-                Button(action: onRemove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Color.black.opacity(0.72))
-                        .font(.system(size: 18, weight: .semibold))
-                        .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                }
-                .buttonStyle(.plain)
-                .padding(5)
-                .accessibilityLabel("Retirer \(attachment.filename)")
-            }
-            .frame(width: previewWidth, height: previewHeight)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
-
-            Text(attachment.filename)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(AppTheme.foreground)
-                .lineLimit(1)
-            Text(attachment.error ?? sizeLabel)
-                .font(.system(size: 10))
-                .foregroundStyle(attachment.error == nil ? AppTheme.muted : AppTheme.danger)
-                .lineLimit(1)
+        if attachment.isImage {
+            pendingImage
+        } else {
+            pendingDocument
         }
-        .padding(8)
-        .frame(width: cardWidth, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .fill(AppTheme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusLg, style: .continuous))
     }
 
-    /// Preview image/doc — même pattern que Files grille : overlay dans un
-    /// frame fixe + compositingGroup + clip. Empêche scaledToFill de sortir
-    /// de la tile (bug Files → Mail).
-    @ViewBuilder
-    private var attachmentPreview: some View {
-        Color.clear
-            .overlay {
-                Group {
+    private var pendingImage: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .frame(width: imageSide, height: imageSide)
+                .overlay {
                     if let data = attachment.previewData, let ui = UIImage(data: data) {
                         Image(uiImage: ui)
                             .resizable()
                             .scaledToFill()
-                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                            .frame(width: imageSide, height: imageSide)
+                            .clipped()
                     } else {
                         ZStack {
                             AppTheme.surfaceHover.opacity(0.7)
-                            Image(systemName: attachment.isImage ? "photo" : "doc.fill")
+                            Image(systemName: "photo")
                                 .foregroundStyle(AppTheme.accent)
                         }
                     }
                 }
-            }
-            .overlay {
-                if attachment.isUploading {
-                    ZStack {
-                        Color.black.opacity(0.45)
-                        ProgressView().tint(.white)
+                .overlay {
+                    if attachment.isUploading {
+                        ZStack {
+                            Color.black.opacity(0.45)
+                            ProgressView().tint(.white)
+                        }
                     }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.black.opacity(0.72))
+                    .font(.system(size: 18, weight: .semibold))
+                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
             }
-            .compositingGroup()
-            .clipped()
+            .buttonStyle(.plain)
+            .padding(5)
+            .accessibilityLabel("Retirer \(attachment.filename)")
+        }
+        .frame(width: imageSide, height: imageSide)
+        .accessibilityLabel(attachment.filename)
+    }
+
+    private var pendingDocument: some View {
+        HStack(spacing: AppTheme.space8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: AppTheme.radiusSm, style: .continuous)
+                    .fill(AppTheme.secondary.opacity(0.14))
+                    .frame(width: 32, height: 32)
+                if attachment.isUploading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "doc.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text((attachment.filename as NSString).lastPathComponent)
+                    .font(CNFont.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.foreground)
+                    .lineLimit(1)
+                Text(attachment.error ?? documentSubtitle)
+                    .font(CNFont.caption2)
+                    .foregroundStyle(attachment.error == nil ? AppTheme.muted : AppTheme.danger)
+                    .lineLimit(1)
+            }
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(AppTheme.mutedForeground, AppTheme.surfaceHover)
+                    .font(.system(size: 18, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Retirer \(attachment.filename)")
+        }
+        .padding(.horizontal, AppTheme.space8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                .fill(AppTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.radiusMd, style: .continuous)
+                .stroke(AppTheme.chromeStroke, lineWidth: 0.5)
+        )
+    }
+
+    private var documentSubtitle: String {
+        let ext = (attachment.filename as NSString).pathExtension.uppercased()
+        let type = ext.isEmpty ? "Fichier" : ext
+        let size = ByteCountFormatter.string(fromByteCount: Int64(attachment.sizeBytes), countStyle: .file)
+        return "\(type) · \(size)"
     }
 }
 

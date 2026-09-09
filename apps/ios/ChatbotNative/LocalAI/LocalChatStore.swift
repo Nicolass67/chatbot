@@ -26,6 +26,16 @@ struct LocalConversation: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+struct LocalStoredAttachment: Codable, Hashable, Sendable {
+    var id: String
+    var filename: String?
+    var mimeType: String?
+    var sizeBytes: Int?
+    var type: String?
+    /// Nom de fichier dans Documents/LocalAttachments — pas un chemin brut.
+    var localRelativePath: String?
+}
+
 struct LocalMessage: Identifiable, Codable, Hashable, Sendable {
     enum Role: String, Codable, Sendable {
         case user
@@ -38,19 +48,22 @@ struct LocalMessage: Identifiable, Codable, Hashable, Sendable {
     var role: Role
     var content: String
     var createdAt: Date
+    var attachments: [LocalStoredAttachment]?
 
     init(
         id: String = UUID().uuidString,
         conversationId: String,
         role: Role,
         content: String,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        attachments: [LocalStoredAttachment]? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
         self.role = role
         self.content = content
         self.createdAt = createdAt
+        self.attachments = attachments
     }
 }
 
@@ -162,7 +175,8 @@ final class LocalChatStore: ObservableObject {
         conversationId: String,
         role: LocalMessage.Role,
         content: String,
-        id: String? = nil
+        id: String? = nil,
+        attachments: [LocalStoredAttachment]? = nil
     ) -> LocalMessage? {
         guard conversations.contains(where: { $0.id == conversationId }) else { return nil }
         var list = messages(for: conversationId)
@@ -177,7 +191,8 @@ final class LocalChatStore: ObservableObject {
             id: messageId,
             conversationId: conversationId,
             role: role,
-            content: content
+            content: content,
+            attachments: attachments
         )
         list.append(message)
         persistMessages(list, for: conversationId)
@@ -187,6 +202,8 @@ final class LocalChatStore: ObservableObject {
                 let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     conversations[idx].title = String(trimmed.prefix(48))
+                } else if let name = attachments?.first?.filename, !name.isEmpty {
+                    conversations[idx].title = String((name as NSString).lastPathComponent.prefix(48))
                 }
             }
             conversations.sort { $0.updatedAt > $1.updatedAt }
@@ -258,11 +275,21 @@ extension LocalMessage {
     func asMessageDTO() -> MessageDTO {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let mapped: [MessageAttachmentDTO]? = attachments?.map {
+            MessageAttachmentDTO(
+                id: $0.id,
+                filename: $0.filename,
+                mimeType: $0.mimeType,
+                sizeBytes: $0.sizeBytes,
+                type: $0.type
+            )
+        }
         return MessageDTO(
             id: id,
             role: role.rawValue,
             content: content,
-            createdAt: formatter.string(from: createdAt)
+            createdAt: formatter.string(from: createdAt),
+            attachments: mapped
         )
     }
 }

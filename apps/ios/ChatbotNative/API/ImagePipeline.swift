@@ -83,6 +83,24 @@ enum ImagePipeline {
         downsample(data: data, maxPixelSize: maxPixelSize) ?? UIImage(data: data)
     }
 
+    /// Miniature depuis un fichier local — sans charger l’image originale en mémoire.
+    static func thumbnail(url: URL, maxPixelSize: CGFloat = 240) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return nil
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: cg)
+    }
+
     static func cached(_ key: String) async -> UIImage? {
         await ImageThumbCache.shared.image(forKey: key)
     }

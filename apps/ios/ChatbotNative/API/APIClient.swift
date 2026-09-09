@@ -1529,7 +1529,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     func prefetchAttachmentThumbs(ids: [String], maxPixelSize: CGFloat = 360) {
-        for id in ids {
+        for id in ids where !id.hasPrefix("local-") {
             Task.detached(priority: .utility) { [baseURL, token] in
                 let client = APIClient(baseURL: baseURL, token: token)
                 _ = try? await client.loadAttachmentImage(id: id, maxPixelSize: maxPixelSize)
