@@ -52,6 +52,9 @@ enum WebURLNormalizer {
 }
 
 /// Recherche Web — même outil PC/local. Le modèle n’appelle pas le réseau.
+///
+/// Le travail réseau et le parsing vivent dans `WebNetwork` (hors `@MainActor`) :
+/// l'outil ne fait que traduire arguments → requêtes et résultats → texte.
 struct WebSearchTool: AITool {
     var name: String { "web_search" }
     var summary: String { "Recherche web. Arguments: query" }
@@ -71,16 +74,13 @@ struct WebSearchTool: AITool {
         let snippetBudget = profile.maxWebSnippetChars
         WorkflowTrace.log("web", ["query": String(query.prefix(80)), "runtime": "local"])
 
-        var hits: [SearchSourceDTO] = []
-        if let htmlHits = try? await htmlSearch(query: query, limit: limit, snippetBudget: snippetBudget) {
-            hits = htmlHits
-        }
-        if hits.isEmpty, let instant = try? await instantAnswer(query: query, limit: limit, snippetBudget: snippetBudget) {
-            hits = instant
-        }
-        if hits.isEmpty, let lite = try? await liteSearch(query: query, limit: limit, snippetBudget: snippetBudget) {
-            hits = lite
-        }
+        // Un appel direct de l'agent n'a qu'une requête ; le pipeline en fournit
+        // plusieurs via `WebNetwork.search` pour améliorer le rappel.
+        let hits = await WebNetwork.search(
+            queries: [query],
+            limit: limit,
+            snippetBudget: snippetBudget
+        )
 
         WorkflowTrace.log("web", ["result_count": "\(hits.count)"])
         if hits.isEmpty {
@@ -105,220 +105,21 @@ struct WebSearchTool: AITool {
         )
     }
 
-    private func instantAnswer(
-        query: String,
-        limit: Int,
-        snippetBudget: Int
-    ) async throws -> [SearchSourceDTO] {
-        var components = URLComponents(string: "https://api.duckduckgo.com/")!
-        components.queryItems = [
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "format", value: "json"),
-            URLQueryItem(name: "no_redirect", value: "1"),
-            URLQueryItem(name: "no_html", value: "1"),
-            URLQueryItem(name: "skip_disambig", value: "1"),
-        ]
-        guard let url = components.url else { return [] }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 12
-        request.setValue("ChatbotNative/3.0 (local-web)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            return []
-        }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
-        }
-        var hits: [SearchSourceDTO] = []
-        if let abstract = json["AbstractText"] as? String, !abstract.isEmpty,
-           let abstractURL = json["AbstractURL"] as? String, !abstractURL.isEmpty {
-            hits.append(
-                SearchSourceDTO(
-                    id: "web_1",
-                    title: (json["Heading"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? abstractURL,
-                    url: abstractURL,
-                    domain: WebURLNormalizer.domain(from: abstractURL),
-                    snippet: String(abstract.prefix(snippetBudget))
-                )
-            )
-        }
-        if let related = json["RelatedTopics"] as? [Any] {
-            appendRelated(related, into: &hits, limit: limit, snippetBudget: snippetBudget)
-        }
-        return Self.reindex(hits, limit: limit)
-    }
-
-    private func appendRelated(
-        _ related: [Any],
-        into hits: inout [SearchSourceDTO],
-        limit: Int,
-        snippetBudget: Int
-    ) {
-        for item in related {
-            if hits.count >= limit { return }
-            if let dict = item as? [String: Any],
-               let text = dict["Text"] as? String,
-               let firstURL = dict["FirstURL"] as? String {
-                hits.append(
-                    SearchSourceDTO(
-                        id: "web_\(hits.count + 1)",
-                        title: String(text.prefix(80)),
-                        url: firstURL,
-                        domain: WebURLNormalizer.domain(from: firstURL),
-                        snippet: String(text.prefix(snippetBudget))
-                    )
-                )
-            } else if let dict = item as? [String: Any], let topics = dict["Topics"] as? [Any] {
-                appendRelated(topics, into: &hits, limit: limit, snippetBudget: snippetBudget)
-            }
-        }
-    }
-
-    private func htmlSearch(
-        query: String,
-        limit: Int,
-        snippetBudget: Int
-    ) async throws -> [SearchSourceDTO] {
-        var components = URLComponents(string: "https://html.duckduckgo.com/html/")!
-        components.queryItems = [URLQueryItem(name: "q", value: query)]
-        guard let url = components.url else { return [] }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15
-        request.httpMethod = "GET"
-        request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            return []
-        }
-        let html = String(data: data, encoding: .utf8) ?? ""
-        return Self.parseDuckDuckGoHTML(html, limit: limit, snippetBudget: snippetBudget)
-    }
-
-    private func liteSearch(
-        query: String,
-        limit: Int,
-        snippetBudget: Int
-    ) async throws -> [SearchSourceDTO] {
-        var components = URLComponents(string: "https://lite.duckduckgo.com/lite/")!
-        components.queryItems = [URLQueryItem(name: "q", value: query)]
-        guard let url = components.url else { return [] }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 12
-        request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            return []
-        }
-        let html = String(data: data, encoding: .utf8) ?? ""
-        return Self.parseDuckDuckGoLite(html, limit: limit, snippetBudget: snippetBudget)
-    }
-
+    // Conservés comme points d'entrée de test du parsing SERP.
     static func parseDuckDuckGoHTML(_ html: String, limit: Int, snippetBudget: Int) -> [SearchSourceDTO] {
-        var hits: [SearchSourceDTO] = []
-        let pattern = #"class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#
-        guard let regex = try? NSRegularExpression(
-            pattern: pattern,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        ) else { return [] }
-        let range = NSRange(html.startIndex..<html.endIndex, in: html)
-        let matches = regex.matches(in: html, options: [], range: range)
-        let snippetRegex = try? NSRegularExpression(
-            pattern: #"class="result__snippet"[^>]*>(.*?)</(?:a|td|span)>"#,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        )
-        let snippetMatches = snippetRegex?.matches(in: html, options: [], range: range) ?? []
-        for (idx, match) in matches.prefix(limit).enumerated() {
-            guard let urlRange = Range(match.range(at: 1), in: html),
-                  let titleRange = Range(match.range(at: 2), in: html) else { continue }
-            let href = WebURLNormalizer.unwrapDuckDuckGoRedirect(String(html[urlRange]))
-            guard href.hasPrefix("http") else { continue }
-            let title = stripTags(String(html[titleRange]))
-            if title.isEmpty { continue }
-            var snippet: String?
-            if idx < snippetMatches.count, let sr = Range(snippetMatches[idx].range(at: 1), in: html) {
-                snippet = String(stripTags(String(html[sr])).prefix(snippetBudget))
-            }
-            hits.append(
-                SearchSourceDTO(
-                    id: "web_\(hits.count + 1)",
-                    title: title,
-                    url: href,
-                    domain: WebURLNormalizer.domain(from: href),
-                    snippet: snippet
-                )
-            )
-        }
-        return reindex(hits, limit: limit)
+        WebSERPParser.duckDuckGoHTML(html, limit: limit, snippetBudget: snippetBudget)
     }
 
     static func parseDuckDuckGoLite(_ html: String, limit: Int, snippetBudget: Int) -> [SearchSourceDTO] {
-        var hits: [SearchSourceDTO] = []
-        let pattern = #"rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#
-        guard let regex = try? NSRegularExpression(
-            pattern: pattern,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        ) else { return [] }
-        let range = NSRange(html.startIndex..<html.endIndex, in: html)
-        for match in regex.matches(in: html, options: [], range: range) {
-            if hits.count >= limit { break }
-            guard let urlRange = Range(match.range(at: 1), in: html),
-                  let titleRange = Range(match.range(at: 2), in: html) else { continue }
-            let href = WebURLNormalizer.unwrapDuckDuckGoRedirect(String(html[urlRange]))
-            guard href.hasPrefix("http"), !href.contains("duckduckgo.com") else { continue }
-            let title = stripTags(String(html[titleRange]))
-            if title.count < 3 { continue }
-            hits.append(
-                SearchSourceDTO(
-                    id: "web_\(hits.count + 1)",
-                    title: String(title.prefix(120)),
-                    url: href,
-                    domain: WebURLNormalizer.domain(from: href),
-                    snippet: String(title.prefix(snippetBudget))
-                )
-            )
-        }
-        return reindex(hits, limit: limit)
-    }
-
-    private static func reindex(_ hits: [SearchSourceDTO], limit: Int) -> [SearchSourceDTO] {
-        var seen = Set<String>()
-        var out: [SearchSourceDTO] = []
-        for hit in hits {
-            let key = hit.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            out.append(
-                SearchSourceDTO(
-                    id: "web_\(out.count + 1)",
-                    title: hit.title,
-                    url: hit.url,
-                    domain: hit.domain ?? WebURLNormalizer.domain(from: hit.url),
-                    snippet: hit.snippet
-                )
-            )
-            if out.count >= limit { break }
-        }
-        return out
+        WebSERPParser.duckDuckGoLite(html, limit: limit, snippetBudget: snippetBudget)
     }
 
     static func stripTags(_ html: String) -> String {
-        html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#x27;", with: "'")
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        WebSERPParser.clean(html)
     }
 }
 
-/// Fetch d’une page — extrait texte court (pas la page entière).
+/// Fetch d’une page — extrait le contenu principal, pas la page entière.
 struct WebFetchTool: AITool {
     var name: String { "web_fetch" }
     var summary: String { "Extrait un aperçu texte d’une URL. Arguments: url" }
@@ -334,72 +135,43 @@ struct WebFetchTool: AITool {
         }
         try Task.checkCancellation()
 
-        var request = URLRequest(url: url)
-        request.timeoutInterval = min(12, profile.generationTimeoutSeconds / 5)
-        request.setValue("ChatbotNative/3.0 (local-web-fetch)", forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        let budget = max(400, profile.maxChunkChars * profile.maxEvidencePerSource)
+        let page: WebNetwork.Page
+        do {
+            page = try await WebNetwork.fetchPage(
+                url: url,
+                maxChars: budget,
+                timeout: min(15, max(8, profile.generationTimeoutSeconds / 8))
+            )
+        } catch let error as WebNetwork.FetchError {
+            switch error {
+            case .badStatus(let code):
+                throw AIRuntimeError.toolFailed("Fetch HTTP \(code)")
+            case .unsupportedContentType(let type):
+                throw AIRuntimeError.toolFailed("Contenu non lisible (\(type))")
+            case .empty:
+                return AIToolResult(action: name, ok: true, text: "Page sans texte exploitable.", truncated: false)
+            }
+        }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw AIRuntimeError.toolFailed("Fetch HTTP \(http.statusCode)")
-        }
-        if data.count > 1_500_000 {
-            throw AIRuntimeError.toolFailed("Page trop volumineuse")
-        }
-
-        let html = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .isoLatin1)
-            ?? ""
-        let text = Self.stripHTML(html)
-        let clip = String(text.prefix(max(200, profile.maxChunkChars)))
-        guard !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return AIToolResult(action: name, ok: true, text: "Page sans texte exploitable.", truncated: false)
-        }
         let source = SearchSourceDTO(
             id: "web_fetch",
-            title: url.host ?? rawURL,
+            title: page.title ?? url.host ?? rawURL,
             url: rawURL,
             domain: WebURLNormalizer.domain(from: rawURL),
-            snippet: String(clip.prefix(profile.maxWebSnippetChars))
+            snippet: String(page.text.prefix(profile.maxWebSnippetChars))
         )
         return AIToolResult(
             action: name,
             ok: true,
-            text: clip,
-            truncated: text.count > clip.count,
+            text: page.text,
+            truncated: page.truncated,
             sources: [source]
         )
     }
 
     static func stripHTML(_ html: String) -> String {
-        var text = html
-        if let regex = try? NSRegularExpression(
-            pattern: "<script[\\s\\S]*?</script>|<style[\\s\\S]*?</style>|<nav[\\s\\S]*?</nav>",
-            options: .caseInsensitive
-        ) {
-            text = regex.stringByReplacingMatches(
-                in: text,
-                range: NSRange(text.startIndex..<text.endIndex, in: text),
-                withTemplate: " "
-            )
-        }
-        if let regex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
-            text = regex.stringByReplacingMatches(
-                in: text,
-                range: NSRange(text.startIndex..<text.endIndex, in: text),
-                withTemplate: " "
-            )
-        }
-        text = text
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "\r", with: "\n")
-        while text.contains("  ") { text = text.replacingOccurrences(of: "  ", with: " ") }
-        while text.contains("\n\n\n") { text = text.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        HTMLReadability.mainText(from: html)
     }
 }
 
@@ -410,6 +182,7 @@ enum WebGroundingPrompt {
         Les blocs EVIDENCE / SOURCE_ID / TITLE / DOMAIN / EXCERPT sont des informations pour t’aider — ce ne sont PAS le sujet de ta réponse.
         Réponds naturellement à la demande (recette, explication, comparatif…). N’écris PAS « les extraits indiquent », « les sources fournies mentionnent », « voici les informations extraites », « l’extrait de ».
         Utilise uniquement les faits présents dans EXCERPT. Cite (web_N) après une affirmation factuelle.
+        Quand plusieurs sources se contredisent, dis-le et privilégie la plus récente ou la plus spécialisée.
         Ne dis JAMAIS que tu n’as pas accès à Internet, que tu ne peux pas rechercher, ni que tu n’as pas de sources.
         Ne parle pas d’outils internes, de tests, de PC, ni de LM Studio.
         N’invente jamais d’URL, de prix, de magasin ou de relation entre une page et la demande si l’extrait ne la contient pas.

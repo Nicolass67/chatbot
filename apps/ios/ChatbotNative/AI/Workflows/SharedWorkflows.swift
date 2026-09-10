@@ -164,6 +164,7 @@ enum AgentWorkflow {
                 deterministic,
                 tools: tools,
                 profile: profile,
+                history: request.history,
                 onEvent: onEvent
             )
             scratch.append("Résultat \(deterministic.action):\n\(enriched.text)")
@@ -336,6 +337,7 @@ enum AgentWorkflow {
                         call,
                         tools: tools,
                         profile: profile,
+                        history: request.history,
                         onEvent: onEvent
                     )
                     scratch.append("Résultat \(call.action):\n\(enriched.text)")
@@ -441,14 +443,16 @@ enum AgentWorkflow {
         _ call: AIToolCall,
         tools: AIToolRegistry,
         profile: LocalModelExecutionProfile,
+        history: [LLMChatMessage] = [],
         onEvent: ((AgentOrchestrationEvent) -> Void)?
     ) async throws -> AIToolResult {
         if call.action == "web_search" {
             let rawQ = call.arguments["query"] ?? call.arguments["q"] ?? ""
-            let q = RuntimeTemporalContext.groundWebQuery(rawQ)
+            // L'ancrage temporel et la compaction sont faits par le planificateur :
+            // les appliquer ici en plus produisait « … 2026 2026 ».
             let packet = try await WebEvidencePipeline.gather(
-                query: q,
-                tools: tools,
+                query: rawQ,
+                history: history,
                 profile: profile,
                 onEvent: onEvent
             )
@@ -795,7 +799,9 @@ enum AgentWorkflow {
             || lower.contains("meilleur gpu") || lower.contains("meilleure carte")
             || (lower.contains("recherche") && (lower.contains("web") || lower.contains("internet") || lower.contains("en ligne")))
             || (lower.contains("web") && (lower.contains("cherche") || lower.contains("recherche"))) {
-            return AIToolCall(action: "web_search", arguments: ["query": compactWebQuery(request.userText)])
+            // Texte brut : la compaction et l'ancrage temporel sont l'affaire de
+            // `WebQueryPlanner`, qui voit aussi l'historique.
+            return AIToolCall(action: "web_search", arguments: ["query": request.userText])
         }
         let mailIntent = MailIntentDetector.detect(
             request.userText,
@@ -831,18 +837,10 @@ enum AgentWorkflow {
         return nil
     }
 
+    /// Requête SERP à partir d'une demande — délègue au planificateur, qui gère
+    /// les mots vides, les guillemets et l'ancrage sur l'année en cours.
     static func compactWebQuery(_ text: String) -> String {
-        var q = text
-        for prefix in ["recherche sur internet ", "recherche sur le web ", "cherche sur internet ",
-                       "recherche ", "cherche "] {
-            if q.lowercased().hasPrefix(prefix) {
-                q = String(q.dropFirst(prefix.count))
-                break
-            }
-        }
-        return RuntimeTemporalContext.groundWebQuery(
-            q.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        WebQueryPlanner.plan(userText: text).primary
     }
 
     private static func extractURL(from text: String) -> String? {
@@ -1074,6 +1072,9 @@ enum WebSearchWorkflow {
     struct Request: Sendable {
         var query: String
         var synthesize: Bool
+        /// Tours précédents — servent à résoudre les anaphores de la requête
+        /// (« et son prix ? ») avant d'interroger le moteur de recherche.
+        var history: [LLMChatMessage] = []
     }
 
     struct Result: Sendable {
@@ -1089,10 +1090,11 @@ enum WebSearchWorkflow {
         onEvent: ((AgentOrchestrationEvent) -> Void)? = nil,
         onToken: (@MainActor (String) -> Void)? = nil
     ) async throws -> Result {
+        _ = tools
         let profile = runtime.executionProfile
         let packet = try await WebEvidencePipeline.gather(
-            query: RuntimeTemporalContext.groundWebQuery(request.query),
-            tools: tools,
+            query: request.query,
+            history: request.history,
             profile: profile,
             onEvent: onEvent
         )

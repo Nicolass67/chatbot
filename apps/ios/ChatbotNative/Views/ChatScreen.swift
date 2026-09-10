@@ -3815,7 +3815,7 @@ private var sendBlockedHint: String {
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let web = try await WebSearchWorkflow.run(
-                    .init(query: effectiveText, synthesize: true),
+                    .init(query: effectiveText, synthesize: true, history: history),
                     runtime: runtime,
                     tools: tools,
                     onEvent: { event in

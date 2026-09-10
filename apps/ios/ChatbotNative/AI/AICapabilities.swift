@@ -77,6 +77,11 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var maxDocumentChunks: Int
     var maxChunkChars: Int
     var toolResultCharBudget: Int
+    /// Budget caractères du bloc EVIDENCE web. Distinct de `toolResultCharBudget` :
+    /// une recherche est le seul cas où l'on veut remplir la fenêtre de contexte,
+    /// alors qu'un résultat d'outil brut doit rester court.
+    /// `0` = suivre `toolResultCharBudget`.
+    var webEvidenceCharBudget: Int = 0
     var generationTimeoutSeconds: Double
     var performanceClass: PerformanceClass
     /// Paramètres llama.cpp / Metal — ne changent pas les features applicatives.
@@ -99,6 +104,11 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var resolvedContextTokenBudget: Int {
         if contextTokenBudget > 0 { return contextTokenBudget }
         return max(512, contextCharBudget / 3)
+    }
+
+    /// Budget effectif du bloc EVIDENCE web.
+    var resolvedWebEvidenceCharBudget: Int {
+        webEvidenceCharBudget > 0 ? webEvidenceCharBudget : toolResultCharBudget
     }
 
     /// Plafond dur imposé par le moteur, marge de sortie déduite.
@@ -257,14 +267,19 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
         maxWorkflowSteps: 8,
         maxToolCalls: 8,
         maxWebResults: 6,
-        maxFetchedPages: 3,
-        maxEvidencePerSource: 3,
+        // Lecture parallèle : cinq pages coûtent désormais le temps de la plus
+        // lente, plus celui d'une seule à la file.
+        maxFetchedPages: 5,
+        maxEvidencePerSource: 2,
         maxWebSnippetChars: 480,
         maxMailMessages: 8,
         maxMailBodyChars: 7_000,
         maxDocumentChunks: 8,
         maxChunkChars: 2_000,
         toolResultCharBudget: 4_000,
+        // 6144 tokens de fenêtre autorisent ~9 000 caractères de preuves web
+        // en gardant la place de l'historique et de la réponse.
+        webEvidenceCharBudget: 9_000,
         generationTimeoutSeconds: 240,
         performanceClass: .ample,
         inference: {
