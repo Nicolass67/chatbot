@@ -209,7 +209,7 @@ actor SemanticRouter {
             return Route(
                 task: .detailed,
                 intent: .reasoning,
-                useThinking: true,
+                useThinking: false,
                 confidence: 0.9,
                 source: "lexical:reasoning"
             )
@@ -271,10 +271,14 @@ actor SemanticRouter {
         let margin = score - max(runnerUp, 0)
         guard score >= 0.45, margin >= 0.02 else { return nil }
 
+        // La réflexion se paie en tokens générés : ~25 s d'attente supplémentaire
+        // sur l'appareil. Une similarité d'embedding, même correcte, n'est pas une
+        // preuve que la question en a besoin — seule la consigne explicite
+        // (« compare », « étape par étape ») la déclenche.
         return Route(
             task: Self.task(for: intent),
             intent: intent,
-            useThinking: intent == .reasoning,
+            useThinking: false,
             confidence: min(1, score),
             source: "embedding"
         )

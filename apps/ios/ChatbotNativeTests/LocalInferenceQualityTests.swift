@@ -141,13 +141,29 @@ final class SemanticRouterTests: XCTestCase {
         XCTAssertEqual(route.intent, .explanation)
     }
 
-    func testComparisonEnablesThinking() async {
+    func testComparisonStaysReasoningWithoutThinking() async {
         let route = await SemanticRouter.shared.route(
             userText: "Compare Swift et Kotlin pour une app mobile",
             history: []
         )
         XCTAssertEqual(route.intent, .reasoning)
-        XCTAssertTrue(route.useThinking)
+        // La réflexion double le temps d'attente sur A15 pour un gain nul
+        // sur un 2B : on garde le budget long, pas la trace <think>.
+        XCTAssertFalse(route.useThinking)
+    }
+
+    func testAmbiguousFollowUpStaysOnTheConversationSubject() {
+        let history = [
+            LLMChatMessage(role: .user, content: "Quelles sont les meilleures souris gamer ?"),
+            LLMChatMessage(role: .assistant, content: "Logitech G Pro X Superlight 2 et Razer DeathAdder V3."),
+        ]
+        XCTAssertTrue(QueryRewriter.needsContext("le prix des modèles"))
+        let turn = QueryRewriter.groundedUserTurn(
+            userText: "le prix des modèles",
+            history: history
+        )
+        XCTAssertTrue(turn.contains("souris gamer"))
+        XCTAssertTrue(turn.lowercased().contains("pas de voitures"))
     }
 
     func testGreetingStaysShortWithoutThinking() async {

@@ -59,6 +59,13 @@ enum WebQueryPlanner {
         "s", "n", "l", "c", "j", "t", "qu",
     ]
 
+    /// Mots d'un suivi qui ne doivent pas entrer dans le SERP une fois le
+    /// sujet rattaché : ils sont soit vides, soit ambigus (« modèle »).
+    private static let followUpNoise: Set<String> = [
+        "modele", "modeles", "modèle", "modèles", "model", "models",
+        "celui", "celle", "ceux", "celles", "ca", "cela", "ceci",
+    ]
+
     /// Tournures d'ouverture sans contenu propre.
     private static let leadingNoise: [String] = [
         "recherche sur internet ", "recherche sur le web ", "cherche sur internet ",
@@ -80,25 +87,41 @@ enum WebQueryPlanner {
         // Une question de suivi (« et son prix ? ») ne contient pas son sujet :
         // sans réécriture, le SERP reçoit « prix » et renvoie n'importe quoi.
         let retrieval = QueryRewriter.retrievalQuery(userText: request, history: history)
+        let rawIntent = keywords(request, limit: 6)
+        let subject = QueryRewriter.subjectAnchor(userText: request, history: history)
+        let subjectTerms = subject.map { keywords($0, limit: 6) } ?? []
+        // « modèles » dans un suivi n'est pas un terme de recherche : c'est un
+        // renvoi aux produits déjà cités. Le garder produit « prix modeles 2026 ».
+        let intentTerms = subjectTerms.isEmpty
+            ? rawIntent
+            : rawIntent.filter { !Self.followUpNoise.contains(fold($0)) }
 
-        let terms = keywords(retrieval, limit: maxKeywords)
-        let primaryBase = terms.isEmpty ? stripNoise(request) : terms.joined(separator: " ")
-        let primary = RuntimeTemporalContext.groundWebQuery(primaryBase, now: now)
-
-        var variants: [String] = []
-        // La formulation naturelle reste utile : certains moteurs répondent mieux
-        // à une question qu'à un sac de mots. On la garde en second, jamais seule.
-        let natural = RuntimeTemporalContext.groundWebQuery(stripNoise(request), now: now)
-        if natural.caseInsensitiveCompare(primary) != .orderedSame, natural.count <= 140 {
-            variants.append(natural)
+        // Sujet d'abord, intention ensuite : « souris gamer prix » et non
+        // « prix modeles 2026 », qui remonte des Tesla Model 3/Y.
+        var merged: [String] = []
+        var seen = Set<String>()
+        for term in subjectTerms + intentTerms {
+            let key = fold(term.replacingOccurrences(of: "\"", with: ""))
+            guard seen.insert(key).inserted else { continue }
+            merged.append(term)
+            if merged.count >= maxKeywords { break }
+        }
+        if merged.isEmpty {
+            merged = keywords(retrieval, limit: maxKeywords)
         }
 
+        let primaryBase = merged.isEmpty ? stripNoise(request) : merged.joined(separator: " ")
+        let primary = RuntimeTemporalContext.groundWebQuery(primaryBase, now: now)
+
+        // Une seule requête. Une variante « naturelle » du suivi elliptique
+        // (« le prix des modèles 2026 ») polluait le SERP et coûtait un
+        // aller-retour réseau de plus.
         return WebQueryPlan(
             userRequest: request,
             retrievalQuestion: retrieval,
             primary: primary,
-            variants: variants,
-            strongTerms: terms
+            variants: [],
+            strongTerms: merged
         )
     }
 

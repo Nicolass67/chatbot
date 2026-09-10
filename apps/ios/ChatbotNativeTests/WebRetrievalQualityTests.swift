@@ -49,11 +49,29 @@ final class WebQueryPlannerTests: XCTestCase {
         XCTAssertTrue(plan.primary.contains("\"loi de finances 2026\""))
     }
 
-    /// Deux requêtes valent mieux qu'une pour le rappel, mais jamais la même.
-    func testPlanProducesDistinctQueries() {
+    /// Une seule requête SERP : une variante du suivi elliptique (« prix des
+    /// modèles 2026 ») ramenait des Tesla et doublait le temps réseau.
+    func testPlanUsesSingleQuery() {
         let plan = WebQueryPlanner.plan(userText: "comment installer Docker sur Ubuntu 24.04")
-        XCTAssertEqual(Set(plan.allQueries).count, plan.allQueries.count)
-        XCTAssertEqual(plan.allQueries.first, plan.primary)
+        XCTAssertEqual(plan.allQueries, [plan.primary])
+        XCTAssertTrue(plan.variants.isEmpty)
+    }
+
+    /// Régression : « le prix des modèles » après des souris gamer ne doit
+    /// surtout pas devenir une requête de voitures Tesla.
+    func testFollowUpAboutModelsKeepsTheProductSubject() {
+        let history = [
+            LLMChatMessage(role: .user, content: "Quelles sont les meilleures souris gamer ?"),
+            LLMChatMessage(
+                role: .assistant,
+                content: "Les plus citées sont la Logitech G Pro X Superlight 2 et la Razer DeathAdder V3."
+            ),
+        ]
+        let plan = WebQueryPlanner.plan(userText: "le prix des modèles", history: history)
+        let lower = plan.primary.lowercased()
+        XCTAssertTrue(lower.contains("souris") || lower.contains("gamer") || lower.contains("logitech"))
+        XCTAssertFalse(lower.contains("modele") || lower.contains("modèle"))
+        XCTAssertFalse(plan.variants.contains(where: { $0.lowercased().contains("modèle") || $0.lowercased().contains("modele") }))
     }
 
     /// Relancer avec la même requête ne rapporte rien : autant répondre.

@@ -502,10 +502,6 @@ enum WebEvidenceBuilder {
 
 /// Orchestration search + fetch borné — commune Chat / Agent.
 enum WebEvidencePipeline {
-    /// En dessous, les extraits ne parlent pas vraiment de la demande : une
-    /// relance ciblée coûte un aller-retour, mais évite une réponse à côté.
-    private static let coverageRelaunchThreshold = 0.5
-
     @MainActor
     static func gather(
         query: String,
@@ -522,35 +518,18 @@ enum WebEvidencePipeline {
         onEvent?(.toolStarted(tool: "web_search", query: plan.primary))
 
         let coverage = WebQueryPlanner.coverageTerms(plan)
-        var harvest = try await collect(
+        // Une seule récolte, une seule requête. La relance de couverture
+        // doublait le temps d'attente (~30 s) pour un gain rare sur un 2B
+        // qui n'exploite déjà pas plus de trois extraits.
+        let harvest = try await collect(
             plan: plan,
-            queries: plan.allQueries,
+            queries: [plan.primary],
             profile: profile,
             coverageTerms: coverage,
             previousPages: [:],
             previousSources: [],
             onEvent: onEvent
         )
-
-        // Relance unique : au-delà, on empile du bruit et on fait attendre.
-        if harvest.packet.coverage < coverageRelaunchThreshold,
-           let followUp = WebQueryPlanner.followUpQuery(plan: plan, uncovered: harvest.packet.uncoveredTerms) {
-            WorkflowTrace.log("web", [
-                "follow_up": String(followUp.prefix(80)),
-                "coverage": String(format: "%.2f", harvest.packet.coverage),
-            ])
-            onEvent?(.webSearch(query: followUp))
-            let second = try await collect(
-                plan: plan,
-                queries: [followUp],
-                profile: profile,
-                coverageTerms: coverage,
-                previousPages: harvest.pages,
-                previousSources: harvest.packet.sources,
-                onEvent: onEvent
-            )
-            if second.packet.coverage > harvest.packet.coverage { harvest = second }
-        }
         let packet = harvest.packet
 
         WorkflowTrace.log("web", [
@@ -614,7 +593,7 @@ enum WebEvidencePipeline {
 
         var pageTexts = previousPages
         let budget = max(400, profile.maxChunkChars * profile.maxEvidencePerSource * 2)
-        let timeout = min(15.0, max(8.0, profile.generationTimeoutSeconds / 8))
+        let timeout = min(8.0, max(5.0, profile.generationTimeoutSeconds / 15))
         // Lecture **parallèle** : en série, trois pages lentes s'additionnent et
         // le tour dépasse le budget avant même la première ligne générée.
         let fetched = await withTaskGroup(of: (String, String)?.self) { group -> [(String, String)] in

@@ -50,9 +50,24 @@ enum ChatWorkflow {
         if !RuntimeTemporalContext.containsClockBlock(system) {
             system += "\n\n" + RuntimeTemporalContext.silentClockBlock()
         }
+        // Relance elliptique : nommer le sujet évite que le modèle réinterprète
+        // un mot ambigu (« les modèles ») hors de son contexte.
+        if let subject = QueryRewriter.subjectAnchor(
+            userText: request.userText,
+            history: request.history
+        ) {
+            system += "\n\nSujet en cours de la conversation — le message de l’utilisateur s’y rapporte, "
+                + "ne change pas de sujet :\n« \(subject) »"
+        }
         var messages = packet.messages
-        if messages.last?.role != .user {
-            messages.append(LLMChatMessage(role: .user, content: request.userText))
+        let grounded = QueryRewriter.groundedUserTurn(
+            userText: request.userText,
+            history: request.history
+        )
+        if let last = messages.indices.last, messages[last].role == .user {
+            messages[last].content = grounded
+        } else {
+            messages.append(LLMChatMessage(role: .user, content: grounded))
         }
 
         // Routage sémantique : longueur de réponse et réflexion décidées par
@@ -124,12 +139,10 @@ enum AgentWorkflow {
         var collectedSources: [SearchSourceDTO] = []
         var mailThreadId: String?
         let firstTool = deterministicFirstTool(for: request)
-        var plan = await buildPlan(
-            userText: request.userText,
-            firstTool: firstTool,
-            runtime: runtime
-        )
-        plan = clampPlanSteps(plan)
+        // Le plan est de l'affichage, pas du raisonnement : le faire écrire par
+        // le modèle coûtait une génération complète (prefill + ~200 tokens)
+        // pour produire « Collecter / Analyser / Répondre ».
+        var plan = clampPlanSteps(goalAwareFallbackPlan(userText: request.userText, firstTool: firstTool))
 
         WorkflowTrace.log("workflow", [
             "type": "agent",
@@ -153,7 +166,10 @@ enum AgentWorkflow {
         }
 
         let synthIndex = synthesisStepIndex(in: plan)
-        var lastReflection = ""
+        /// La collecte déterministe a-t-elle déjà rassemblé la matière ?
+        /// Dans ce cas la boucle de décision n'apporte rien : le modèle relit
+        /// les mêmes observations pour conclure « je peux répondre ».
+        var evidenceIsSufficient = false
 
         // Étape 0 = vrai travail (outil déterministe), plus de done cosmétique.
         if let deterministic = firstTool {
@@ -174,57 +190,38 @@ enum AgentWorkflow {
             steps += 1
             markIndex(step0, running: false)
 
-            lastReflection = await reflectAfterStep(
-                stepTitle: plan.indices.contains(step0) ? plan[step0].title : "Collecte",
-                observation: enriched.text,
-                previousReflection: lastReflection,
-                userText: request.userText,
-                runtime: runtime
+            // Les anciennes étapes « réflexion » et « révision du plan » étaient
+            // deux à trois générations par tour dont la sortie n'était jamais
+            // montrée : elles ne servaient qu'à réinjecter une paraphrase des
+            // observations dans le prompt suivant.
+            evidenceIsSufficient = isSelfSufficient(
+                action: deterministic.action,
+                observation: enriched.text
             )
-            if !lastReflection.isEmpty {
-                scratch.append("Réflexion (interne):\n\(lastReflection)")
-            }
-
-            // Étapes milieu (analyse) : travail réel via réflexion + éventuellement révision de plan.
-            if synthIndex > 1 {
-                let analysisIdx = 1
-                markIndex(analysisIdx, running: true)
-                lastReflection = await reflectAfterStep(
-                    stepTitle: plan.indices.contains(analysisIdx) ? plan[analysisIdx].title : "Analyse",
-                    observation: enriched.text,
-                    previousReflection: lastReflection,
-                    userText: request.userText,
-                    runtime: runtime
-                )
-                if !lastReflection.isEmpty {
-                    scratch.append("Réflexion analyse (interne):\n\(lastReflection)")
+            if evidenceIsSufficient, synthIndex > 1 {
+                for idx in 1..<synthIndex {
+                    markIndex(idx, running: true)
+                    markIndex(idx, running: false)
                 }
-                markIndex(analysisIdx, running: false)
-            }
-
-            let next = await revisedPlan(
-                current: plan,
-                observation: enriched.text,
-                userText: request.userText,
-                runtime: runtime
-            )
-            let clampedNext = clampPlanSteps(mergeRevisedPlan(current: plan, revised: next))
-            if clampedNext.map(\.title) != plan.map(\.title) {
-                plan = clampedNext
-                onEvent?(.plan(steps: plan))
             }
         }
 
+        // La synthèse n'a pas besoin de tout l'historique : les preuves d'outil
+        // portent le contenu, et relire 14 tours avant de rédiger double le
+        // prefill. On garde au plus le dernier échange pour les anaphores.
         let packet = ConversationContextCompressor.compress(
-            history: request.history,
+            history: Array(request.history.suffix(2)),
             profile: profile,
             taskHint: request.userText,
             conversationId: request.threadId,
-            recallQuery: request.userText
+            recallQuery: QueryRewriter.retrievalQuery(
+                userText: request.userText,
+                history: request.history
+            )
         )
         let clock = RuntimeTemporalContext.silentClockBlock()
 
-        while steps < profile.maxWorkflowSteps {
+        while !evidenceIsSufficient, steps < profile.maxWorkflowSteps {
             try Task.checkCancellation()
             steps += 1
             var shouldSynthesize = false
@@ -257,12 +254,6 @@ enum AgentWorkflow {
             }
             if let activeOp, plan.indices.contains(activeOp) {
                 userBlob += "\n[Étape active: \(plan[activeOp].title)]"
-            }
-            if !lastReflection.isEmpty {
-                userBlob += "\n\nRéflexion précédente (entrée de ce tour):\n" + GenerationContextBudget.clip(
-                    lastReflection,
-                    maxChars: min(900, profile.toolResultCharBudget)
-                )
             }
             if !scratch.isEmpty {
                 let obs = scratch.suffix(3).joined(separator: "\n---\n")
@@ -345,26 +336,8 @@ enum AgentWorkflow {
                     if let tid = enriched.mailThreadId { mailThreadId = tid }
                     toolCalls += 1
                     markIndex(stepIdx, running: false)
-                    lastReflection = await reflectAfterStep(
-                        stepTitle: plan.indices.contains(stepIdx) ? plan[stepIdx].title : call.action,
-                        observation: enriched.text,
-                        previousReflection: lastReflection,
-                        userText: request.userText,
-                        runtime: runtime
-                    )
-                    if !lastReflection.isEmpty {
-                        scratch.append("Réflexion (interne):\n\(lastReflection)")
-                    }
-                    let next = await revisedPlan(
-                        current: plan,
-                        observation: enriched.text,
-                        userText: request.userText,
-                        runtime: runtime
-                    )
-                    let clampedNext = clampPlanSteps(mergeRevisedPlan(current: plan, revised: next))
-                    if clampedNext.map(\.title) != plan.map(\.title) {
-                        plan = clampedNext
-                        onEvent?(.plan(steps: plan))
+                    if isSelfSufficient(action: call.action, observation: enriched.text) {
+                        shouldSynthesize = true
                     }
                 } catch is CancellationError {
                     onEvent?(.cancelled)
@@ -388,20 +361,32 @@ enum AgentWorkflow {
         let synthSystem = AgentWorkflow.synthesisSystem(hasSources: !collectedSources.isEmpty)
             + "\n\n" + clock
         var synthMessages = packet.messages
+        // La synthèse est le seul endroit où les preuves web doivent tenir en
+        // entier : les couper au budget d'un résultat d'outil brut revenait à
+        // répondre sur deux sources au lieu de cinq.
+        let observationBudget = collectedSources.isEmpty
+            ? profile.toolResultCharBudget
+            : profile.resolvedWebEvidenceCharBudget
         let obs = scratch.isEmpty
             ? "(aucune observation outil)"
-            : GenerationContextBudget.clip(scratch.joined(separator: "\n---\n"), maxChars: profile.toolResultCharBudget)
-        var userContent = """
+            : GenerationContextBudget.clip(scratch.joined(separator: "\n---\n"), maxChars: observationBudget)
+        let groundedRequest = QueryRewriter.groundedUserTurn(
+            userText: request.userText,
+            history: request.history
+        )
+        let userContent = """
         USER REQUEST
-        \(request.userText)
+        \(groundedRequest)
 
         INTERNAL NOTES (travail interne, ne pas réciter) :
         \(obs)
         """
-        if !lastReflection.isEmpty {
-            userContent += "\n\nDernière réflexion:\n\(lastReflection)"
-        }
         synthMessages.append(LLMChatMessage(role: .user, content: userContent))
+        WorkflowTrace.log("agent", [
+            "generations": "\(evidenceIsSufficient ? 1 : steps + 1)",
+            "tool_calls": "\(toolCalls)",
+            "shortcut": evidenceIsSufficient ? "1" : "0",
+        ])
         let finalText: String
         if let onFinalToken {
             finalText = try await runtime.generateStream(
@@ -607,59 +592,19 @@ enum AgentWorkflow {
         }
     }
 
-    static func mergeRevisedPlan(current: [AgentPlanStep], revised: [AgentPlanStep]) -> [AgentPlanStep] {
-        let done = current.filter { $0.status == "done" || $0.status == "error" }
-        guard !revised.isEmpty else { return current }
-        var next = done
-        for step in revised {
-            if next.contains(where: { $0.title == step.title }) { continue }
-            next.append(AgentPlanStep(id: step.id, title: step.title, status: "pending"))
-        }
-        return clampPlanSteps(next)
-    }
-
-    @MainActor
-    static func reflectAfterStep(
-        stepTitle: String,
-        observation: String,
-        previousReflection: String,
-        userText: String,
-        runtime: any AIRuntime
-    ) async -> String {
-        let profile = runtime.executionProfile
-        let prompt = """
-        USER TASK: \(userText)
-        STEP DONE: \(stepTitle)
-        PREVIOUS REFLECTION: \(previousReflection.isEmpty ? "(none)" : previousReflection)
-        OBSERVATION:
-        \(String(observation.prefix(1600)))
-
-        En 4–8 phrases : ce qui a été appris, ce qui reste incertain, et ce que l’étape suivante doit faire.
-        Pas de markdown. Ne mentionne pas la date système.
-        """
-        do {
-            let raw = try await runtime.generate(
-                system: """
-                Tu réfléchis après une étape d’agent. Texte court uniquement.
-                \(RuntimeTemporalContext.silentClockBlock())
-                """,
-                messages: [LLMChatMessage(role: .user, content: prompt)],
-                maxTokens: min(320, profile.outputTokens(for: .agentStep))
-            )
-            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.count >= 40 ? text : deterministicReflection(stepTitle: stepTitle, observation: observation, previous: previousReflection)
-        } catch {
-            return deterministicReflection(stepTitle: stepTitle, observation: observation, previous: previousReflection)
-        }
-    }
-
-    static func deterministicReflection(stepTitle: String, observation: String, previous: String) -> String {
-        let clip = String(observation.prefix(280)).trimmingCharacters(in: .whitespacesAndNewlines)
-        var out = "Après « \(stepTitle) », points retenus : \(clip)."
-        if !previous.isEmpty {
-            out += " Suite : \(String(previous.prefix(180)))."
-        }
-        return out
+    /// Une observation d'outil se suffit-elle à elle-même pour rédiger ?
+    ///
+    /// Les outils de collecte (web, mail, fichiers) rendent déjà un bloc de
+    /// preuves structuré. Repasser par le modèle pour qu'il décide s'il a
+    /// « assez d'information » coûte une génération complète et se termine, dans
+    /// la quasi-totalité des cas, par la même conclusion.
+    static func isSelfSufficient(action: String, observation: String) -> Bool {
+        let selfSufficient: Set<String> = [
+            "web_search", "web_fetch", "mail_summarize", "mail_read",
+            "files_read", "files_search", "memory_recall",
+        ]
+        guard selfSufficient.contains(action) else { return false }
+        return observation.trimmingCharacters(in: .whitespacesAndNewlines).count >= 200
     }
 
     static func synthesisSystem(hasSources: Bool) -> String {
@@ -676,109 +621,6 @@ enum AgentWorkflow {
         """
     }
 
-    @MainActor
-    static func buildPlan(
-        userText: String,
-        firstTool: AIToolCall?,
-        runtime: any AIRuntime
-    ) async -> [AgentPlanStep] {
-        let fallback = goalAwareFallbackPlan(userText: userText, firstTool: firstTool)
-        let profile = runtime.executionProfile
-        let prompt = """
-        USER TASK:
-        \(userText)
-
-        \(RuntimeTemporalContext.silentClockBlock())
-
-        Produis un JSON unique : {"steps":[{"id":"s1","title":"..."}]}
-        Exactement 3 étapes (4 max). Titres actionnables.
-        Typique : collecter → analyser/comparer → synthétiser.
-        Pas de filler. Pas de « Je pense que ». Pas d’autre texte.
-        """
-        do {
-            let raw = try await runtime.generateLocal(
-                system: """
-                Tu es un planificateur d’agent. JSON uniquement, sans markdown.
-                Les titres doivent coller à la tâche réelle. 3 étapes de préférence.
-                \(RuntimeTemporalContext.silentClockBlock())
-                """,
-                messages: [LLMChatMessage(role: .user, content: prompt)],
-                maxTokens: min(280, profile.outputTokens(for: .agentStep)),
-                options: LocalGenerationOptions(
-                    sampling: .structured,
-                    grammar: ToolCallGrammar.agentPlan,
-                    timeout: profile.generationTimeoutSeconds
-                )
-            )
-            if let parsed = parsePlanJSON(raw), parsed.count >= 1 {
-                return clampPlanSteps(parsed)
-            }
-        } catch {
-            WorkflowTrace.log("agent", ["plan_fallback": "true"])
-        }
-        return clampPlanSteps(fallback)
-    }
-
-    @MainActor
-    static func revisedPlan(
-        current: [AgentPlanStep],
-        observation: String,
-        userText: String,
-        runtime: any AIRuntime
-    ) async -> [AgentPlanStep] {
-        let done = current.filter { $0.status == "done" || $0.status == "error" }
-        let pendingTitles = current
-            .filter { $0.status == "pending" || $0.status == "running" }
-            .map(\.title)
-            .joined(separator: " | ")
-        let prompt = """
-        USER TASK:
-        \(userText)
-
-        NEW OBSERVATION:
-        \(String(observation.prefix(1200)))
-
-        DONE STEPS:
-        \(done.map(\.title).joined(separator: " | "))
-
-        PENDING STEPS:
-        \(pendingTitles.isEmpty ? "(none)" : pendingTitles)
-
-        JSON only: {"steps":[{"id":"s1","title":"..."}]}
-        Remaining operational steps after this observation (0 à 3).
-        Prefer at most 3–4 steps total in the whole plan.
-        Add, drop, or rewrite pending steps if needed. No chain-of-thought.
-        Empty steps array if ready to answer.
-        """
-        do {
-            let raw = try await runtime.generateLocal(
-                system: """
-                Tu révises le plan d’un agent. JSON uniquement.
-                \(RuntimeTemporalContext.silentClockBlock())
-                """,
-                messages: [LLMChatMessage(role: .user, content: prompt)],
-                maxTokens: min(220, runtime.executionProfile.outputTokens(for: .agentStep)),
-                options: LocalGenerationOptions(
-                    sampling: .structured,
-                    grammar: ToolCallGrammar.agentPlan,
-                    timeout: runtime.executionProfile.generationTimeoutSeconds
-                )
-            )
-            guard let parsed = parsePlanJSON(raw) else { return current }
-            var next = done
-            for (i, step) in parsed.enumerated() {
-                if looksLikeChainOfThought(step.title) { continue }
-                let id = "s\(done.count + i + 1)"
-                next.append(AgentPlanStep(id: id, title: step.title, status: "pending"))
-            }
-            if next.map(\.title) == current.map(\.title) { return current }
-            return clampPlanSteps(next)
-        } catch {
-            WorkflowTrace.log("agent", ["plan_revise_skip": "true"])
-            return current
-        }
-    }
-
     /// Heuristiques déterministes : évite de demander au petit modèle de “deviner” l’outil évident.
     private static func deterministicFirstTool(for request: Request) -> AIToolCall? {
         let lower = request.userText.lowercased()
@@ -787,20 +629,7 @@ enum AgentWorkflow {
                 return AIToolCall(action: "web_fetch", arguments: ["url": url])
             }
         }
-        if lower.contains("cherche sur le web")
-            || lower.contains("recherche web")
-            || lower.contains("sur internet")
-            || lower.contains("google")
-            || lower.contains("dernières informations")
-            || lower.contains("dernieres informations")
-            || lower.contains("actualité")
-            || lower.contains("actualite")
-            || lower.contains("rapport qualité") || lower.contains("rapport qualite")
-            || lower.contains("meilleur gpu") || lower.contains("meilleure carte")
-            || (lower.contains("recherche") && (lower.contains("web") || lower.contains("internet") || lower.contains("en ligne")))
-            || (lower.contains("web") && (lower.contains("cherche") || lower.contains("recherche"))) {
-            // Texte brut : la compaction et l'ancrage temporel sont l'affaire de
-            // `WebQueryPlanner`, qui voit aussi l'historique.
+        if looksLikeLiveWeb(request.userText) {
             return AIToolCall(action: "web_search", arguments: ["query": request.userText])
         }
         let mailIntent = MailIntentDetector.detect(
@@ -835,6 +664,34 @@ enum AgentWorkflow {
             return AIToolCall(action: "memory_recall", arguments: ["query": request.userText])
         }
         return nil
+    }
+
+    /// Question qui exige des faits à jour. Sans ça, « les meilleures souris
+    /// gamer » en mode Agent faisait d'abord écrire un JSON d'outil au modèle
+    /// (~une minute) avant d'aller sur le web.
+    static func looksLikeLiveWeb(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let explicit = [
+            "cherche sur le web", "recherche web", "sur internet", "google",
+            "dernières informations", "dernieres informations",
+            "actualité", "actualite", "rapport qualité", "rapport qualite",
+        ]
+        if explicit.contains(where: { lower.contains($0) }) { return true }
+        if lower.contains("recherche"), lower.contains("web") || lower.contains("internet") || lower.contains("en ligne") {
+            return true
+        }
+        if lower.contains("web"), lower.contains("cherche") || lower.contains("recherche") {
+            return true
+        }
+        let live = [
+            "meilleur", "meilleure", "meilleures", "meilleurs",
+            "prix", "tarif", "coût", "cout", "pas cher",
+            "comparatif", "compare", "vs ", " versus ",
+            "avis", "test de", "en ce moment", "aujourd'hui", "aujourd hui",
+            "disponible", "sortie", "recommande", "recommandation",
+            "top 5", "top 10", "quel gpu", "quelle carte",
+        ]
+        return live.contains(where: { lower.contains($0) })
     }
 
     /// Requête SERP à partir d'une demande — délègue au planificateur, qui gère

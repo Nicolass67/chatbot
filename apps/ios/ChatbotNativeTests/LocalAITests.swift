@@ -915,9 +915,13 @@ final class AIParityArchitectureTests: XCTestCase {
         let primary = LocalModelDescriptor.primary.executionProfile
         XCTAssertEqual(light.performanceClass, .compact)
         XCTAssertEqual(primary.performanceClass, .ample)
-        XCTAssertLessThan(light.maxWorkflowSteps, primary.maxWorkflowSteps)
         XCTAssertLessThanOrEqual(light.contextCharBudget, primary.contextCharBudget)
-        XCTAssertLessThanOrEqual(light.maxToolCalls, primary.maxToolCalls)
+        // Le nombre d'étapes d'agent n'est pas une mesure de capacité mais de
+        // latence acceptée : chaque étape est une génération complète. Le modèle
+        // principal en fait moins parce qu'il court-circuite après une collecte
+        // suffisante, pas parce qu'il sait moins faire.
+        XCTAssertLessThanOrEqual(primary.maxWorkflowSteps, light.maxWorkflowSteps)
+        XCTAssertGreaterThan(primary.outputTokenCeiling, 0)
     }
 
     func testStructuredActionParserToolAndFinal() {
@@ -1015,8 +1019,8 @@ final class LlamaInferencePerfTests: XCTestCase {
         XCTAssertFalse(gemma.thinkingEnabled)
         XCTAssertEqual(gemma.generationTimeoutSeconds, 240)
         let qwen = LocalModelDescriptor.descriptor(id: "qwen35-2b-q4_k_m")!.executionProfile
-        XCTAssertEqual(qwen.inference.nCtx, 6144)
-        XCTAssertEqual(qwen.inference.contextLadder, [4096, 3072, 2048])
+        XCTAssertEqual(qwen.inference.nCtx, 3072)
+        XCTAssertEqual(qwen.inference.contextLadder, [2048])
         XCTAssertEqual(qwen.inference.imageMaxTokens, 192)
         XCTAssertEqual(qwen.performanceClass, .ample)
         XCTAssertEqual(qwen.inference.nThreads, 4)

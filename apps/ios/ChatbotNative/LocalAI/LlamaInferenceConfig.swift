@@ -12,8 +12,10 @@ enum LlamaFlashAttentionMode: String, Sendable, Codable, Hashable, CaseIterable 
 }
 
 /// Type du cache KV. `q8_0` divise la mémoire par deux pour un delta de
-/// perplexité mesuré entre +0,002 et +0,05 — invisible en conversation.
-/// C'est ce qui permet `n_ctx` 6144 au lieu de 2048 sur A15 / 6 Go.
+/// perplexité négligeable, mais impose Flash Attention : si le noyau Metal
+/// correspondant manque, la création du contexte échoue et tout le modèle
+/// retombe sur le CPU. En f16, un contexte de 4096 tient déjà en ~470 Mo pour
+/// un 2B — la quantification n'achète rien qui vaille ce risque.
 enum LlamaKVCacheType: String, Sendable, Codable, Hashable, CaseIterable {
     case f16
     case q8_0

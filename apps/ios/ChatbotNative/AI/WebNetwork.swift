@@ -24,8 +24,8 @@ enum WebNetwork {
     /// chaque appel), cache HTTP mémoire modeste, et pas d'attente réseau infinie.
     nonisolated(unsafe) static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 12
         config.httpMaximumConnectionsPerHost = 6
         config.requestCachePolicy = .reloadRevalidatingCacheData
         config.urlCache = URLCache(memoryCapacity: 8 << 20, diskCapacity: 32 << 20)
@@ -57,33 +57,57 @@ enum WebNetwork {
             .filter { !$0.isEmpty }
         guard !cleaned.isEmpty else { return [] }
 
-        var ranked: [[SearchSourceDTO]] = []
+        // Requête principale et variantes sont lancées ensemble : en série,
+        // trois requêtes qui expirent coûtaient 45 s avant la première lecture
+        // de page. En parallèle, le coût est celui de la plus lente.
+        var cachedLists: [(Int, [SearchSourceDTO])] = []
+        var pending: [(Int, String)] = []
         for (index, query) in cleaned.enumerated() {
             if let cached = await WebRetrievalCache.shared.sources(for: query) {
-                ranked.append(cached)
-                continue
-            }
-            // La requête principale mérite les trois points d'entrée ; les
-            // variantes ne servent qu'au rappel, un seul suffit.
-            let providers: [Provider] = index == 0 ? [.html, .lite, .instant] : [.html]
-            let lists = await withTaskGroup(of: [SearchSourceDTO].self) { group -> [[SearchSourceDTO]] in
-                for provider in providers {
-                    group.addTask {
-                        await provider.run(query: query, limit: wanted * 2, snippetBudget: snippetBudget)
-                    }
-                }
-                var out: [[SearchSourceDTO]] = []
-                for await list in group where !list.isEmpty {
-                    out.append(list)
-                }
-                return out
-            }
-            let fused = fuse(lists, limit: wanted * 2)
-            if !fused.isEmpty {
-                await WebRetrievalCache.shared.store(sources: fused, for: query)
-                ranked.append(fused)
+                cachedLists.append((index, cached))
+            } else {
+                pending.append((index, query))
             }
         }
+
+        var fetched: [(Int, [SearchSourceDTO])] = await withTaskGroup(
+            of: (Int, [SearchSourceDTO]).self
+        ) { group -> [(Int, [SearchSourceDTO])] in
+            for (index, query) in pending {
+                group.addTask {
+                    // HTML + Instant Answer. Lite renvoyait les mêmes liens et
+                    // faisait attendre le plus lent des trois fournisseurs.
+                    let providers: [Provider] = index == 0 ? [.html, .instant] : [.html]
+                    let lists = await withTaskGroup(of: [SearchSourceDTO].self) { inner -> [[SearchSourceDTO]] in
+                        for provider in providers {
+                            inner.addTask {
+                                await provider.run(query: query, limit: wanted * 2, snippetBudget: snippetBudget)
+                            }
+                        }
+                        var out: [[SearchSourceDTO]] = []
+                        for await list in inner where !list.isEmpty {
+                            out.append(list)
+                        }
+                        return out
+                    }
+                    return (index, fuse(lists, limit: wanted * 2))
+                }
+            }
+            var out: [(Int, [SearchSourceDTO])] = []
+            for await result in group where !result.1.isEmpty {
+                out.append(result)
+            }
+            return out
+        }
+
+        for (index, list) in fetched {
+            guard cleaned.indices.contains(index) else { continue }
+            await WebRetrievalCache.shared.store(sources: list, for: cleaned[index])
+        }
+
+        // L'ordre compte : la fusion finale privilégie la requête principale.
+        fetched.append(contentsOf: cachedLists)
+        let ranked = fetched.sorted { $0.0 < $1.0 }.map(\.1)
         return fuse(ranked, limit: wanted)
     }
 
@@ -177,7 +201,7 @@ enum WebNetwork {
         var components = URLComponents(string: "https://html.duckduckgo.com/html/")
         components?.queryItems = [URLQueryItem(name: "q", value: query)]
         guard let url = components?.url else { return [] }
-        guard let html = await text(from: url, userAgent: browserUserAgent, timeout: 15) else { return [] }
+        guard let html = await text(from: url, userAgent: browserUserAgent, timeout: 8) else { return [] }
         return WebSERPParser.duckDuckGoHTML(html, limit: limit, snippetBudget: snippetBudget)
     }
 
@@ -199,7 +223,7 @@ enum WebNetwork {
             URLQueryItem(name: "skip_disambig", value: "1"),
         ]
         guard let url = components?.url else { return [] }
-        guard let json = await text(from: url, userAgent: "ChatbotNative/3.0 (local-web)", timeout: 12),
+        guard let json = await text(from: url, userAgent: "ChatbotNative/3.0 (local-web)", timeout: 6),
               let data = json.data(using: .utf8) else { return [] }
         return WebSERPParser.duckDuckGoInstant(data, limit: limit, snippetBudget: snippetBudget)
     }
@@ -222,7 +246,7 @@ enum WebNetwork {
         }
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = timeout
+        request.timeoutInterval = min(8, timeout)
         request.setValue(browserUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("fr-FR,fr;q=0.9,en;q=0.6", forHTTPHeaderField: "Accept-Language")

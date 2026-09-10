@@ -84,6 +84,10 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     var webEvidenceCharBudget: Int = 0
     var generationTimeoutSeconds: Double
     var performanceClass: PerformanceClass
+    /// Plafond dur appliqué à `outputTokens(for:)`. `0` = pas de plafond.
+    /// La classe de performance décrit ce que le modèle *peut* écrire ; ce
+    /// plafond décrit ce qu'on accepte d'*attendre* sur l'appareil.
+    var outputTokenCeiling: Int = 0
     /// Paramètres llama.cpp / Metal — ne changent pas les features applicatives.
     var inference: LlamaInferenceConfig
     /// Réflexion Gemma 4 : off par défaut (qualité vs temps à mesurer, jamais forcée).
@@ -257,52 +261,64 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     ///
     /// La réutilisation du préfixe KV rend le contexte long quasi gratuit après
     /// le premier tour : seul le delta du message est préfillé.
+    /// Qwen3.5 2B — qualité d'abord, mais sur un A15 le prompt se paie deux fois :
+    /// à la préremplissage puis à chaque token via l'attention. Un budget de
+    /// 4 600 tokens de prompt coûtait 20 à 40 s avant le premier mot sans rien
+    /// apporter à un modèle de 2 milliards de paramètres, qui n'exploite pas
+    /// utilement plus de ~2 500 tokens de contexte.
     static let qwen35Dense2B = LocalModelExecutionProfile(
-        contextCharBudget: 14_000,
-        contextTokenBudget: 4_608,
-        historyMessageBudget: 24,
-        maxOutputTokens: 1_024,
+        contextCharBudget: 6_000,
+        contextTokenBudget: 1_800,
+        historyMessageBudget: 8,
+        maxOutputTokens: 512,
         temperature: 0.7,
         topP: 0.8,
-        maxWorkflowSteps: 8,
-        maxToolCalls: 8,
-        maxWebResults: 6,
-        // Lecture parallèle : cinq pages coûtent désormais le temps de la plus
-        // lente, plus celui d'une seule à la file.
-        maxFetchedPages: 5,
+        // Collecte + synthèse. Un tour de « décision » LLM entre les deux
+        // doublait l'attente sans changer le résultat.
+        maxWorkflowSteps: 2,
+        maxToolCalls: 2,
+        maxWebResults: 4,
+        maxFetchedPages: 3,
         maxEvidencePerSource: 2,
-        maxWebSnippetChars: 480,
-        maxMailMessages: 8,
-        maxMailBodyChars: 7_000,
-        maxDocumentChunks: 8,
-        maxChunkChars: 2_000,
-        toolResultCharBudget: 4_000,
-        // 6144 tokens de fenêtre autorisent ~9 000 caractères de preuves web
-        // en gardant la place de l'historique et de la réponse.
-        webEvidenceCharBudget: 9_000,
-        generationTimeoutSeconds: 240,
+        maxWebSnippetChars: 360,
+        maxMailMessages: 6,
+        maxMailBodyChars: 5_000,
+        maxDocumentChunks: 6,
+        maxChunkChars: 1_200,
+        toolResultCharBudget: 2_000,
+        webEvidenceCharBudget: 2_800,
+        generationTimeoutSeconds: 75,
         performanceClass: .ample,
+        outputTokenCeiling: 480,
         inference: {
             var c = LlamaInferenceConfig.a15Default
-            c.nCtx = 6144
-            c.contextLadder = [4096, 3072, 2048]
+            // 3072 : sur A15 le prefill est ~linéaire. 4096 coûtait ~15 s de
+            // premier token ; 3072 tient le chat + 3 extraits web sans le payer.
+            c.nCtx = 3072
+            c.contextLadder = [2048]
             c.nGpuLayers = -1
-            // Prefill : gros batch logique, ubatch modéré pour borner le buffer Metal.
+            // Prefill Metal : ubatch = batch évite de rejouer le graphe en deux
+            // passes par lot logique.
             c.nBatch = 512
-            c.nUbatch = 256
+            c.nUbatch = 512
             c.nThreads = 4
             c.nThreadsBatch = 4
             c.sampling = .qwenInstruct
-            c.kvCacheTypeK = .q8_0
-            c.kvCacheTypeV = .q8_0
-            c.flashAttention = .enabled
+            // KV f16 + flash attention « auto » = chemin Metal éprouvé. En q8_0
+            // avec flash attention forcée, un noyau manquant fait retomber tout
+            // le modèle sur le CPU : même réponse, dix fois plus lente.
+            c.kvCacheTypeK = .f16
+            c.kvCacheTypeV = .f16
+            c.flashAttention = .auto
             c.prefixReuseEnabled = true
             c.warmupOnLoad = true
             c.evalCallbackEnabled = false
             return c
         }(),
         thinkingEnabled: false,
-        thinkingTokenBudget: 1_024,
+        // La trace de réflexion est facturée en tokens générés. 512 laisse la
+        // place d'un raisonnement court sans doubler l'attente.
+        thinkingTokenBudget: 512,
         adaptiveThinking: true
     )
 
@@ -431,6 +447,12 @@ struct LocalModelExecutionProfile: Equatable, Sendable, Hashable {
     }
 
     func outputTokens(for task: GenerationTask) -> Int {
+        let base = classOutputTokens(for: task)
+        guard outputTokenCeiling > 0 else { return base }
+        return min(base, outputTokenCeiling)
+    }
+
+    private func classOutputTokens(for task: GenerationTask) -> Int {
         switch performanceClass {
         case .compact:
             switch task {

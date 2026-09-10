@@ -181,6 +181,13 @@ final class ConversationMemoryService {
         // Un message très court ne porte pas de fait durable, et l'extraction
         // coûterait plus que ce qu'elle rapporte.
         guard trimmed.count >= 24 else { return }
+        // Le filtre décisif : une question (« quelles sont les meilleures souris »)
+        // ne contient aucun fait durable sur l'utilisateur. Sans ce garde-fou,
+        // chaque tour payait une génération de plus pour un `{"facts":[]}`.
+        guard Self.mayCarryDurableFact(trimmed) else {
+            WorkflowTrace.log("memory", ["facts": "skipped"])
+            return
+        }
 
         let user = """
         MESSAGE UTILISATEUR :
@@ -223,6 +230,35 @@ final class ConversationMemoryService {
             // Silencieux : l'extraction est un bonus, jamais un prérequis.
             WorkflowTrace.log("memory", ["facts": "failed"])
         }
+    }
+
+    /// Pré-filtre lexical : le message parle-t-il de l'utilisateur lui-même ?
+    ///
+    /// Volontairement large côté première personne (mieux vaut une extraction
+    /// inutile qu'un fait manqué) mais strict sur les questions pures.
+    static func mayCarryDurableFact(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let firstPerson = [
+            "je ", "j'", "j’", "mon ", "ma ", "mes ", "moi ", "chez moi",
+            "m'appelle", "m’appelle", "appelle-moi", "appelle moi",
+            "retiens", "souviens-toi", "souviens toi", "note que", "rappelle-toi",
+            "notre ", "nous avons", "on a ",
+        ]
+        guard firstPerson.contains(where: { lower.hasPrefix($0) || lower.contains(" " + $0) || lower.contains("\n" + $0) })
+        else { return false }
+
+        // « je cherche les meilleures souris » : première personne, mais c'est
+        // une requête ponctuelle, pas un fait à garder.
+        let transientRequest = [
+            "je cherche", "je voudrais savoir", "je veux savoir", "je me demande",
+            "peux-tu", "peux tu", "pourrais-tu", "donne-moi", "donne moi",
+            "trouve-moi", "trouve moi", "explique", "résume", "resume", "traduis",
+        ]
+        if transientRequest.contains(where: { lower.contains($0) }),
+           !lower.contains("retiens"), !lower.contains("souviens") {
+            return false
+        }
+        return true
     }
 
     static func parseFacts(_ raw: String) -> [String] {

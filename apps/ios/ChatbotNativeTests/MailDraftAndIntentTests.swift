@@ -294,25 +294,22 @@ final class MailDraftAndIntentTests: XCTestCase {
         XCTAssertTrue(GmailRemoteIds.isPersistedGmailDraftId("r-abc123gmail"))
     }
 
-    @MainActor
-    func testRevisedPlanKeepsDoneStepsAndDropsPending() async {
-        let runtime = ScriptedAIRuntime { _, _ in
-            #"{"steps":[{"title":"Comparer les compromis"}]}"#
-        }
-        let current = [
-            AgentPlanStep(id: "s1", title: "Identifier les critères", status: "done"),
-            AgentPlanStep(id: "s2", title: "Étape devenue inutile", status: "pending"),
-        ]
-        let next = await AgentWorkflow.revisedPlan(
-            current: current,
-            observation: "Les trois offres sont lues.",
-            userText: "Compare ces trois offres",
-            runtime: runtime
-        )
-        XCTAssertEqual(next.first?.status, "done")
-        XCTAssertEqual(next.first?.title, "Identifier les critères")
-        XCTAssertTrue(next.contains(where: { $0.title.contains("Comparer") }))
-        XCTAssertFalse(next.contains(where: { $0.title.contains("inutile") }))
+    /// Une collecte web substantielle doit court-circuiter la boucle de décision :
+    /// c'est ce qui fait passer une requête agent de dix générations à une.
+    func testSubstantialCollectionShortCircuitsDecisionLoop() {
+        let evidence = String(repeating: "Résultat de recherche détaillé. ", count: 12)
+        XCTAssertTrue(AgentWorkflow.isSelfSufficient(action: "web_search", observation: evidence))
+        XCTAssertTrue(AgentWorkflow.isSelfSufficient(action: "mail_summarize", observation: evidence))
+        // Un résultat vide ou minuscule ne remplace pas une vraie décision.
+        XCTAssertFalse(AgentWorkflow.isSelfSufficient(action: "web_search", observation: "Aucun résultat."))
+        // Une action qui modifie l'état demande toujours une suite explicite.
+        XCTAssertFalse(AgentWorkflow.isSelfSufficient(action: "mail_draft_reply", observation: evidence))
+    }
+
+    func testProductRecommendationTriggersWebWithoutAskingTheModel() {
+        XCTAssertTrue(AgentWorkflow.looksLikeLiveWeb("Quelles sont les meilleures souris gamer ?"))
+        XCTAssertTrue(AgentWorkflow.looksLikeLiveWeb("le prix des modèles"))
+        XCTAssertFalse(AgentWorkflow.looksLikeLiveWeb("Rédige un mail de remerciement à Marc"))
     }
 
     func testAgentPlanIsTaskSpecificNotGenericTemplate() {

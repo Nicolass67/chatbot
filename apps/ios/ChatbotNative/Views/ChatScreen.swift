@@ -3727,15 +3727,7 @@ private var sendBlockedHint: String {
                 activeGeneration.log("start", extra: ["workflow": "agent"])
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
-                let history: [LLMChatMessage] = messages.compactMap { msg in
-                    guard msg.role == "user" || msg.role == "assistant" else { return nil }
-                    let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
-                    var content = msg.content
-                    if role == .assistant, content.count > 1_200 {
-                        content = String(content.prefix(800)) + "…"
-                    }
-                    return LLMChatMessage(role: role, content: content)
-                }
+                let history = localConversationHistory()
                 let agentResult = try await AgentWorkflow.run(
                     .init(
                         userText: effectiveText,
@@ -3815,7 +3807,11 @@ private var sendBlockedHint: String {
                 let runtime = LocalAIRuntime.shared
                 let tools = AIToolRegistry.makeLocalDefault()
                 let web = try await WebSearchWorkflow.run(
-                    .init(query: effectiveText, synthesize: true, history: history),
+                    .init(
+                        query: effectiveText,
+                        synthesize: true,
+                        history: localConversationHistory()
+                    ),
                     runtime: runtime,
                     tools: tools,
                     onEvent: { event in
@@ -4133,15 +4129,7 @@ private var sendBlockedHint: String {
         generation: UInt64,
         images: [Data] = []
     ) async throws -> String {
-        var history: [LLMChatMessage] = messages.compactMap { msg in
-            guard msg.role == "user" || msg.role == "assistant" else { return nil }
-            let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
-            var content = msg.content
-            if role == .assistant, content.count > 1_200 {
-                content = String(content.prefix(800)) + "…"
-            }
-            return LLMChatMessage(role: role, content: content)
-        }
+        var history = localConversationHistory()
         // messages includes the just-appended user turn; ensure last is userText if empty history edge.
         if history.last?.role != .user {
             history.append(LLMChatMessage(role: .user, content: userText))
@@ -5141,6 +5129,21 @@ private var sendBlockedHint: String {
                 sizeBytes: $0.sizeBytes,
                 type: $0.typeHint
             )
+        }
+    }
+
+    /// Historique conversationnel commun à tous les workflows locaux.
+    /// Il était reconstruit à trois endroits : la branche Web l'avait perdu,
+    /// et une question de suivi (« et le prix ? ») partait sans son sujet.
+    private func localConversationHistory() -> [LLMChatMessage] {
+        messages.compactMap { msg in
+            guard msg.role == "user" || msg.role == "assistant" else { return nil }
+            let role: LLMChatMessage.Role = msg.role == "user" ? .user : .assistant
+            var content = msg.content
+            if role == .assistant, content.count > 1_200 {
+                content = String(content.prefix(800)) + "…"
+            }
+            return LLMChatMessage(role: role, content: content)
         }
     }
 

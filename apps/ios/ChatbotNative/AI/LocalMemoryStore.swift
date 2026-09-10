@@ -135,10 +135,12 @@ final class LocalMemoryStore {
                 scored.append((fact, similarity))
             }
             if !scored.isEmpty {
-                // Seuil : sous 0,30 la « proximité » n'est plus qu'un artefact et
-                // injecter ces faits dans le prompt dégrade la réponse.
+                // Seuil : sous 0,45 la « proximité » n'est plus qu'un artefact.
+                // Un fait hors sujet injecté dans le prompt système ne fait pas
+                // que ne rien apporter : un petit modèle s'y accroche et répond
+                // à côté. Le silence vaut mieux qu'un rappel douteux.
                 let relevant = scored
-                    .filter { $0.1 >= 0.30 }
+                    .filter { $0.1 >= 0.45 }
                     .sorted { $0.1 > $1.1 }
                     .prefix(limit)
                     .map(\.0)
