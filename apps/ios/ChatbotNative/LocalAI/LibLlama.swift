@@ -250,8 +250,8 @@ func llama_batch_add(
 final class LlamaContext: @unchecked Sendable {
     private var model: OpaquePointer
     private var context: OpaquePointer
-    private var vocab: OpaquePointer
-    private var sampling: UnsafeMutablePointer<llama_sampler>
+    private var vocab: OpaquePointer?
+    private var sampling: UnsafeMutablePointer<llama_sampler>?
     private var batch: llama_batch
     private var tokens_list: [llama_token]
     private var temporary_invalid_cchars: [CChar]
@@ -325,10 +325,10 @@ final class LlamaContext: @unchecked Sendable {
     /// aiguise la distribution, si bien que `top_p` ne tronque plus le même
     /// ensemble que celui sur lequel le modèle a été calibré.
     private static func makeSamplerChain(
-        vocab: OpaquePointer,
+        vocab: OpaquePointer?,
         sampling: LlamaSamplingConfig,
         grammar: String?
-    ) -> UnsafeMutablePointer<llama_sampler> {
+    ) -> UnsafeMutablePointer<llama_sampler>? {
         let sparams = llama_sampler_chain_default_params()
         let chain = llama_sampler_chain_init(sparams)
 
@@ -349,6 +349,7 @@ final class LlamaContext: @unchecked Sendable {
         // 2) Pénalités : sur les logits bruts, avant toute troncature.
         if sampling.usesPenalties {
             llama_sampler_chain_add(chain, llama_sampler_init_penalties(
+                llama_vocab_n_tokens(vocab),
                 sampling.penaltyLastN,
                 sampling.repeatPenalty,
                 sampling.frequencyPenalty,
@@ -472,7 +473,7 @@ final class LlamaContext: @unchecked Sendable {
         guard tokens == expectedTokens else { return false }
         let written = tokens.withUnsafeBufferPointer { buffer -> size_t in
             path.withCString { cPath in
-                llama_state_seq_save_file(context, cPath, 0, buffer.baseAddress, buffer.count)
+                llama_state_seq_save_file(context, cPath, 0, buffer.baseAddress, size_t(buffer.count))
             }
         }
         return written > 0
@@ -494,12 +495,12 @@ final class LlamaContext: @unchecked Sendable {
                     cPath,
                     0,
                     buffer.baseAddress,
-                    buffer.count,
+                    size_t(buffer.count),
                     &count
                 )
             }
         }
-        guard read > 0, count > 0, count <= expectedTokens.count else {
+        guard read > 0, count > 0, Int(count) <= expectedTokens.count else {
             resetKV()
             return 0
         }
